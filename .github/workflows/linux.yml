@@ -1,0 +1,76 @@
+name: Linux
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: ${{ matrix.distro }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - distro: ubuntu-22.04
+            container: ubuntu:22.04
+            pkg: "build-essential python3-dev pkg-config libpipewire-0.3-dev python3-pip python3-venv"
+            pip: "python3 -m pip"
+          - distro: ubuntu-24.04
+            container: ubuntu:24.04
+            pkg: "build-essential python3-dev pkg-config libpipewire-0.3-dev python3-pip python3-venv"
+            pip: "python3 -m pip"
+          - distro: fedora
+            container: fedora:latest
+            pkg: "gcc-c++ make python3-devel pkgconfig pipewire-devel python3-pip"
+            pip: "python3 -m pip"
+    container:
+      image: ${{ matrix.container }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          if command -v apt-get >/dev/null; then
+            apt-get update -qq
+            apt-get install -y -qq ${{ matrix.pkg }}
+          else
+            dnf install -y --quiet ${{ matrix.pkg }}
+          fi
+
+      - name: Install Python dependencies
+        run: |
+          ${{ matrix.pip }} install --break-system-packages -q --upgrade pip
+          ${{ matrix.pip }} install --break-system-packages -q -r requirements.txt pybind11
+
+      - name: Build C++ extensions (aimic.so + pvpipe.so)
+        run: |
+          ORT_CAPI=$(python3 -c 'import onnxruntime,os;print(os.path.join(os.path.dirname(onnxruntime.__file__),"capi"))')
+          ORT_INC=$(python3 -c 'import onnxruntime,os;print(os.path.join(os.path.dirname(onnxruntime.__file__),"include"))')
+          mkdir -p /tmp/ortlib
+          ln -sf "$ORT_CAPI"/libonnxruntime.so.* /tmp/ortlib/libonnxruntime.so
+          ORT_INCLUDE_DIR="$ORT_INC" ORT_LIB_DIR=/tmp/ortlib \
+            LD_LIBRARY_PATH="/tmp/ortlib:$ORT_CAPI" \
+            python3 setup.py build_ext --inplace --force
+
+      - name: Import smoke test
+        run: |
+          ORT_CAPI=$(python3 -c 'import onnxruntime,os;print(os.path.join(os.path.dirname(onnxruntime.__file__),"capi"))')
+          LD_LIBRARY_PATH="/tmp/ortlib:$ORT_CAPI" python3 -c "import aimic; print('aimic OK')"
+          LD_LIBRARY_PATH="/tmp/ortlib:$ORT_CAPI" python3 -c "import pvpipe; print('pvpipe OK')"
+
+      - name: Package deb (Ubuntu only)
+        if: matrix.distro != 'fedora'
+        run: |
+          python3 -m pip install --break-system-packages -q pillow
+          bash pack_deb.sh
+          ls dist/purevox_*.deb
+
+      - name: Upload deb artifact
+        if: matrix.distro != 'fedora'
+        uses: actions/upload-artifact@v4
+        with:
+          name: purevox-deb-${{ matrix.distro }}
+          path: dist/purevox_*.deb
+          if-no-files-found: error

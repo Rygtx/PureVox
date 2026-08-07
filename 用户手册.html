@@ -1,0 +1,220 @@
+<!DOCTYPE html><html lang=zh-CN><meta charset=utf-8><style>body{font-family:'Microsoft YaHei',sans-serif;max-width:800px;margin:40px auto;padding:0 20px;font-size:14px;line-height:1.7;color:#222}h1{font-size:24px;border-bottom:2px solid #333;padding-bottom:8px}h2{font-size:20px;margin-top:30px;border-bottom:1px solid #ccc;padding-bottom:4px}h3{font-size:16px;margin-top:20px}table{border-collapse:collapse;width:100%;margin:12px 0}th,td{border:1px solid #ccc;padding:8px 12px;text-align:left}th{background:#f0f0f0}code{background:#f5f5f5;padding:2px 6px;border-radius:3px;font-size:13px}blockquote{border-left:4px solid #999;margin:12px 0;padding:8px 16px;background:#f9f9f9}span[style*=color\:red]{color:#d32f2f!important}hr{border:none;border-top:1px solid #ddd;margin:24px 0}ul,ol{padding-left:24px}li{margin:4px 0}</style><body><h1>🎤 PureVox 用户手册</h1>
+<div align="center">
+
+作者主页：https://space.bilibili.com/10850943/
+
+📅 更新于 2026-08-06
+
+</div>
+
+<hr />
+<h2>📖 软件简介</h2>
+<p>PureVox 是一款 AI 麦克风降噪工具，能实时消除键盘声、鼠标声、电流声、风扇声、风声等背景噪音，只保留纯净人声。</p>
+<hr />
+<h2>🚀 快速开始（本地降噪）</h2>
+<h3>🟢 第 1 步：启动软件</h3>
+<p>双击 <code>PureVox.exe</code> 打开软件。</p>
+<p>首次启动时，如果检测到未安装 VB-Cable，会自动安装驱动。</p>
+<blockquote>
+<p>⚠ <strong>如果自动安装失败</strong>，可以手动安装：</p>
+<ol>
+<li>到 VB-Audio 官网 <code>https://vb-audio.com/Cable/</code> 下载 VB-CABLE 驱动</li>
+<li>右键 <code>VBCABLE_Setup_x64.exe</code> → <strong>以管理员身份运行</strong></li>
+<li>点击安装按钮，安装完成后重启电脑</li>
+</ol>
+<p>PureVox 不随安装包内置第三方工具，软件检测到未安装时会提示下载地址。</p>
+</blockquote>
+<hr />
+<h3>🟢 第 2 步：设置系统声音</h3>
+<p>打开软件菜单栏 <strong>设置</strong> → <strong>系统声音</strong> 打开声音控制面板。</p>
+<p><strong>播放选项卡（CABLE Input）</strong></p>
+<ol>
+<li>右键你的实际扬声器/耳机 → <strong>设置为默认设备</strong>
+   <span style="color:red">⚠ 不设置的话系统音频可能无法正常从扬声器播放。</span></li>
+<li>右键 <strong>CABLE Input</strong> → <strong>属性</strong> → <strong>高级</strong> → 格式设为 <code>1 通道，16 位，48000 Hz</code></li>
+</ol>
+<p><strong>录制选项卡（虚拟麦克风）</strong></p>
+<ol>
+<li>右键 <strong>CABLE Output</strong> → <strong>设置为默认设备</strong>
+   <span style="color:red">⚠ 必须设置，否则降噪后的麦克风在其他软件中无法使用。</span></li>
+<li>右键 <strong>CABLE Output</strong> → <strong>属性</strong> → <strong>高级</strong> → 格式设为 <code>1 通道，16 位，48000 Hz</code></li>
+</ol>
+<hr />
+<h3>🟢 第 3 步：选择设备</h3>
+<ol>
+<li><strong>音频接口</strong>：默认 <code>Windows WASAPI</code>，如果遇到问题可换 <code>MME</code></li>
+<li><strong>输入设备</strong>：选择你的物理麦克风（耳机麦克风、桌面麦克风等）</li>
+<li><strong>输出设备</strong>：选择 <strong>CABLE Input</strong>。这个对应的是系统声音里的播放选项卡，降噪后的音频会输出到这里，再从录制选项卡的 CABLE Output 作为虚拟麦克风供其他软件使用。<span style="color:red">⚠ 不要选你的扬声器/耳机，否则声音会直接外放，虚拟麦克风（CABLE Output）也收不到信号。</span></li>
+<li><strong>监听</strong>（可选）：勾选后选择你的耳机或扬声器，实时听到降噪效果</li>
+</ol>
+<hr />
+<h3>🟢 第 4 步：开始降噪</h3>
+<p>点击 <strong>启动音频处理</strong> 按钮，按钮变红即表示降噪已开启。</p>
+<p>这时候打开微信、Discord、游戏等软件，把麦克风设为 <strong>CABLE Output</strong> 或 <strong>默认麦克风</strong>，对方听到的就是降噪后的声音了。</p>
+<hr />
+<h2>🎛️ 模式说明</h2>
+<p>顶部有 5 种模式，点击切换：</p>
+<table>
+<thead>
+<tr>
+<th>模式</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>直通</strong></td>
+<td>不降噪，只处理前增益、EQ、AGC、VAD，适合只想调音量的场景</td>
+</tr>
+<tr>
+<td><strong>降噪</strong></td>
+<td>AI 深度学习降噪，消除键盘、风扇、空调等噪声，日常使用选这个</td>
+</tr>
+<tr>
+<td><strong>AEC</strong></td>
+<td>回声消除 + 降噪，适合使用音响的用户。开启后扬声器外放的声音不会传回麦克风，对方听不到回声</td>
+</tr>
+<tr>
+<td><strong>TSE</strong></td>
+<td>目标说话人提取。先用录音模式录制一段参考语音，开启后会只保留该人的声音，屏蔽其他人声和背景噪声</td>
+</tr>
+<tr>
+<td><strong>录音</strong></td>
+<td>录制 10 秒参考语音，作为 TSE 模式的参照样本</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>💡 <strong>日常使用选降噪模式即可。</strong></p>
+</blockquote>
+<hr />
+<h2>🔊 增益设置</h2>
+<table>
+<thead>
+<tr>
+<th>选项</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>前增益</strong></td>
+<td>麦克风输入音量。正常说话时 VU 表峰值在 <strong>-12 ~ -6 dB</strong> 为最佳</td>
+</tr>
+<tr>
+<td><strong>后增益</strong></td>
+<td>输出音量补偿。如果别人觉得你声音小，可以适当调高 <strong>3 ~ 6 dB</strong></td>
+</tr>
+<tr>
+<td><strong>AGC</strong></td>
+<td>自动调节增益，声音始终稳定。<strong>建议开启</strong>，开启后前增益滑块会自动被接管</td>
+</tr>
+<tr>
+<td><strong>VAD</strong></td>
+<td>不说话时自动静音，消除残留底噪。<strong>建议开启</strong></td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2>📊 VU 电平表</h2>
+<p>实时显示当前音量：</p>
+<table>
+<thead>
+<tr>
+<th>颜色区域</th>
+<th>范围</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>🟢 绿色</td>
+<td>-60 ~ -18 dB</td>
+<td>音量正常</td>
+</tr>
+<tr>
+<td>🟡 黄色</td>
+<td>-18 ~ -6 dB</td>
+<td>声音够大</td>
+</tr>
+<tr>
+<td>🔴 红色</td>
+<td>-6 ~ 0 dB</td>
+<td>接近过载，建议降低增益</td>
+</tr>
+</tbody>
+</table>
+<p>红色小点表示最近 10 秒内的峰值。</p>
+<hr />
+<h2>🎚️ 均衡器（EQ）</h2>
+<p>菜单栏 <strong>设置</strong> → <strong>均衡器</strong>，打开 31 段均衡器。</p>
+<p>可以直接拖动频点调节，也可以使用预设：</p>
+<blockquote>
+<p>🎵 清晰透亮 · 温暖饱满 · 低沉有力 · 减少齿音 · 减少鼻音 · 消除沉闷 · 增强临场</p>
+</blockquote>
+<hr />
+<h2>📡 远程麦克风（手机无线麦克风）</h2>
+<p>用手机当无线麦克风，音频通过局域网推流到电脑进行降噪，降噪后仍然通过 VB-Cable 输出给其他软件。</p>
+<h3>准备工作</h3>
+<p>确保电脑和手机在 <strong>同一个局域网</strong>（连同一个 WiFi）。</p>
+<h3>操作步骤</h3>
+<ol>
+<li>打开 PureVox，<strong>音频接口</strong> 选择 <strong>网络(API)</strong></li>
+<li>输入设备下方会出现一个网址框，格式如 <code>https://192.168.1.100:59123</code>（自动生成，一般不用改）</li>
+<li>点击 <strong>启动音频处理</strong>，电脑开始等待手机连接<blockquote>
+<p>⚠ 首次使用时会弹出防火墙授权提示，点击 <strong>是</strong> 即可，后续启动不会再弹出</p>
+</blockquote>
+</li>
+</ol>
+<p><strong>🌐 浏览器访问（推荐）</strong></p>
+<ol>
+<li>手机浏览器打开电脑上显示的网址（如 <code>https://192.168.1.100:59123</code>）</li>
+<li>首次访问浏览器会提示"不安全"，<span style="color:red">⚠ 点击 <strong>高级 → 继续访问</strong> 即可（自签名证书，连接加密，安全）</span></li>
+<li>点击页面上的麦克风按钮，开始说话，电脑端就会收到并降噪</li>
+</ol>
+<p><strong>📱 Android App</strong></p>
+<ol>
+<li>安装 <code>PureVoxMic-debug.apk</code> 到手机</li>
+<li>打开 App，会自动搜索局域网内的 PureVox 服务器</li>
+<li>搜到后自动连接，自动开始推流，无需任何操作</li>
+</ol>
+<h3>输出设备怎么选</h3>
+<p>远程麦克风模式下，降噪后的音频仍然会输出到你选的输出设备：</p>
+<ul>
+<li>选 <strong>CABLE Input</strong> → 输出到虚拟麦克风（CABLE Output），供电脑上的软件使用（微信、游戏等）</li>
+<li>选你的 <strong>耳机/音箱</strong> → 直接从扬声器听到手机端的声音</li>
+</ul>
+<blockquote>
+<p>💡 跟本地模式一样，输出设备继续选 <strong>CABLE Input</strong> 即可。</p>
+</blockquote>
+<hr />
+<h2>⌨️ 全局快捷键</h2>
+<table>
+<thead>
+<tr>
+<th>快捷键</th>
+<th>功能</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>右 Alt + &gt;</strong>（右 Alt + 句号键）</td>
+<td>启动 / 停止降噪</td>
+</tr>
+</tbody>
+</table>
+<p>可在菜单栏 <strong>设置 → 快捷键</strong> 中关闭。</p>
+<hr />
+<h2>❓ 常见问题</h2>
+<p><strong>Q：别人听不到我的声音？</strong></p>
+<p>检查：① 软件输出设备是否选了 <strong>CABLE Input</strong> ② 系统默认麦克风是否设为 <strong>CABLE Output</strong> ③ 软件是否点击了 <strong>启动</strong></p>
+<p><strong>Q：启动后没声音？</strong></p>
+<p>检查音频接口，如果 WASAPI 不行就换成 <strong>MME</strong>。</p>
+<p><strong>Q：降噪后人声变怪？</strong></p>
+<p>先把后增益设为 <strong>0</strong>，重置 <strong>EQ</strong>，然后调整前增益，确保说话时 VU 表不超过黄色区。</p>
+<p><strong>Q：如何开机自启？</strong></p>
+<p>菜单栏 <strong>设置</strong> → <strong>开机自启</strong> 打钩，下次开机 PureVox 会自动启动。</p>
+<p><strong>Q：如何让软件启动后自动开始降噪？</strong></p>
+<p>菜单栏 <strong>设置</strong> → <strong>启动时自动运行</strong> 打钩，软件打开后会自动开始降噪。可以配合开机自启一起使用。</p>
+<p><strong>Q：手机连不上电脑？</strong></p>
+<p>检查：① 手机和电脑是否 <strong>同一 WiFi</strong> ② 电脑防火墙是否拦截了 <strong>59123 端口</strong>（软件会自动添加规则，需要管理员权限）③ 网址是否输入正确</p></body></html>

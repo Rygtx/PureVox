@@ -1,0 +1,4 @@
+;!@Install@!UTF-8!
+Delete="PureVox"
+OverwriteMode=1
+;!@InstallEnd@!

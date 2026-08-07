@@ -1,0 +1,74 @@
+# Python
+/.conda
+/__pycache__
+*.pyc
+*.pyo
+*.pyd
+*.spec
+**__pycache__
+/.venv
+/.vercel
+
+# Build outputs
+/build
+/dist
+/config.json
+
+# Compiled binaries
+*.exp
+*.obj
+*.o
+*.a
+*.so
+*.dylib
+*.dll
+# 捆绑的 Windows ORT SDK DLL 是构建/打包必需的，保留提交
+!packages/onnxruntime-win-x64-1.24.4/lib/*.dll
+
+# Third-party runtime components (not part of the source tree; see README)
+tools/VBCABLE_Driver_Pack45.zip
+VBCABLE_Setup_x64.exe
+
+# IDE files
+.vs/
+.vscode/
+.idea/
+*.user
+*.suo
+*.sdf
+*.opensdf
+*.ncb
+
+# ONNX runtime files (large binaries)
+**onnxruntime.pdb
+
+# Temporary files
+*.tmp
+*.temp
+*.log
+/icon_steps_off
+/icon_steps_on
+/tse_reference.wav
+/output_*
+tse_reference_raw.wav
+winui/windowsappruntimeinstall-x64.exe
+winui/BuildVersion.cs
+PureVox-win-x64.zip
+PureVox-*.zip
+dist/
+_build_version.py
+.codegraph
+.reasonix
+
+# Training data / training scripts (not shipped)
+/merged_noisy_files.wav
+/aec9.py
+
+# Android
+android/.gradle/
+android/.kotlin/
+android/build/
+android/app/build/
+android/app/.cxx/
+android/local.properties
+android/opus-src/
