@@ -1,5 +1,34 @@
 # 更新日志
 
+## 2026-08-08 — 修复 Python 3.14→3.8 兼容问题（PySide6 6.6 / 依赖 / 面板进程）
+
+- 修复 `SegmentedControl` 模式按钮在 PySide6 6.6（内嵌 Python 3.8）下**点击无响应**：
+  3.14 系统 Python 配的是 PySide6 6.11，而内嵌 3.8 装到 6.6；6.6 对
+  `clicked.connect(lambda checked, v=val: ...)`（必选参数+默认参数）的参数个数推断
+  错误，回调收不到 `checked` 抛 `TypeError`，四个模式按钮全部失效；改为
+  `lambda *_args, v=val: ...`，兼容 6.6 与 6.11（主题菜单 `triggered` 同改）
+- 修复 Linux 打开系统声音面板「打开一秒就退」：`open_sound_panel_posix` 用
+  `subprocess.run(..., timeout=2.0)` 等待 GUI 进程退出，超时即杀掉面板；改用
+  `subprocess.Popen` 异步启动不等待不杀进程
+- cryptography 与 py3.8 兼容：47.x 起弃用 Python 3.8、48 移除；`requirements.txt`
+  对 py3.8 上限 `<47`（自动解析 46.x），3.9+ 不受限（环境标记 `python_version < '3.9'`）
+
+---
+
+## 2026-08-08 — CI 对齐纯 C + 内嵌 Python 3.8 + 捆绑 onnxruntime 1.11.1
+
+- `linux.yml` 重写：build job 用仓库内捆绑的 1.11.1 SDK（`LD_LIBRARY_PATH` 指向
+  `packages/onnxruntime-linux-x64-1.11.1/lib`），**不 pip 装 onnxruntime**；三发行版
+  （Ubuntu 22.04/24.04 + Fedora）gcc 编纯 C 库 + import 冒烟，Ubuntu 额外出 deb 并上传
+- 新增 `python38_smoke` job（官方 `python:3.8-bullseye` 容器）验证最低 3.8 环境
+  可 gcc 编译纯 C 库、可 ctypes 装载
+- `windows.yml` 重写：Windows 侧 mingw C 构建仍待接入，CI 改跑纯 Python 语法/导入
+  冒烟检查；EXE 打包 job 限 `workflow_dispatch` 手动触发
+- `android.yml` 保持（JDK 17 + SDK 34 + NDK r27 + opus 源码下载出 debug APK）
+- AGENTS.md / README（中英同步）更新 CI 说明
+
+---
+
 ## 2026-08-08 — AEC 模式 UI：监听禁用改为手动 far 端选择
 
 - AEC 模式下原「监听（耳返）」行变为静态「AEC」状态标签：复选框勾选且禁用

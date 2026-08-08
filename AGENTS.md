@@ -85,9 +85,11 @@ cd android
 
 ### CI（`.github/workflows/`）
 
+- `linux.yml`：分两个 job——
+  - `build`（Ubuntu 22.04 / 24.04 / Fedora 容器矩阵）：装系统依赖 + gcc 编纯 C 共享库（libaimic.so + libpvpipe.so），import 冒烟测试；Ubuntu 额外跑 `pack_deb.sh` 出 deb 并上传产物。onnxruntime 用仓库内已捆绑的预编译 1.11.1 SDK，**不 pip 装 onnxruntime**
+  - `python38_smoke`：官方 `python:3.8-bullseye` 容器，验证纯 C 库在最低 Python 3.8 环境可编译、可 ctypes 装载
+- `windows.yml`：windows-latest + Python 3.12，纯 Python 侧语法/导入冒烟检查（C 的 mingw 构建改造待接入）；`workflow_dispatch` 手动触发 EXE 打包 job（等待 mingw 构建产物恢复）
 - `android.yml`：ubuntu-latest 编 debug APK（JDK17 + SDK 34 + NDK r27）；先下载 opus 源码到 `android/opus-src/`，产物上传 APK
-- `linux.yml`：Ubuntu 22.04 / 24.04 / Fedora 容器矩阵；装系统依赖 + pip 装 onnxruntime，gcc 编纯 C 共享库（libaimic.so + libpvpipe.so）；Ubuntu 额外跑 `pack_deb.sh` 出 deb
-- `windows.yml`：windows-latest + Python 3.12 编 aimic.pyd（用捆绑预编译 `packages/onnxruntime-win-x64-1.11.1`）；`workflow_dispatch` 手动触发 EXE 打包 job（mingw 改造待接入）
 - **onnxruntime 预编译 SDK（双平台统一 1.11.1）**：Windows 用捆绑 `packages/onnxruntime-win-x64-1.11.1`；Linux/macOS 默认捆绑 `packages/onnxruntime-linux-x64-1.11.1`（`include/`+`lib/`），不再依赖系统 onnxruntime 包。setup.py 仍支持 `ORT_INCLUDE_DIR` / `ORT_LIB_DIR` 环境变量覆盖（CI/pip 场景，wheel 内 .so 带版本号后缀，需先建 `libonnxruntime.so` 软链接再 `-lonnxruntime`，运行时 `LD_LIBRARY_PATH` 指向 capi 目录）
 
 ---
