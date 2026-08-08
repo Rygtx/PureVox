@@ -46,7 +46,6 @@
 
 #include <pipewire/pipewire.h>
 #include <spa/param/audio/format-utils.h>
-#include <spa/param/audio/raw-utils.h>
 
 /* ── 无锁 SPSC 环形缓冲（进程回调实时安全，禁锁/禁分配）────────────── */
 

@@ -28,9 +28,7 @@ jobs:
       - name: Compile all Python sources (catch syntax errors)
         shell: pwsh
         run: |
-          python -m compileall -q aimic.py pvpipe.py audio_processor.py config_manager.py \
-            model_config.py ui_pyside6.py run_pyside6.py \
-            pvplatform utils server 2>$null
+          python -m compileall -q aimic.py pvpipe.py audio_processor.py config_manager.py model_config.py ui_pyside6.py run_pyside6.py pvplatform utils server 2>$null
           Write-Host "compileall OK"
 
       - name: Smoke import (no native libs required)
