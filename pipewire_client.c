@@ -47,6 +47,11 @@
 #include <pipewire/pipewire.h>
 #include <spa/param/audio/format-utils.h>
 
+#ifndef PW_KEY_TARGET_OBJECT
+/* PW_KEY_TARGET_OBJECT（"target.object"）0.3.64 才引入；老版本用 node.target（均已废弃但兼容） */
+#define PW_KEY_TARGET_OBJECT "node.target"
+#endif
+
 /* ── 无锁 SPSC 环形缓冲（进程回调实时安全，禁锁/禁分配）────────────── */
 
 typedef struct {

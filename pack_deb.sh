@@ -133,4 +133,4 @@ mkdir -p "$DIST"
 rm -f "$DIST/$PKG_FILE"
 dpkg-deb --build --root-owner-group "$ROOT" "$DIST/$PKG_FILE" >/dev/null
 echo "==> 完成: $DIST/$PKG_FILE"
-dpkg-deb --info "$DIST/$PKG_FILE" | head -14
+dpkg-deb --info "$DIST/$PKG_FILE" | head -14 || true
