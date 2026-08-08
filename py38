@@ -1,0 +1,18 @@
+#!/bin/sh
+# PureVox — 内嵌 Python 3.8 启动器
+# 用法: ./py38 <python args...>   例如  ./py38 run_pyside6.py
+set -e
+
+APP_DIR="$(cd "$(dirname "$0")" && pwd)"
+PY_BIN="$APP_DIR/packages/python38/bin/python3.8"
+
+if [ ! -x "$PY_BIN" ]; then
+    echo "PureVox: 未找到内嵌 Python 3.8，先运行 ./bootstrap_python38.sh" >&2
+    exit 1
+fi
+
+# 让解释器找到自带的 libpython3.8.so（独立于系统环境）
+export LD_LIBRARY_PATH="$APP_DIR/packages/python38/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+# 让 aimic.so 找到捆绑的预编译 libonnxruntime.so (v1.11.1，独立于系统包)
+export LD_LIBRARY_PATH="$APP_DIR/packages/onnxruntime-linux-x64-1.11.1/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+exec "$PY_BIN" "$@"

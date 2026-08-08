@@ -1,15 +1,16 @@
-# Python 3.8+（Windows 7 需 Python 3.8，最后一个支持 Win7 的 Python）
+# Python 3.8+（Windows 7 需 Python 3.8，最低支持 Win7 的 Python）
 # 跨平台运行依赖（Windows / Linux / macOS 通用）
-flatbuffers
 importlib_metadata
-# opset：v9=13、tse15=14、aec9=15（原 17 已降级，LayerNormalization 展开为基础算子）
-# 全部模型 opset ≤15，旧 onnxruntime（1.11+）理论上可加载；下限按已实测的 1.13 声明
-# py3.8 下 pip 会解析到最后一个带 cp38 wheel 的版本（约 1.19.x）
-onnxruntime>=1.13
 packaging
 protobuf
 PyAudio
-pybind11
+# opset：v9=13、tse15=14、aec9=15 —— 全部模型 opset ≤16
+# 推理用纯 C 的 ONNX Runtime（aimic.c 链接 libonnxruntime.so，ctypes/CDLL 加载，
+# 不做 Python 层 onnx/onnxruntime）：Linux 捆绑 packages/onnxruntime-linux-x64-1.11.1
+# （lib/libonnxruntime.so*），Windows 捆绑 packages/onnxruntime-win-x64-1.11.1（onnxruntime.dll）。
+# 注意：这里的 PySide6 是 GUI 栈依赖；onnxruntime 不经过 pip，见 setup.py 注释。
+# 纯 C 引擎（aimic.c / pipewire_client.c）由 gcc 直接构建，ctypes 加载，无 pybind11
+# 编译器依赖：Linux 用 pkg-config + libpipewire-0.3-dev + gcc
 # PySide6 6.x 需 Windows 10+；py3.8 下 pip 取 6.7.x（最后一个 cp38 wheel）
 PySide6>=6.5.0
 cryptography>=41.0.0

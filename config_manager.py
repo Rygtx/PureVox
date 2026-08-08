@@ -70,6 +70,7 @@ class ConfigDefaults:
     input_device: str = ""
     output_device: str = field(default_factory=_default_output_device)
     monitor_device: str = ""
+    aec_far_sink: str = ""  # AEC far 端手动选择（node.name，Linux）
     NETWORK_input_url: str = "ws://0.0.0.0:59123/ws/audio"
     monitor_enabled: bool = False
     # TSE 参考音频
@@ -98,6 +99,7 @@ class ConfigDefaults:
             "input_device": instance.input_device,
             "output_device": instance.output_device,
             "monitor_device": instance.monitor_device,
+            "aec_far_sink": instance.aec_far_sink,
             "NETWORK_input_url": instance.NETWORK_input_url,
             "monitor_enabled": instance.monitor_enabled,
             "tse_reference_wav_path": instance.tse_reference_wav_path,
@@ -172,6 +174,7 @@ class ConfigManager:
         "api_type",
         "input_device", "output_device",
         "monitor_device",
+        "aec_far_sink",
         "NETWORK_input_url", "monitor_enabled",
         "tse_reference_wav_path",
         "server_enabled", "server_port",

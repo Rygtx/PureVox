@@ -27,11 +27,35 @@ echo cancellation, for both the local microphone and remote network streaming.
 | Linux | Python 3.8+, PipeWire (native libpipewire audio; virtual mic is a null-sink) |
 
 > **Windows 7**: Python 3.8 is the last Python supporting Win7; this project's source and its
-> dependencies stay Python 3.8 compatible (model opsets 13/14/15, requiring onnxruntime ≥1.13).
-> Note the GUI stack PySide6 6.x (Qt6) itself requires Windows 10+, so full Win7 desktop
-> support is out of scope.
+> dependencies stay Python 3.8 compatible (model opsets 13/14/15, all ≤16; onnxruntime pinned
+> to 1.11.1). Note the GUI stack PySide6 6.x (Qt6) itself requires Windows 10+, so full Win7
+> desktop support is out of scope.
 
 ## Quick start
+
+### Embedded Python 3.8 (recommended, independent of the system)
+
+The project can bundle its own Python 3.8, fully isolated from the system Python
+(e.g. 3.14). **Windows** downloads a prebuilt package (NuGet); **Linux** has no
+prebuilt 3.8 downloadable, so the CPython source is vendored as a **git submodule**
+`packages/cpython` (CPython@v3.8.20, shallow) and built once by the bootstrap
+(out-of-tree, without dirtying the submodule). Everything lives under `packages/`.
+
+```bash
+# After cloning, fetch the submodule (CPython source):
+git submodule update --init --depth 1 packages/cpython
+
+# Linux (just run the bootstrap; it compiles)
+./bootstrap_python38.sh                     # -> packages/python38 (self-contained) + deps
+./py38 run_pyside6.py                       # run
+./py38 setup.py build_ext --inplace --force # build libaimic.so + libpvpipe.so (pure C, gcc)
+
+# Windows (PowerShell, NuGet prebuilt download)
+powershell -ExecutionPolicy Bypass -File bootstrap_python38.ps1   # -> packages\python38w
+# build_win.ps1 then automatically uses packages\python38w\python.exe
+```
+
+Alternatively, use a system Python 3.8+:
 
 ```bash
 # On Windows append `-r requirements-win.txt`
@@ -44,20 +68,24 @@ python run_pyside6.py
 
 ```bash
 # System deps (e.g. AOSC)
-sudo oma install -y pybind11 onnxruntime portaudio pipewire jack
+sudo oma install -y gcc pkgconf pipewire libpipewire-0.3-devel
+
+# Recommended: embedded 3.8 (see above)
+./bootstrap_python38.sh
+./py38 setup.py build_ext --inplace --force   # build pure C shared libs (libaimic.so + libpvpipe.so)
+./py38 run_pyside6.py
+
+# Or run directly with system python3:
 pip install --user -r requirements.txt
-
-# Build C++ extensions (aimic.so + pvpipe.so, linked against system onnxruntime / libpipewire)
-python3 setup.py build_ext --inplace --force
-
-# Run
 python3 run_pyside6.py
 ```
 
 Linux audio uses native PipeWire: the format is negotiated as F32 mono 48000 Hz, with
 resampling and channel conversion handled by PipeWire. The virtual microphone is the
 monitor of a mono null-sink named `purevox_out`; other apps can select
-**"PureVox 虚拟麦克风"** (PureVox Virtual Mic) as their input device.
+**"PureVox 虚拟麦克风"** (PureVox Virtual Mic) as their input device. The AEC far-end
+(echo reference) is also captured natively via PipeWire (`stream.capture.sink` on the
+speaker sink), with no PyAudio/PortAudio dependency.
 
 ### Windows remote-mic add-ons
 
@@ -75,7 +103,7 @@ card, neither of which is bundled:
 powershell -ExecutionPolicy Bypass -File build_win.ps1   # produces dist/PureVox_<date>.exe (self-extracting)
 ```
 
-The script runs the full flow: build `aimic.pyd` → PyInstaller → tcl/tk + unused PySide6 module cleanup →
+The script runs the full flow: build `aimic.dll` (mingw, pending) → PyInstaller → tcl/tk + unused PySide6 module cleanup →
 7z self-extracting EXE. Windows CI (`.github/workflows/windows.yml`) runs the same flow and uploads the EXE.
 
 ### Linux (deb)
@@ -114,8 +142,8 @@ Phone → https://<PC_IP>:59123 (mDNS broadcast _purevox._tcp.local.) → denois
 run_pyside6.py            # entry point (single-instance lock)
 ui_pyside6.py             # main UI (PySide6): panels, device selection, mode switching
 audio_processor.py        # core audio engine + TSE reference recording utilities
-aimic.cpp                 # C++ pybind11 extension (denoise/TSE/AEC/EQ/VAD/AGC, STFT, RingBuffer)
-pipewire_client.cpp       # C++ native PipeWire bridge (pvpipe.so, Linux)
+aimic.c + aimic.py         # C audio core → libaimic.so (gcc) + ctypes binding
+pipewire_client.c + pvpipe.py  # native PipeWire bridge → libpvpipe.so (Linux, pure C + ctypes)
 pvplatform/               # platform abstraction: audio/ (enum, SpeakerCapture), system/ (single-instance, virtual mic)
 config_manager.py         # JSON config (migrates legacy keys)
 model_config.py           # ONNX model filename constants
@@ -134,7 +162,7 @@ setup.py                  # C++ extension build
 | Component | Technology |
 |---|---|
 | Desktop GUI | Python + PySide6 |
-| Audio processing | C++ pybind11 + ONNX Runtime (all spectrum/FFT in C++; Python does no scientific computing) |
+| Audio processing | Pure C shared libs (gcc) + ONNX Runtime C API (all spectrum/FFT in C; Python only does ctypes data marshalling) |
 | Linux audio | Native PipeWire (libpipewire); PortAudio/JACK deprecated |
 | Windows audio | WASAPI full-duplex |
 | Server | Python aiohttp + zeroconf + cryptography |

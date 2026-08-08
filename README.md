@@ -26,10 +26,33 @@
 | Linux | Python 3.8+，PipeWire（音频走原生 libpipewire，虚拟麦克风为 null-sink） |
 
 > **Windows 7**：Python 3.8 是最后一个支持 Win7 的 Python，本项目源码与其依赖均保持
-> Python 3.8 兼容（模型 opset 13/14/15，需 onnxruntime ≥1.13）。注意 GUI 栈
+> Python 3.8 兼容（模型 opset 13/14/15，均 ≤16，onnxruntime 定为 1.11.1）。注意 GUI 栈
 > PySide6 6.x（Qt6）本身要求 Windows 10+，Win7 完整桌面支持不在范围内。
 
 ## 快速开始
+
+### 内嵌 Python 3.8（推荐，独立于系统环境）
+
+项目可自带一份独立的 Python 3.8，与系统 Python（可能为 3.14）完全隔离，不会互相影响。
+**Windows** 直接下载预编译包（NuGet）；**Linux** 因无预编译 3.8 可下载，以 **git 子模块**
+`packages/cpython`（CPython@v3.8.20，浅克隆）锁定源码，由引导脚本一次性编译
+（out-of-tree，不污染子模块）。产物都放在 `packages/` 下。
+
+```bash
+# 克隆后先拉子模块（含 CPython 源码）：
+git submodule update --init --depth 1 packages/cpython
+
+# Linux（运行引导脚本即可，自动编译）
+./bootstrap_python38.sh          # -> packages/python38（自包含），并安装依赖
+./py38 run_pyside6.py            # 启动
+./py38 setup.py build_ext --inplace --force   # 编译 libaimic.so + libpvpipe.so（纯 C，gcc）
+
+# Windows（PowerShell，NuGet 下载预编译）
+powershell -ExecutionPolicy Bypass -File bootstrap_python38.ps1   # -> packages\python38w
+# 之后 build_win.ps1 打包会自动使用 packages\python38w\python.exe，独立于系统 Python
+```
+
+若不想用内嵌解释器，也可直接使用系统 Python 3.8+：
 
 ```bash
 # Windows 需追加 -r requirements-win.txt
@@ -42,19 +65,22 @@ python run_pyside6.py
 
 ```bash
 # 系统级依赖（例：AOSC）
-sudo oma install -y pybind11 onnxruntime portaudio pipewire jack
+sudo oma install -y gcc pkgconf pipewire libpipewire-0.3-devel
+
+# 内嵌 3.8 方式（推荐，见上）：
+./bootstrap_python38.sh
+./py38 setup.py build_ext --inplace --force   # 编译纯 C 共享库（libaimic.so + libpvpipe.so）
+./py38 run_pyside6.py
+
+# 或用系统 python3 直接运行：
 pip install --user -r requirements.txt
-
-# 编译 C++ 扩展（aimic.so + pvpipe.so，链接系统 onnxruntime / libpipewire）
-python3 setup.py build_ext --inplace --force
-
-# 运行
 python3 run_pyside6.py
 ```
 
 Linux 音频基于原生 PipeWire：格式协商 F32 单声道 48000Hz，重采样与声道转换由
 PipeWire 负责。虚拟麦克风是单声道 null-sink `purevox_out` 的 monitor，
-其它应用可选 **"PureVox 虚拟麦克风"** 作为输入设备。
+其它应用可选 **"PureVox 虚拟麦克风"** 作为输入设备。AEC 远端采集（回声参考）
+同样是原生 PipeWire（`stream.capture.sink` 监听扬声器输出），不依赖 PyAudio/PortAudio。
 
 ### Windows 远程麦克风附加组件
 
@@ -71,7 +97,7 @@ PipeWire 负责。虚拟麦克风是单声道 null-sink `purevox_out` 的 monito
 powershell -ExecutionPolicy Bypass -File build_win.ps1   # 产出 dist/PureVox_<日期>.exe（自解压）
 ```
 
-脚本包含完整流程：编译 `aimic.pyd` → PyInstaller 打包 → tcl/tk 与无用 PySide6 模块清理 → 7z 自解压 EXE。
+脚本包含完整流程：编译 `aimic.dll`（mingw，待接入）→ PyInstaller 打包 → tcl/tk 与无用 PySide6 模块清理 → 7z 自解压 EXE。
 Windows CI（`.github/workflows/windows.yml`）会执行同样流程并上传 EXE 产物。
 
 ### Linux（deb）
@@ -109,8 +135,8 @@ cd android
 run_pyside6.py            # 启动入口（单实例锁）
 ui_pyside6.py             # 主 UI（PySide6）：面板、设备选择、模式切换
 audio_processor.py        # 核心音频引擎 + TSE 参考录音工具
-aimic.cpp                 # C++ pybind11 扩展（降噪/TSE/AEC/EQ/VAD/AGC、STFT、RingBuffer）
-pipewire_client.cpp       # C++ 原生 PipeWire 桥（pvpipe.so，Linux）
+aimic.c + aimic.py         # C 音频核心 → libaimic.so（gcc）+ ctypes 绑定
+pipewire_client.c + pvpipe.py  # 原生 PipeWire 桥 → libpvpipe.so（Linux，纯 C + ctypes）
 pvplatform/               # 平台抽象：audio/（设备枚举、SpeakerCapture）、system/（单实例/虚拟麦克风）
 config_manager.py         # JSON 配置（旧 key 自动迁移）
 model_config.py           # ONNX 模型文件名常量
@@ -121,7 +147,7 @@ server/                   # 远程麦克风 HTTPS/WSS 服务端（aiohttp + Opus
 html/                     # 浏览器推流前端（AudioWorklet + Opus WASM）
 android/                  # Android 客户端（Kotlin + OkHttp + Opus JNI）
 pack_deb.sh               # Linux deb 打包
-setup.py                  # C++ 扩展编译
+setup.py                  # 纯 C 共享库构建（gcc，产出 libaimic.so + libpvpipe.so）
 ```
 
 ## 技术栈
@@ -129,7 +155,7 @@ setup.py                  # C++ 扩展编译
 | 组件 | 技术 |
 |---|---|
 | 桌面 GUI | Python + PySide6 |
-| 音频处理 | C++ pybind11 + ONNX Runtime（频谱/FFT 全在 C++ 端，Python 不做科学计算） |
+| 音频处理 | 纯 C 共享库（gcc）+ ONNX Runtime C API（频谱/FFT 全在 C 端，Python 仅 ctypes 数据搬运） |
 | Linux 音频 | 原生 PipeWire（libpipewire），PortAudio/JACK 已弃用 |
 | Windows 音频 | WASAPI 全双工 |
 | 服务端 | Python aiohttp + zeroconf + cryptography |

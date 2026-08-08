@@ -5,15 +5,25 @@ $ErrorActionPreference = "Stop"
 
 $date = Get-Date -Format 'yyyy-MM-dd-HHmm'
 
+# 优先用项目内嵌 Python 3.8（bootstrap_python38.ps1 生成于 packages\python38w），
+# 构建独立于系统 Python。未引导时回退到 PATH 上的 python。
+$embeddedPy = Join-Path (Split-Path -Parent $MyInvocation.MyCommand.Path) "packages\python38w\python.exe"
+if (Test-Path $embeddedPy) {
+    $PY = $embeddedPy
+} else {
+    $PY = "python"
+}
+
 # 1. 编译 C++ 扩展 (aimic.pyd)
-python setup.py build_ext --inplace --force
+& $PY setup.py build_ext --inplace --force
+if ($LASTEXITCODE -ne 0) { throw "build_ext 失败" }
 
 # 2. 生成版本号（窗口标题显示构建日期）
 Set-Content _build_version.py "BUILD_DATE = `"$date`"" -Encoding UTF8 -NoNewline
 
 # 3. PyInstaller 打包
 #    lazy-import 的模块必须 hidden-import（函数内 from xx import 不会被静态发现）
-pyinstaller --clean --name PureVox --noconsole --icon=audio_icon_on.ico `
+& $PY -m PyInstaller --clean --name PureVox --noconsole --icon=audio_icon_on.ico `
     --hidden-import=pyaudio `
     --hidden-import=audio_processor `
     --hidden-import=dialog_about `
@@ -33,10 +43,11 @@ pyinstaller --clean --name PureVox --noconsole --icon=audio_icon_on.ico `
     --add-data="html\wasm\*;html\wasm\" `
     --add-data="server\*.py;server\" `
     --add-data="server\opus.dll;server\" `
-    --add-data="packages\onnxruntime-win-x64-1.24.4\lib\onnxruntime.dll;." `
-    --add-data="packages\onnxruntime-win-x64-1.24.4\lib\onnxruntime_providers_shared.dll;." `
+    --add-data="packages\onnxruntime-win-x64-1.11.1\lib\onnxruntime.dll;." `
+    --add-data="packages\onnxruntime-win-x64-1.11.1\lib\onnxruntime_providers_shared.dll;." `
     --exclude-module=pandas,scipy,matplotlib,unittest,tensorflow,torch,PIL `
     -y run_pyside6.py
+if ($LASTEXITCODE -ne 0) { throw "PyInstaller 打包失败" }
 
 # 4. 清理无用文件（~46MB: tcl/tk + 未用的 PySide6 模块）
 Remove-Item dist\PureVox\_internal\tcl86t.dll, dist\PureVox\_internal\tk86t.dll, dist\PureVox\_internal\_tkinter.pyd -Force -ErrorAction SilentlyContinue

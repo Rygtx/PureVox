@@ -3,155 +3,112 @@
 #
 # PureVox is licensed under the GNU General Public License v3.0 or
 # later (GPL-3.0-or-later).  See LICENSE for details.
-# 
+#
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
 # the Free Software Foundation, either version 3 of the License, or
 # (at your option) any later version.
-# 
+#
 # The built-in AI models are NOT covered by the GPL; they are the
 # property of a2heng and may only be used with PureVox under
 # authorization.  See MODEL-LICENSE.md for details.
-# 
+#
 # SPDX-License-Identifier: GPL-3.0-or-later
+#
+# 纯 gcc 构建（无 C++、无 pybind11）：
+#   python setup.py build_ext --inplace --force
+# 产出  libaimic.so   （aimic.c + pffft + libsamplerate，链接捆绑 onnxruntime 1.11.1）
+#       libpvpipe.so  （pipewire_client.c，链接系统 libpipewire-0.3）
+# Python 侧由 aimic.py / pvpipe.py 用 ctypes 加载。
+#
+# onnxruntime 头/库目录环境变量覆盖（CI/pip 场景）：
+#   ORT_INCLUDE_DIR / ORT_LIB_DIR（默认 packages/onnxruntime-linux-x64-1.11.1）
 
-from setuptools import setup, Extension
-from setuptools.command.build_ext import build_ext
-import sys
 import os
+import subprocess
+import sys
 
-# 设置扩展模块名称
-module_name = "aimic"
+from setuptools import setup
+from setuptools.command.build_ext import build_ext as _build_ext
 
-# 设置源文件
-source_files = ["aimic.cpp"]
+ROOT = os.path.dirname(os.path.abspath(__file__))
+IS_LINUX = sys.platform.startswith("linux")
 
-# libsamplerate 源文件
-libsamplerate_source_files = [
-    "packages/libsamplerate/samplerate.c",
-    "packages/libsamplerate/src_sinc.c",
-    "packages/libsamplerate/src_linear.c",
-    "packages/libsamplerate/src_zoh.c"
-]
-
-# 设置PFFFT源文件
-pffft_source_files = [
+PFFFT_SOURCES = [
     "packages/pffft/pffft.c",
     "packages/pffft/pffft_double.c",
     "packages/pffft/pffastconv.c",
-    "packages/pffft/pffft_common.c"
+    "packages/pffft/pffft_common.c",
 ]
 
-# 设置头文件目录
-import pybind11
-
-# 获取pybind11的include路径
-pybind11_include = pybind11.get_include()
-
-# ── 平台相关配置（Windows 用捆绑的 onnxruntime SDK；Linux/macOS 用系统安装的 libonnxruntime） ──
-IS_WINDOWS = sys.platform.startswith("win")
-IS_LINUX = sys.platform.startswith("linux")
-IS_MACOS = sys.platform == "darwin"
-
-if IS_WINDOWS:
-    ORT_SDK = "packages/onnxruntime-win-x64-1.24.4"
-    onnxruntime_include = f"{ORT_SDK}/include"
-    onnxruntime_libdir = f"{ORT_SDK}/lib"
-    # 链接的库：Windows 需要 providers_shared
-    onnx_libraries = ["onnxruntime", "onnxruntime_providers_shared"]
-    extra_compile_args = [
-        "/O2",               # 优化级别
-        "/std:c++17",        # C++17标准
-        "/arch:AVX2",        # 启用AVX2指令集
-        "/MT",               # 静态链接MSVC运行时
-        "/DHAVE_CONFIG_H",   # libsamplerate 配置头
-    ]
-    extra_link_args = []
-else:
-    # Linux/macOS：默认系统级 onnxruntime（oma 包 onnxruntime，/usr/include/onnxruntime + /usr/lib）。
-    # CI / pip 安装场景可用环境变量覆盖（ORT_INCLUDE_DIR / ORT_LIB_DIR 指向 onnxruntime wheel）。
-    onnxruntime_include = os.environ.get("ORT_INCLUDE_DIR", "/usr/include/onnxruntime")
-    onnxruntime_libdir = os.environ.get("ORT_LIB_DIR", "/usr/lib")
-    onnx_libraries = ["onnxruntime"]
-    extra_compile_args = [
-        "-O2",
-        "-std=c++17",
-        "-mavx2",
-        "-fPIC",
-        "-DHAVE_CONFIG_H",
-    ]
-    extra_link_args = []
-
-include_dirs = [
-    "packages/pffft",
-    onnxruntime_include,
-    "packages/libsamplerate",
-    pybind11_include,
-    os.path.join(pybind11_include, "pybind11")
+LIBSAMPLERATE_SOURCES = [
+    "packages/libsamplerate/samplerate.c",
+    "packages/libsamplerate/src_sinc.c",
+    "packages/libsamplerate/src_linear.c",
+    "packages/libsamplerate/src_zoh.c",
 ]
 
-library_dirs = [
-    onnxruntime_libdir
-]
 
-# 创建扩展模块
-extension = Extension(
-    module_name,
-    sources=source_files + pffft_source_files + libsamplerate_source_files,
-    include_dirs=include_dirs,
-    library_dirs=library_dirs,
-    libraries=onnx_libraries,
-    extra_compile_args=extra_compile_args,
-    extra_link_args=extra_link_args,
-    language="c++"
-)
+def _abs(*parts):
+    return os.path.join(ROOT, *parts)
 
-# Linux：原生 PipeWire 桥接扩展（pvpipe，链接系统 libpipewire-0.3）。
-# 声明 F32 单声道 48000Hz，PipeWire 负责重采样与声道转换。
-ext_modules = [extension]
-if IS_LINUX:
-    import subprocess as _sp
-    pw_cflags = _sp.run(["pkg-config", "--cflags", "libpipewire-0.3"],
-                        capture_output=True, text=True).stdout.strip()
-    pw_libs = _sp.run(["pkg-config", "--libs", "libpipewire-0.3"],
-                      capture_output=True, text=True).stdout.strip()
-    pw_extension = Extension(
-        "pvpipe",
-        sources=["pipewire_client.cpp"],
-        include_dirs=[pybind11_include, os.path.join(pybind11_include, "pybind11")],
-        libraries=["pipewire-0.3"],
-        extra_compile_args=["-O2", "-std=c++17", "-fPIC"] + pw_cflags.split(),
-        extra_link_args=pw_libs.split(),
-        language="c++"
-    )
-    ext_modules.append(pw_extension)
 
-# 自定义构建命令
-class BuildExt(build_ext):
-    def build_extensions(self):
-        # 确保使用MSVC编译器（仅 Windows）
-        if self.compiler.compiler_type == 'msvc':
-            # 添加额外的编译选项
-            for ext in self.extensions:
-                ext.extra_compile_args.extend([
-                    "/EHsc",  # 异常处理
-                    "/DNDEBUG",  # 禁用调试信息
-                    "/DONNXruntime_API=__declspec(dllimport)"
-                ])
-        build_ext.build_extensions(self)
+class BuildExt(_build_ext):
+    def run(self):
+        if IS_LINUX:
+            self._build_aimic_linux()
+            self._build_pvpipe_linux()
+        else:
+            raise SystemExit(
+                "PureVox setup.py build_ext 目前仅支持 Linux/gcc（Windows 走 mingw，见 build_win.ps1）")
 
-# 设置setup参数
+    def _build_aimic_linux(self):
+        cc = os.environ.get("CC", "gcc")
+        ort_inc = os.environ.get("ORT_INCLUDE_DIR",
+                                 _abs("packages", "onnxruntime-linux-x64-1.11.1", "include"))
+        ort_lib = os.environ.get("ORT_LIB_DIR",
+                                 _abs("packages", "onnxruntime-linux-x64-1.11.1", "lib"))
+        sources = [_abs("aimic.c")] + [_abs(s) for s in PFFFT_SOURCES + LIBSAMPLERATE_SOURCES]
+        cmd = [
+            cc, "-O2", "-fPIC", "-mavx2", "-std=gnu11", "-DHAVE_CONFIG_H",
+            "-I" + _abs("packages", "pffft"),
+            "-I" + _abs("packages", "libsamplerate"),
+            "-I" + ort_inc,
+        ] + sources + [
+            "-L" + ort_lib, "-lonnxruntime",
+            "-lm", "-pthread",
+            "-shared",
+            "-o", _abs("libaimic.so"),
+        ]
+        self._run(cmd)
+
+    def _build_pvpipe_linux(self):
+        cc = os.environ.get("CC", "gcc")
+        cflags = subprocess.run(["pkg-config", "--cflags", "libpipewire-0.3"],
+                                capture_output=True, text=True).stdout.strip().split()
+        libs = subprocess.run(["pkg-config", "--libs", "libpipewire-0.3"],
+                              capture_output=True, text=True).stdout.strip().split()
+        cmd = [
+            cc, "-O2", "-fPIC",
+        ] + cflags + [
+            _abs("pipewire_client.c"),
+        ] + libs + [
+            "-shared",
+            "-o", _abs("libpvpipe.so"),
+        ]
+        self._run(cmd)
+
+    @staticmethod
+    def _run(cmd):
+        print("+ " + " ".join(cmd))
+        subprocess.check_call(cmd)
+
+
 setup(
-    name=module_name,
+    name="purevox-aimic",
     version="1.0.0",
-    description="基于 ONNX Runtime 和 PFFFT 的音频处理模块",
-    author="",
-    author_email="",
-    ext_modules=ext_modules,
-    cmdclass={
-        'build_ext': BuildExt
-    },
-    install_requires=[
-        "pybind11==3.0.1"
-    ]
+    description=("Pure Vox pure C audio engine (aimic.c / pipewire_client.c) "
+                 "shared libraries + ctypes binding"),
+    cmdclass={"build_ext": BuildExt},
+    ext_modules=[],
 )

@@ -30,13 +30,19 @@ from ctypes import wintypes, POINTER, byref, cast, c_void_p
 import io
 import math
 import os
-import pyaudio
 import socket
 import struct
 import threading
 import time
 import wave
-from typing import List, Optional, Callable, Tuple
+from typing import Any, List, Optional, Callable, Tuple
+
+# PyAudio（PortAudio）仅 Windows/macOS 后端使用；Linux 走原生 PipeWire，
+# 允许无 PyAudio 环境运行。引用点都在非 Linux 执行路径内。
+try:
+    import pyaudio
+except ImportError:
+    pyaudio = None  # type: ignore
 
 # Module-level log hook — set by ui.py to sync console + UI log.
 _module_log = print
@@ -304,7 +310,7 @@ class AudioThread(threading.Thread):
         self._pw_ports: Tuple[str, str, str] = ("", "", "")  # (input, output, monitor)
         self._channels: int = 1                     # 设备通道数，在 _create_stream 中确定
         self._output_buffer = None  # L3:网络输出缓冲 (aimic.RingBuffer 或 None)
-        self._output_stream: Optional[pyaudio.Stream] = None
+        self._output_stream: Optional[Any] = None
         self._out_channels: int = 1
         self._accum: List[float] = []  # 回调帧累积（frame_count→hop_length）
         self._monitor_ch: int = 1
@@ -316,9 +322,9 @@ class AudioThread(threading.Thread):
         # 流就绪事件：_create_stream 成功后 set()，失败时记录 _start_error
         self._ready_event: threading.Event = threading.Event()
         self._start_error: Optional[str] = None
-        self._p: Optional[pyaudio.PyAudio] = None
-        self._stream: Optional[pyaudio.Stream] = None
-        self._monitor_stream: Optional[pyaudio.Stream] = None
+        self._p: Optional[Any] = None
+        self._stream: Optional[Any] = None
+        self._monitor_stream: Optional[Any] = None
         self._monitor_buffer = aimic.RingBuffer(SAMPLE_RATE // 5)   # 200ms  L2:监听桥接
         self._vu_peak: float = 0.0  # L4:VU峰值快照（最新帧dBFS）
         self._spectrum_in: RingBuffer = RingBuffer(SAMPLE_RATE * 2)   # L4:频谱输入 2s
@@ -333,6 +339,7 @@ class AudioThread(threading.Thread):
         # ── AEC（SpeakerCapture 采集扬声器音频，AEC 处理在 C++ 侧）──
         self._aec_enabled: bool = False
         self._speaker_capture: Optional[SpeakerCapture] = None
+        self._aec_far_sink: str = ""  # AEC far 端手动选择的扬声器 sink（node.name）
 
     def set_pw_ports(self, input_name: str, output_name: str,
                      monitor_name: str = "") -> None:
@@ -342,6 +349,23 @@ class AudioThread(threading.Thread):
         """
         self._use_pw = bool(input_name or output_name) and IS_LINUX
         self._pw_ports = (input_name or "", output_name or "", monitor_name or "")
+
+    def set_aec_far_sink(self, sink_name: str) -> bool:
+        """运行时切换 AEC far 端扬声器 sink（Linux PipeWire，capture.sink 重挂）。
+
+        AEC 未启用时仅记录目标；已启用时先停后开以换到新 sink。
+        """
+        self._aec_far_sink = sink_name or ""
+        if self._speaker_capture is not None and IS_LINUX:
+            was_enabled = self._aec_enabled
+            if was_enabled:
+                self.set_aec_enabled(False)
+            if was_enabled:
+                if self.set_aec_enabled(True):
+                    _module_log(f"[AEC] far 端扬声器切换: {self._aec_far_sink or '(自动物理扬声器)'}")
+                    return True
+                return False
+        return True
 
     def set_bypass(self, bypass: bool) -> None:
         """直通模式：跳过 C++ 处理，纯重采样透传。"""
@@ -367,9 +391,19 @@ class AudioThread(threading.Thread):
             return True
         if enabled:
             try:
-                self._speaker_capture = SpeakerCapture(
-                    on_device_changed=self._on_speaker_device_changed
-                )
+                if IS_LINUX and self._use_pw:
+                    # Linux：AEC far 走原生 PipeWire（capture.sink 监听扬声器输出）
+                    # far 端方向优先用手动选择（_aec_far_sink），否则跟监听端口。
+                    far_sink = self._aec_far_sink or self._pw_ports[2]
+                    self._speaker_capture = SpeakerCapture(
+                        on_device_changed=self._on_speaker_device_changed,
+                        pw_bridge=self._pw_bridge,
+                        far_sink=far_sink,
+                    )
+                else:
+                    self._speaker_capture = SpeakerCapture(
+                        on_device_changed=self._on_speaker_device_changed
+                    )
                 if not self._speaker_capture.start():
                     _module_log("[AEC] speaker capture failed")
                     self._speaker_capture = None
@@ -477,6 +511,10 @@ class AudioThread(threading.Thread):
                         + (f"  监听: {mon_name}" if mon_name else ""))
             _module_log("[PipeWire] F32 单声道 48000Hz 协商（PipeWire 负责重采样/声道转换）")
             return
+
+        if IS_LINUX:
+            # Linux 强制原生 PipeWire：不落 PortAudio/PyAudio 备选
+            raise OSError("Linux 音频仅支持原生 PipeWire（未配置输入/输出节点或 pvpipe 不可用）")
 
         self._p = pyaudio.PyAudio()
         if self._p is None:
@@ -753,7 +791,7 @@ class AudioThread(threading.Thread):
         return callback
 
 
-    def _close_stream_safely(self, stream: Optional[pyaudio.Stream], stream_name: str = "stream") -> None:
+    def _close_stream_safely(self, stream: Optional[Any], stream_name: str = "stream") -> None:
         if stream is not None:
             try:
                 stream.stop_stream()
@@ -761,7 +799,7 @@ class AudioThread(threading.Thread):
             except Exception as e:
                 print(f"[WARN] Error closing {stream_name}: {e}")
 
-    def _create_monitor_stream(self) -> Optional[pyaudio.Stream]:
+    def _create_monitor_stream(self) -> Optional[Any]:
         if self._monitor_id is None or self._monitor_id < 0:
             return None
 
@@ -1536,7 +1574,7 @@ def default_api_type() -> int:
     return _device_api.platform_default_api_type()
 
 
-def _get_host_api_indices(p: pyaudio.PyAudio, api_type: int) -> List[int]:
+def _get_host_api_indices(p: Any, api_type: int) -> List[int]:
     """获取指定 API 类型的 host API 索引列表（平台感知，按名字匹配）。"""
     return _device_api.get_host_api_indices(p, api_type)
 

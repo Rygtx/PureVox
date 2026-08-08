@@ -8,9 +8,9 @@
 #   /usr/share/applications/purevox.desktop
 #   /usr/share/icons/hicolor/256x256/apps/purevox.png
 #
-# Depends: python-3, pyside6, onnxruntime, zeroconf, aiohttp, cryptography,
-#          portaudio, opus, pipewire（libpipewire 原生音频）
-# PyAudio/opuslib 系统包缺则 pip install --user（写进 Recommends）
+# Depends: python-3, pyside6, zeroconf, aiohttp, cryptography, opus,
+#          pipewire（libpipewire 原生音频）；onnxruntime 捆绑预编译 1.11.1
+# opuslib 系统包缺则 pip install --user（写进 Recommends）
 
 set -euo pipefail
 cd "$(dirname "$0")"
@@ -25,8 +25,10 @@ STAGE="${TMPDIR:-/tmp}/purevox_deb_build"
 ROOT="$STAGE/root"
 CONTROL="$ROOT/DEBIAN/control"
 
-echo "==> 构建 C++ 扩展 (aimic + pvpipe)"
+echo "==> 构建纯 C 共享库 (libaimic.so + libpvpipe.so)"
 python3 setup.py build_ext --inplace --force >/dev/null
+[ -f "libaimic.so" ] || { echo "缺少 libaimic.so"; exit 1; }
+[ -f "libpvpipe.so" ] || { echo "缺少 libpvpipe.so"; exit 1; }
 
 echo "==> 准备打包目录 $STAGE"
 rm -rf "$STAGE"
@@ -41,12 +43,16 @@ for f in \
     audio_processor.py config_manager.py dialog_about.py dialog_eq.py logger.py \
     model_config.py run_pyside6.py spectrum_histogram.py theme_colors.py \
     dialog_tse_reference.py ui_pyside6.py user_paths.py wav_io.py \
+    aimic.py pvpipe.py \
     aec9_ep0544.onnx tse15_stream_ep_0673.onnx v9_fft2048_band256_epoch_261.onnx \
     audio_icon_off.ico audio_icon_on.ico; do
     cp "$f" "$ROOT/opt/purevox/"
 done
-cp aimic.cpython-314-x86_64-linux-gnu.so "$ROOT/opt/purevox/"
-cp pvpipe.cpython-314-x86_64-linux-gnu.so "$ROOT/opt/purevox/"
+cp "libaimic.so" "$ROOT/opt/purevox/"
+cp "libpvpipe.so" "$ROOT/opt/purevox/"
+
+echo "==> 拷贝捆绑的 onnxruntime 1.11.1 动态库（aimic 链接 libonnxruntime.so.1.11.1）"
+cp packages/onnxruntime-linux-x64-1.11.1/lib/libonnxruntime.so* "$ROOT/opt/purevox/"
 
 echo "==> 拷贝 html/"
 cp -r html "$ROOT/opt/purevox/"
@@ -63,6 +69,8 @@ echo "==> /usr/bin/purevox 启动脚本"
 cat > "$ROOT/usr/bin/purevox" <<'EOF'
 #!/bin/sh
 # PureVox — AI 麦克风降噪
+# /opt/purevox 下的 libaimic.so 链捆绑的预编译 onnxruntime（libonnxruntime.so*），提前注入 LD_LIBRARY_PATH
+export LD_LIBRARY_PATH="/opt/purevox${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 cd /opt/purevox || exit 1
 exec /usr/bin/python3 /opt/purevox/run_pyside6.py "$@"
 EOF
@@ -105,15 +113,15 @@ Section: sound
 Priority: optional
 Architecture: $ARCH
 Maintainer: a2heng <752848283@qq.com>
-Depends: python-3 (>= 3.13), pyside6, onnxruntime, zeroconf, aiohttp, cryptography, portaudio, opus, pipewire
-Recommends: python3-pyaudio, opuslib
+Depends: python-3 (>= 3.13), pyside6, zeroconf, aiohttp, cryptography, opus, pipewire
+Recommends: opuslib
 Description: PureVox — Real-time AI microphone noise reduction
  Real-time AI audio denoising / target speech extraction / echo cancellation
  for the local microphone, with remote network streaming support.
  PureVox 实时 AI 麦克风降噪/目标提取/回声消除。
  .
- Python 依赖（PyAudio、opuslib）若系统包管理器未提供，
- 请用用户级安装: pip install --user PyAudio opuslib
+ Python 依赖（opuslib）若系统包管理器未提供，
+ 请用用户级安装: pip install --user opuslib
  .
  Linux 音频基于原生 PipeWire（libpipewire），格式协商 F32 单声道 48000Hz，
  重采样与声道转换由 PipeWire 负责。虚拟麦克风为单声道 null-sink

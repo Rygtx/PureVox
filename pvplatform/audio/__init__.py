@@ -25,24 +25,27 @@
         接口：start() -> bool, stop(), read(n) -> Optional[list],
               dev_sr(int), active(bool), flush()。
 
-    create_speaker_capture(on_device_changed=None)
+    create_speaker_capture(on_device_changed=None, pw_bridge=None, far_sink="")
         工厂函数，按当前平台返回具体后端实例：
         - Windows: WASAPI loopback（COM）
-        - Linux:   PulseAudio "Monitor of <sink>"（经 pactl/ctypes 探测回退）
+        - Linux:   原生 PipeWire capture.sink（复用已有 PwBridge，AEC far 流）
         - macOS:   预留
+    pw_bridge / far_sink 仅 Linux 使用：pw_bridge 为已打开的 PwBridge；
+    far_sink 为扬声器 sink 节点名（空则取物理扬声器兜底）。
 """
 
 from .. import IS_WINDOWS, IS_LINUX, IS_MACOS
 
 
-def create_speaker_capture(on_device_changed=None):
+def create_speaker_capture(on_device_changed=None, pw_bridge=None, far_sink=""):
     """按平台创建 SpeakerCapture 实例。"""
     if IS_WINDOWS:
         from .speaker_capture_win import SpeakerCaptureWin
         return SpeakerCaptureWin(on_device_changed=on_device_changed)
     if IS_LINUX:
         from .speaker_capture_linux import SpeakerCaptureLinux
-        return SpeakerCaptureLinux(on_device_changed=on_device_changed)
+        return SpeakerCaptureLinux(on_device_changed=on_device_changed,
+                                   bridge=pw_bridge, sink_name=far_sink)
     if IS_MACOS:
         from .speaker_capture_macos import SpeakerCaptureMacOS
         return SpeakerCaptureMacOS(on_device_changed=on_device_changed)

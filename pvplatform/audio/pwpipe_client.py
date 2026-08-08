@@ -16,7 +16,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 
 """
-Linux 原生 PipeWire 输入/输出（pybind11 扩展 pvpipe 的薄封装）。
+Linux 原生 PipeWire 输入/输出（ctypes 绑定 pvpipe 的薄封装）。
 
 为什么用原生 PipeWire（取代旧 GStreamer / JACK）：
   - 格式协商声明 F32 单声道 48000Hz，PipeWire 内置重采样 + 声道转换，
@@ -74,6 +74,7 @@ def _list_nodes() -> List[Dict[str, str]]:
             "description": p.get("node.description", ""),
             "media_class": p.get("media.class", ""),
             "api_alsa_path": p.get("api.alsa.path", ""),
+            "device_bus": p.get("device.bus", ""),
             "state": info.get("state", ""),
         })
     return nodes
@@ -87,6 +88,10 @@ def _is_phantom_route(node: Dict[str, str]) -> bool:
     """
     if node.get("state") == "error":
         return True
+    # USB 设备上的 hw:card（无 ,设备）是真实采集（如 hw:1/hw:2），不是幻影路由。
+    # 幻影路由只出现在内部/板载（platform/sof 类）卡，打开也是静音。
+    if (node.get("device_bus") or "").strip().lower() == "usb":
+        return False
     path = (node.get("api_alsa_path") or "").strip().lower()
     if not path:
         return False
@@ -190,6 +195,18 @@ def default_sink_name() -> str:
     return ""
 
 
+def speaker_sink_name() -> str:
+    """物理扬声器 sink 名（AEC far 兜底目标）。
+
+    优先非 PureVox 的真实输出；只有虚拟麦克风时返回 ""（无实梅西扬，AEC 静默降级）。
+    """
+    dsts = list_destinations()
+    for d in dsts:
+        if d != "purevox_out" and not d.startswith("purevox"):
+            return d
+    return ""
+
+
 class PwBridge:
     """PureVox 原生 PipeWire 桥：input 采集 + output 播放 + 可选 monitor 监听。
 
@@ -224,6 +241,15 @@ class PwBridge:
     def sample_rate(self) -> int:
         return int(self._bridge.sample_rate()) if self.available else 0
 
+    def read(self, n: int) -> Optional[List[float]]:
+        if not self.available:
+            return None
+        return self._bridge.read(n)
+
+    def write(self, samples: List[float]) -> None:
+        if self.available and samples:
+            self._bridge.write(samples)
+
     def set_monitor(self, monitor_name: str, enabled: bool) -> None:
         """运行时开关监听流（与输出同一路降噪音频）。"""
         if not self.available:
@@ -234,11 +260,16 @@ class PwBridge:
         elif not enabled:
             self._bridge.set_monitor(self._monitor_name, False)
 
-    def read(self, n: int) -> Optional[List[float]]:
+    def set_far(self, sink_name: str, enabled: bool) -> bool:
+        """运行时开关 AEC far 采集流（capture.sink 监听 sink 输出）。
+
+        sink_name = 扬声器 sink 节点名（如 alsa_output.…analog-stereo）。
+        """
+        if not self.available:
+            return False
+        return self._bridge.set_far(sink_name or "", enabled)
+
+    def read_far(self, n: int) -> Optional[List[float]]:
         if not self.available:
             return None
-        return self._bridge.read(n)
-
-    def write(self, samples: List[float]) -> None:
-        if self.available and samples:
-            self._bridge.write(samples)
+        return self._bridge.read_far(n)

@@ -61,7 +61,12 @@ from audio_processor import (
     register_tse_audio_hook, _recorder,
     _samples_to_wav_bytes, CFG_REF_WAV_PATH,
 )
-import pyaudio
+try:
+    import pyaudio  # noqa: E402
+except ImportError:
+    pyaudio = None  # type: ignore
+# pyaudio（PortAudio）仅 Windows/macOS 专用；Linux 全程原生 PipeWire，
+# 本模块对 pyaudio 的引用都在 Linux 不可达的 48k 检测分支内。
 from config_manager import ConfigManager
 from logger import Logger, log, get_logger
 from model_config import DENOISE_MODEL, TSE_MODEL, AEC_MODEL
@@ -120,6 +125,12 @@ def _jack_default_sink() -> str:
     """Linux 默认输出：PureVox 虚拟麦克风 sink 节点名。"""
     from pvplatform.audio.pwpipe_client import default_sink_name
     return default_sink_name()
+
+
+def _jack_default_far() -> str:
+    """Linux AEC far 兜底：物理扬声器 sink（排除 PureVox 虚拟麦克风）。"""
+    from pvplatform.audio.pwpipe_client import speaker_sink_name
+    return speaker_sink_name()
 
 
 def _combo_value(combo) -> str:
@@ -808,6 +819,32 @@ class MainPanel(QWidget):
 
     def _update_mode_ui(self):
         self._ref_btn.setVisible(self._mode == MODE_TSE)
+        in_aec = self._mode == MODE_AEC
+        # AEC 模式：把「监听」行变成 AEC 状态标签 + 手动 far 端选择
+        self._monitor_cb.setText("AEC" if in_aec else "监听")
+        self._monitor_cb.setEnabled(not in_aec)
+        self._monitor_cb.blockSignals(True)
+        self._monitor_cb.setChecked(in_aec or self._config.get("monitor_enabled", False))
+        self._monitor_cb.blockSignals(False)
+        if in_aec:
+            self._monitor_cb.setToolTip(
+                "AEC — 回声消除 + 降噪\n"
+                "自动采集下方所选扬声器的声音作参考\n"
+                "（手动选择 far 端设备）")
+            self._monitor_combo.setToolTip(
+                "AEC far 端设备：\n"
+                "回声消除需要参考正在出声的扬声器。\n"
+                "手动选择实际在播放的设备；\n"
+                "留空/自动时用系统物理扬声器兜底。")
+        else:
+            self._monitor_cb.setToolTip(
+                "监听（耳返）：\n"
+                "将处理后的声音实时回放到指定设备，\n"
+                "让你能听到自己说话的效果。\n"
+                "右侧下拉框选择监听用的设备，\n"
+                "通常是你的耳机。")
+            self._monitor_combo.setToolTip(
+                "监听设备 — 耳返输出的目标设备")
 
     def _on_mode_changed(self, val):
         if val == self._mode:
@@ -924,8 +961,9 @@ class MainPanel(QWidget):
             name = _combo_value(self._input_combo if is_input else self._output_combo)
             self._config.set('input_device' if is_input else 'output_device', name)
             self._save()
-            # 切换输出设备时，若监听与输出相同则自动关闭
-            if not is_input and self._monitor_cb.isChecked() and self._is_monitor_same_as_output():
+            # 切换输出设备时，若监听与输出相同则自动关闭（非 AEC 模式）
+            if (not is_input and self._mode != MODE_AEC
+                    and self._monitor_cb.isChecked() and self._is_monitor_same_as_output()):
                 self._monitor_cb.setChecked(False)
                 self._log.dev("监听与输出设备相同，已关闭监听")
             if self._on_device_changed:
@@ -936,6 +974,15 @@ class MainPanel(QWidget):
     def _handle_monitor_changed(self):
         try:
             name = _combo_value(self._monitor_combo)
+            if self._mode == MODE_AEC:
+                # AEC 模式：下拉框是手动 far 端设备选择
+                self._config.set('aec_far_sink', name)
+                self._save()
+                if self._get_thread:
+                    th = self._get_thread()
+                    if th and hasattr(th, 'set_aec_far_sink'):
+                        th.set_aec_far_sink(name)
+                return
             self._config.set('monitor_device', name)
             self._save()
             if self._monitor_cb.isChecked() and self._get_thread:
@@ -958,6 +1005,9 @@ class MainPanel(QWidget):
 
     def _on_monitor_toggled(self, on):
         try:
+            if self._mode == MODE_AEC:
+                # AEC 模式：复选框是静态「AEC」状态标签，不处理监听开关
+                return
             if on and not _combo_value(self._monitor_combo):
                 self._monitor_cb.setChecked(False)
                 self._log.dev("请先选择监听设备")
@@ -1191,7 +1241,10 @@ class MainPanel(QWidget):
                 preferred = next((d for d in out if "CABLE Input" in d), None) if IS_WINDOWS else None
                 self._output_combo.setCurrentText(preferred or out[0])
 
-            # 监听设备：Linux 按 node.name（userData）选，其余按文本选
+            # 监听/AEC far 设备：Linux 按 node.name（userData）选，其余按文本选
+            in_aec = self._mode == MODE_AEC
+            sm = self._config.get("aec_far_sink") if in_aec else self._config.get("monitor_device")
+            mon_selected = False
             if IS_LINUX:
                 mon_selected = _set_by_port(self._monitor_combo, sm)
             else:
@@ -1200,20 +1253,28 @@ class MainPanel(QWidget):
                     self._monitor_combo.setCurrentText(sm)
             if not mon_selected:
                 if out:
-                    self._monitor_combo.setCurrentIndex(0)
-                if self._monitor_cb.isChecked():
+                    if in_aec and IS_LINUX:
+                        # AEC far 未配置：默认物理扬声器兜底
+                        if not _set_by_port(self._monitor_combo, _jack_default_far()):
+                            self._monitor_combo.setCurrentIndex(0)
+                    else:
+                        self._monitor_combo.setCurrentIndex(0)
+                if not in_aec and self._monitor_cb.isChecked():
                     self._monitor_cb.setChecked(False)
-            else:
+                self._save()
+            elif not in_aec:
                 should_monitor = self._config.get("monitor_enabled", False)
                 if should_monitor != self._monitor_cb.isChecked():
                     self._monitor_cb.setChecked(should_monitor)
+            # AEC 模式：复选框是静态「AEC」状态标签，保持勾选（由 _update_mode_ui 维护）
 
             self._input_combo.blockSignals(False)
             self._output_combo.blockSignals(False)
             self._monitor_combo.blockSignals(False)
 
-            # 启动时若监听与输出相同则自动关闭
-            if self._monitor_cb.isChecked() and self._is_monitor_same_as_output():
+            # 启动时若监听与输出相同则自动关闭（非 AEC 模式）
+            if (not in_aec and self._monitor_cb.isChecked()
+                    and self._is_monitor_same_as_output()):
                 self._monitor_cb.setChecked(False)
                 self._config.set("monitor_enabled", False)
 
@@ -1737,7 +1798,9 @@ def start_processing(state, log):
             mp_in = _combo_value(state.main_panel._input_combo) if hasattr(state.main_panel, '_input_combo') else ""
             mp_out = _combo_value(state.main_panel._output_combo) if hasattr(state.main_panel, '_output_combo') else ""
             mp_mon = _combo_value(state.main_panel._monitor_combo) if hasattr(state.main_panel, '_monitor_combo') else ""
-            mon_on = state.main_panel._monitor_cb.isChecked() if hasattr(state.main_panel, '_monitor_cb') else False
+            # AEC 模式：监听被禁用（复选框只是 AEC 状态标签），不建监听流
+            mon_on = (state.main_panel._monitor_cb.isChecked()
+                      if hasattr(state.main_panel, '_monitor_cb') else False) and mode != MODE_AEC
             pw_ports = (mp_in, mp_out, mp_mon if mon_on else "")
             if not mp_in or not mp_out:
                 log.err("请选择 PipeWire 输入与输出节点")
@@ -1923,6 +1986,13 @@ def start_processing(state, log):
 
         # ── 后续：AEC 扬声器采集 ──
         if mode == MODE_AEC and state.processing_thread:
+            fac_sink = ""
+            if state.config:
+                fac_sink = state.config.get("aec_far_sink", "") or ""
+            if use_pw and hasattr(state.main_panel, '_monitor_combo'):
+                # 手动 far 端：下拉框当前选中值（AEC 模式下该行即 far 选择）
+                fac_sink = _combo_value(state.main_panel._monitor_combo) or fac_sink
+            state.processing_thread.set_aec_far_sink(fac_sink)
             if not state.processing_thread.set_aec_enabled(True):
                 QMessageBox.warning(None, "PureVox",
                     "AEC 扬声器采集启动失败。\n\n请确认默认播放设备可用。")

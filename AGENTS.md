@@ -2,7 +2,7 @@
 
 Windows / Linux 桌面应用 + Android 客户端：实时 AI 音频降噪 / 目标说话人提取 / 回声消除，支持本地麦克风和远程网络推流。
 
-**栈**: Python 3.8+（最低；Win7 需 3.8）+ PySide6 + C++ pybind11 扩展 + ONNX Runtime（≥1.13，模型 opset 13/14/15）
+**栈**: Python 3.8+（最低；Win7 需 3.8）+ PySide6 + 纯 C 共享库（gcc/mingw 编译，ctypes 绑定）+ ONNX Runtime（==1.11.1，模型 opset 13/14/15，均 ≤16）
 **桌面入口**: `python run_pyside6.py`
 **Android 入口**: `android/` — Kotlin + OkHttp + Opus JNI
 
@@ -28,14 +28,26 @@ Windows / Linux 桌面应用 + Android 客户端：实时 AI 音频降噪 / 目�
 
 ## 运行 / 构建
 
+**内嵌 Python 3.8（推荐，独立于系统环境）**：本项目可自带独立 Python 3.8，
+与系统 Python（如 3.14）完全隔离。Windows 走 NuGet 下载预编译包；Linux 无预编译
+3.8 可下，源码以 **git 子模块** `packages/cpython`（CPython@v3.8.20）锁定，
+由引导脚本 out-of-tree 一次性编译。产物统一放 `packages/`。
+
+- 克隆后先 `git submodule update --init --depth 1 packages/cpython` 拉子模块
+- `./bootstrap_python38.sh`（Linux，幂等）→ 生成自包含 `packages/python38/` + 装依赖
+- `./bootstrap_python38.ps1`（Windows）→ 生成 `packages\python38w\`（NuGet 完整版，含头文件/链接库）
+- 内嵌解释器与系统 Python 互相独立；`packages/python38*`、`.py38-src/` 不进版本库（gitignore）
+
 ### Windows (PowerShell)
 
 ```powershell
 chcp 65001
+# 方式一（内嵌 3.8，推荐）：
+powershell -ExecutionPolicy Bypass -File bootstrap_python38.ps1
+# 方式二（系统 Python）：pip install -r requirements.txt -r requirements-win.txt
 python run_pyside6.py
-python setup.py build_ext --inplace --force     # 编译 aimic.pyd
-powershell -ExecutionPolicy Bypass -File build_win.ps1   # 打包 EXE（build_ext + pyinstaller + tcl/tk 清理 + 7z 自解压）
-pip install -r requirements.txt -r requirements-win.txt # 依赖
+powershell -ExecutionPolicy Bypass -File build_win.ps1   # 打包 EXE（自动用 packages\python38w\python.exe）
+# 注：Windows 侧 aimic.dll 的 mingw 构建改造待接入（目前 setup.py 仅支持 Linux/gcc）
 ```
 
 ### Linux
@@ -43,16 +55,20 @@ pip install -r requirements.txt -r requirements-win.txt # 依赖
 依赖因发行版而异（Ubuntu / Fedora / AOSC 包名不同，参考 `.github/workflows/linux.yml` 与 README）。AOSC 示例：
 
 ```bash
-sudo oma install -y pybind11 onnxruntime portaudio pipewire jack
-pip install --user -r requirements.txt
-python3 setup.py build_ext --inplace --force   # 产出 aimic.so + pvpipe.so（链接系统 libonnxruntime / libpipewire-0.3）
-python3 run_pyside6.py
+sudo oma install -y gcc pkgconf pipewire libpipewire-0.3-devel
+# 内嵌 3.8（推荐）：
+./bootstrap_python38.sh
+./py38 setup.py build_ext --inplace --force   # 产出 libaimic.so + libpvpipe.so
+./py38 run_pyside6.py
 bash pack_deb.sh                              # 打包 deb → dist/purevox_<ver>_amd64.deb
 ```
 
-deb 布局：`/opt/purevox/` 放全部源码+.so+模型+html；`/usr/bin/purevox` 启动脚本；
-`/usr/share/applications/purevox.desktop` + hicolor 图标。Depends 按 AOSC 包名，
-PyAudio/opuslib 缺失时 `pip install --user`（写进 Recommends）。`server/opus.dll` 是 Windows 的，不入 deb。
+deb 布局：`/opt/purevox/` 放全部源码+libaimic.so/libpvpipe.so+模型+html+捆绑的 `libonnxruntime.so*`（1.11.1）；
+`/usr/bin/purevox` 启动脚本（先导出 `LD_LIBRARY_PATH=/opt/purevox` 再 exec）。
+`/usr/share/applications/purevox.desktop` + hicolor 图标。Depends 按 AOSC 包名（无 onnxruntime，
+PT 已捆绑）。`server/opus.dll`
+是 Windows 的，不入 deb。`.so` 为固定名 `libaimic.so`/`libpvpipe.so`（不再用 `sysconfig.EXT_SUFFIX` 定位）。
+Linux 不再依赖 PyAudio/PortAudio（输入/输出/设备枚举/AEC 全原生 PipeWire）；opuslib 缺失时 `pip install --user`（写进 Recommends）。
 
 ### Android
 
@@ -70,23 +86,24 @@ cd android
 ### CI（`.github/workflows/`）
 
 - `android.yml`：ubuntu-latest 编 debug APK（JDK17 + SDK 34 + NDK r27）；先下载 opus 源码到 `android/opus-src/`，产物上传 APK
-- `linux.yml`：Ubuntu 22.04 / 24.04 / Fedora 容器矩阵；装系统依赖 + pip 装 onnxruntime/pybind11 编 C++ 扩展；Ubuntu 额外跑 `pack_deb.sh` 出 deb
-- `windows.yml`：windows-latest + Python 3.12 编 aimic.pyd（用捆绑 `packages/onnxruntime-win-x64-1.24.4`）；`workflow_dispatch` 手动触发 EXE 打包 job
-- **Linux CI 编译要点**：setup.py 支持 `ORT_INCLUDE_DIR` / `ORT_LIB_DIR` 环境变量指向 pip onnxruntime wheel（默认 `/usr/include/onnxruntime` + `/usr/lib`）；wheel 内 .so 带版本号后缀，需先建 `libonnxruntime.so` 软链接再 `-lonnxruntime`，运行时 `LD_LIBRARY_PATH` 指向 capi 目录
+- `linux.yml`：Ubuntu 22.04 / 24.04 / Fedora 容器矩阵；装系统依赖 + pip 装 onnxruntime，gcc 编纯 C 共享库（libaimic.so + libpvpipe.so）；Ubuntu 额外跑 `pack_deb.sh` 出 deb
+- `windows.yml`：windows-latest + Python 3.12 编 aimic.pyd（用捆绑预编译 `packages/onnxruntime-win-x64-1.11.1`）；`workflow_dispatch` 手动触发 EXE 打包 job（mingw 改造待接入）
+- **onnxruntime 预编译 SDK（双平台统一 1.11.1）**：Windows 用捆绑 `packages/onnxruntime-win-x64-1.11.1`；Linux/macOS 默认捆绑 `packages/onnxruntime-linux-x64-1.11.1`（`include/`+`lib/`），不再依赖系统 onnxruntime 包。setup.py 仍支持 `ORT_INCLUDE_DIR` / `ORT_LIB_DIR` 环境变量覆盖（CI/pip 场景，wheel 内 .so 带版本号后缀，需先建 `libonnxruntime.so` 软链接再 `-lonnxruntime`，运行时 `LD_LIBRARY_PATH` 指向 capi 目录）
 
 ---
 
 ## 架构
 
-### 桌面端 (Python/C++)
+### 桌面端 (Python/C)
 
 | 模块 | 职责 |
 |---|---|
 | `run_pyside6.py` | 单实例锁、启动入口，导入 `ui_pyside6.run_app` |
 | `ui_pyside6.py` | 主 UI（PySide6）——面板布局、设备选择、模式切换、48kHz 检测弹框 |
 | `audio_processor.py` | 核心音频引擎 —— `AudioThread`(全双工流)、`SpeakerCapture`(AEC loopback)、`RingBuffer`、设备枚举、TSE 参考录音工具(`_recorder`/`load_tse_reference`/`_wsola_time_stretch`) |
-| `aimic.cpp` → `aimic.pyd`/`aimic.so` | C++ pybind11 扩展 —— `AudioProcessor`(降噪/TSE/AEC/EQ/VAD/AGC)、STFT、频谱计算、`RingBuffer` |
-| `pipewire_client.cpp` → `pvpipe.so` | C++ 原生 PipeWire 桥（Linux）—— PwBridge，F32 单声道 48kHz 协商 |
+| `aimic.c` → `libaimic.so`（+ `aimic.py` ctypes 绑定） | C 音频核心（`audio_processor_new`/`denoise_new`/`tse_new`/`aec_new`/STFT/频谱/RingBuffer，ONNX Runtime C API，无任何 C++） |
+| `pipewire_client.c` → `libpvpipe.so`（+ `pvpipe.py` ctypes 绑定） | 原生 PipeWire 桥（Linux，纯 C）—— PwBridge，F32 单声道 48kHz 协商 |
+| `aimic.py` / `pvpipe.py` | ctypes 绑定层 —— 加载 libaimic.so / libpvpipe.so，Python 类/方法名与旧 pybind11 绑定完全一致（音频热路径仅做 list↔float 数组搬运） |
 | `pvplatform/` | 平台抽象层 —— `audio/`(SpeakerCapture 三端、device_api、pwpipe_client)、`system/`(单实例/自启动/防火墙/虚拟麦克风，win+posix) |
 | `server/` | 远程麦克风 HTTPS/WSS 服务器 —— `https_server.py`、`audio_bridge.py`(RemoteAudioSource)、`opus_codec.py`、`mdns_publisher.py`、`tls_manager.py` |
 | `config_manager.py` | JSON 配置读写，启动时迁移旧 key；api_type/output_device 平台感知默认值 |
@@ -94,12 +111,14 @@ cd android
 | `dialog_about.py` / `dialog_eq.py` / `dialog_tse_reference.py` | 关于 / 均衡器 / TSE 参考录音弹框（统一 `dialog_` 前缀） |
 | `html/` | 浏览器端远程推流页面 —— `index.html`、`app.js`、`audio-capture.js`、`ws-client.js`、Opus WASM 编码器 |
 | `vbcable_installer.py` | VB-CABLE 驱动静默安装（仅 Windows），驱动包缺失时引导下载 |
-| `build_win.ps1` / `pack_deb.sh` / `setup.py` | Windows 打包 / Linux deb 打包 / C++ 扩展编译 |
+| `build_win.ps1` / `pack_deb.sh` / `setup.py` | Windows 打包 / Linux deb 打包 / 纯 C 共享库构建（gcc，`build_ext --inplace` 产出 libaimic.so + libpvpipe.so） |
 
 ### Linux 音频架构（原生 PipeWire，强制）
 
 数据流（本地）：麦克风源节点 → `PureVox-input` 流 → 降噪 → `PureVox-output` 流 → `purevox_out`（虚拟麦克风 sink）
 监听：独立输出流 `PureVox-monitor` → 扬声器节点（同一路降噪音频）
+AEC far-end：独立输入流 `PureVox-far`（`stream.capture.sink=tap 扬声器 sink 输出`，会话内创建/销毁，
+无 PyAudio/PulseAudio monitor 依赖；采样率恒 48kHz 单声道）
 
 - 格式协商 **F32 单声道 48000Hz**：PipeWire 内置重采样 + 声道转换，模型永远拿 48k 单声道，输出自动上混到目标设备声道数，不存在"一个通道一个模型 / 通道不匹配 / 采样率不齐"
 - 虚拟麦克风 = `purevox_out.monitor`（单声道 48kHz，系统录音列表唯一 PureVox 项）；创建/删除走 `pvplatform.system` 的 `virtual_mic_ready()` / `ensure_virtual_mic()` / `remove_virtual_mic()`
@@ -176,7 +195,7 @@ cd android
 
 ## 注意事项
 
-- **AEC SpeakerCapture**: 用 `GetMixFormat` 获取设备原生格式（WASAPI loopback 共享模式**必须用引擎 MixFormat**）。C++ `set_aec_far_sample_rate()` 将 far-end 重采样到 48kHz。
+- **AEC SpeakerCapture**: Linux 端 AEC far 走 pvpipe `set_far(sink_name, True)`（`stream.capture.sink` tap 扬声器 sink 输出，恒 48k 单声道免重采样，会话内创建/销毁）。Windows 用 `GetMixFormat` 获取设备原生格式（WASAPI loopback 共享模式**必须用引擎 MixFormat**）；音频引擎 `audio_processor_set_aec_far_sample_rate()` 将 far-end 重采样到 48kHz。
 - **网络模式缓冲**:
   - `_output_buffer`: `RingBuffer(48000)` + 预填充 `1024*3` (64ms)
   - `_network_loop TARGET_ACC`: `1024*5` (107ms), `MAX_ACC`: `1024*8` (171ms)
