@@ -1,5 +1,26 @@
 # 更新日志
 
+## 2026-08-09 — 完成 Windows mingw 构建（aimic.dll）并接通 CI EXE 打包（Python 3.8）
+
+- 修复 `aimic.c` Windows 编译失败根因：`windows.h`/`windef.h` 定义的 16 位历史遗留
+  空宏 `far`/`near` 会把 `far` 参数名吞掉，导致 `aec_process_frame`、`ap_aec_step`、
+  `audio_processor_process` 等报 "expected expression before ')' token"；在包含
+  `windows.h` 后按平台 `#undef far`/`#undef near`，已验证 mingw gcc 可完整编译
+- 完成 `setup.py` Windows 分支 `_build_aimic_windows`：mingw 编 `aimic.dll`
+  （aimic.c + pffft + libsamplerate，`-shared -static-libgcc -mavx2`），
+  链接捆绑的 `onnxruntime-win-x64-1.11.1` import lib（`onnxruntime.lib`），
+  `onnxruntime.dll` 运行时由 `aimic.py._preload_onnxruntime` 预加载
+- 验证：Linux 用 mingw 交叉编译器按同一命令产物 `aimic.dll`（PE32+ x86-64）编译通过，
+  仅依赖 `KERNEL32`/`api-ms-win-crt-*`/`onnxruntime.dll`；`aimic.py` 引用的全部 80 个
+  C 符号均正确导出；Linux 原生构建（libaimic.so/libpvpipe.so）回归通过
+- `.github/workflows/windows.yml`：修复 msys2/setup-msys2 安装路径断言——GitHub runner
+  默认装到 `$RUNNER_TEMP\msys64`（非 `C:\msys64`），gcc 路径改用
+  `steps.msys2.outputs.msys2-location` 动态拼接；`build` job 编译 `aimic.dll` + ctypes
+  冒烟，`package` job 走 `build_win.ps1` 自动产 EXE 并上传（不再限手动触发）
+- AGENTS.md / README（中英同步）移除"mingw 改造待接入"标记，标注 Windows CI 已接通
+
+---
+
 ## 2026-08-08 — 修复 Python 3.14→3.8 兼容问题（PySide6 6.6 / 依赖 / 面板进程）
 
 - 修复 `SegmentedControl` 模式按钮在 PySide6 6.6（内嵌 Python 3.8）下**点击无响应**：

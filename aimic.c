@@ -34,6 +34,10 @@
 #if defined(_WIN32)
 #define NOMINMAX
 #include <windows.h>
+/* windows.h/windef.h 会定义空的 far/near 宏（16 位历史遗留），会把本文件
+ * 的 far 参数名与 far_history_ 等标识符全部吞掉导致编译失败；手动清除。 */
+#undef far
+#undef near
 #endif
 
 #ifndef M_PI

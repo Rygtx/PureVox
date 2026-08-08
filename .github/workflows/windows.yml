@@ -6,8 +6,8 @@ on:
   workflow_dispatch:
 
 jobs:
-  check:
-    name: Python code check (C build pending — mingw 改造待接入)
+  build:
+    name: Build aimic.dll + Py3.8 smoke
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -17,31 +17,45 @@ jobs:
         with:
           python-version: "3.8"
 
-      - name: Install Python-only deps (no native extension build yet)
+      - name: Set up mingw-w64 gcc
+        id: msys2
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: true
+          install: >-
+            mingw-w64-x86_64-gcc
+
+      - name: Install Python deps
         shell: pwsh
         run: |
           python -m pip install --upgrade pip
-          # aimic C 绑定是本机阴性的事件：Windows 侧 mingw 改造未接入，
-          # 这里只装纯 Python 依赖做语法/导入冒烟，不断言 aimic 可导入。
           python -m pip install -q -r requirements.txt -r requirements-win.txt
+
+      - name: Build aimic.dll (mingw gcc)
+        shell: pwsh
+        env:
+          CC: ${{ steps.msys2.outputs.msys2-location }}\mingw64\bin\gcc.exe
+        run: |
+          python setup.py build_ext --inplace --force
+          if (-not (Test-Path "aimic.dll")) { throw "aimic.dll not built" }
 
       - name: Compile all Python sources (catch syntax errors)
         shell: pwsh
         run: |
-          python -m compileall -q aimic.py pvpipe.py audio_processor.py config_manager.py model_config.py ui_pyside6.py run_pyside6.py pvplatform utils server 2>$null
+          python -m compileall -q aimic.py pvpipe.py audio_processor.py config_manager.py model_config.py ui_pyside6.py run_pyside6.py pvplatform server 2>$null
           Write-Host "compileall OK"
 
-      - name: Smoke import (no native libs required)
+      - name: Smoke import aimic (ctypes loads aimic.dll)
         shell: pwsh
         run: |
-          python -c "import config_manager, model_config; print('config modules OK')"
+          $env:PATH = "${{ steps.msys2.outputs.msys2-location }}\mingw64\bin;$env:PATH"
+          python -c "import aimic; print('aimic OK on Python', __import__('sys').version.split()[0])"
 
   package:
     name: Package self-extracting EXE
     runs-on: windows-latest
-    # mingw C# 构建改造完成前，EXE 由本地打包（build_win.ps1）经手动触发产出
-    if: github.event_name == 'workflow_dispatch'
-    needs: check
+    needs: build
     steps:
       - uses: actions/checkout@v4
 
@@ -49,6 +63,15 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.8"
+
+      - name: Set up mingw-w64 gcc
+        id: msys2
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: true
+          install: >-
+            mingw-w64-x86_64-gcc
 
       - name: Install dependencies
         shell: pwsh
@@ -66,7 +89,11 @@ jobs:
 
       - name: Build self-extracting EXE
         shell: pwsh
-        run: powershell -ExecutionPolicy Bypass -File build_win.ps1
+        env:
+          CC: ${{ steps.msys2.outputs.msys2-location }}\mingw64\bin\gcc.exe
+        run: |
+          $env:PATH = "${{ steps.msys2.outputs.msys2-location }}\mingw64\bin;$env:PATH"
+          powershell -ExecutionPolicy Bypass -File build_win.ps1
 
       - name: Upload EXE
         uses: actions/upload-artifact@v4

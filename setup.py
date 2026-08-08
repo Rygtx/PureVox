@@ -33,6 +33,7 @@ from setuptools.command.build_ext import build_ext as _build_ext
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 IS_LINUX = sys.platform.startswith("linux")
+IS_WIN = sys.platform.startswith("win")
 
 PFFFT_SOURCES = [
     "packages/pffft/pffft.c",
@@ -55,26 +56,55 @@ def _abs(*parts):
 
 class BuildExt(_build_ext):
     def run(self):
-        if IS_LINUX:
+        if IS_WIN:
+            self._build_aimic_windows()
+        elif IS_LINUX:
             self._build_aimic_linux()
             self._build_pvpipe_linux()
         else:
             raise SystemExit(
-                "PureVox setup.py build_ext 目前仅支持 Linux/gcc（Windows 走 mingw，见 build_win.ps1）")
+                "PureVox setup.py build_ext 仅支持 Linux(gcc)/Windows(mingw)，"
+                "macOS 暂不支持")
+
+    def _aimic_ort_paths(self, package):
+        ort_inc = os.environ.get("ORT_INCLUDE_DIR",
+                                 _abs("packages", package, "include"))
+        ort_lib = os.environ.get("ORT_LIB_DIR",
+                                 _abs("packages", package, "lib"))
+        return ort_inc, ort_lib
+
+    def _aimic_sources(self):
+        return [_abs("aimic.c")] + [_abs(s) for s in PFFFT_SOURCES + LIBSAMPLERATE_SOURCES]
+
+    def _build_aimic_windows(self):
+        """Windows: mingw gcc 编 aimic.dll（aimic.c + pffft + libsamplerate）。
+
+        onnxruntime 用仓库内 Windows SDK import lib（onnxruntime.lib）链接，
+        onnxruntime.dll 由 aimic.py 运行期预加载（_preload_onnxruntime）。
+        """
+        cc = os.environ.get("CC", "gcc")
+        ort_inc, ort_lib = self._aimic_ort_paths("onnxruntime-win-x64-1.11.1")
+        cmd = [
+            cc, "-O2", "-shared", "-static-libgcc", "-mavx2", "-std=gnu11",
+            "-DHAVE_CONFIG_H",
+            "-I" + _abs("packages", "pffft"),
+            "-I" + _abs("packages", "libsamplerate"),
+            "-I" + ort_inc,
+        ] + self._aimic_sources() + [
+            "-L" + ort_lib, "-lonnxruntime",
+            "-o", _abs("aimic.dll"),
+        ]
+        self._run(cmd)
 
     def _build_aimic_linux(self):
         cc = os.environ.get("CC", "gcc")
-        ort_inc = os.environ.get("ORT_INCLUDE_DIR",
-                                 _abs("packages", "onnxruntime-linux-x64-1.11.1", "include"))
-        ort_lib = os.environ.get("ORT_LIB_DIR",
-                                 _abs("packages", "onnxruntime-linux-x64-1.11.1", "lib"))
-        sources = [_abs("aimic.c")] + [_abs(s) for s in PFFFT_SOURCES + LIBSAMPLERATE_SOURCES]
+        ort_inc, ort_lib = self._aimic_ort_paths("onnxruntime-linux-x64-1.11.1")
         cmd = [
             cc, "-O2", "-fPIC", "-mavx2", "-std=gnu11", "-DHAVE_CONFIG_H",
             "-I" + _abs("packages", "pffft"),
             "-I" + _abs("packages", "libsamplerate"),
             "-I" + ort_inc,
-        ] + sources + [
+        ] + self._aimic_sources() + [
             "-L" + ort_lib, "-lonnxruntime",
             "-lm", "-pthread",
             "-shared",

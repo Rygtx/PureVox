@@ -103,7 +103,7 @@ card, neither of which is bundled:
 powershell -ExecutionPolicy Bypass -File build_win.ps1   # produces dist/PureVox_<date>.exe (self-extracting)
 ```
 
-The script runs the full flow: build `aimic.dll` (mingw, pending) → PyInstaller → tcl/tk + unused PySide6 module cleanup →
+The script runs the full flow: build `aimic.dll` (mingw gcc) → PyInstaller → tcl/tk + unused PySide6 module cleanup →
 7z self-extracting EXE. Windows CI (`.github/workflows/windows.yml`) runs the same flow and uploads the EXE.
 
 ### Linux (deb)

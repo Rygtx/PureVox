@@ -97,7 +97,7 @@ PipeWire 负责。虚拟麦克风是单声道 null-sink `purevox_out` 的 monito
 powershell -ExecutionPolicy Bypass -File build_win.ps1   # 产出 dist/PureVox_<日期>.exe（自解压）
 ```
 
-脚本包含完整流程：编译 `aimic.dll`（mingw，待接入）→ PyInstaller 打包 → tcl/tk 与无用 PySide6 模块清理 → 7z 自解压 EXE。
+脚本包含完整流程：编译 `aimic.dll`（mingw gcc）→ PyInstaller 打包 → tcl/tk 与无用 PySide6 模块清理 → 7z 自解压 EXE。
 Windows CI（`.github/workflows/windows.yml`）会执行同样流程并上传 EXE 产物。
 
 ### Linux（deb）

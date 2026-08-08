@@ -14,7 +14,7 @@ if (Test-Path $embeddedPy) {
     $PY = "python"
 }
 
-# 1. 编译 C++ 扩展 (aimic.pyd)
+# 1. 编译 C 共享库 (aimic.dll)
 & $PY setup.py build_ext --inplace --force
 if ($LASTEXITCODE -ne 0) { throw "build_ext 失败" }
 
@@ -36,7 +36,7 @@ Set-Content _build_version.py "BUILD_DATE = `"$date`"" -Encoding UTF8 -NoNewline
     --add-data="*.onnx;." `
     --add-data="audio_icon_on.ico;." `
     --add-data="audio_icon_off.ico;." `
-    --add-data="aimic*.pyd;." `
+    --add-data="aimic.dll;." `
     --add-data="html\*.html;html\" `
     --add-data="html\css\*.css;html\css\" `
     --add-data="html\js\*.js;html\js\" `
