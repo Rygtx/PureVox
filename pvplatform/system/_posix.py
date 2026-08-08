@@ -151,11 +151,11 @@ def open_sound_panel_posix(logger):
     ]
     for cmd in candidates:
         try:
-            r = subprocess.run(cmd, timeout=2.0,
-                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            if r.returncode == 0:
-                logger.msg("已打开声音控制面板")
-                return
+            # 用 Popen 异步启动，不阻塞、不杀进程（GUI 面板会一直运行到用户关闭）
+            subprocess.Popen(cmd,
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            logger.msg("已打开声音控制面板")
+            return
         except Exception:
             continue
     logger.warn("未找到声音控制面板（pavucontrol / systemsettings）")

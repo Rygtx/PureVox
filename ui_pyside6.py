@@ -322,7 +322,7 @@ class SegmentedControl(QWidget):
             self._btn_group.addButton(btn)
             self._buttons.append(btn)
             layout.addWidget(btn)
-            btn.clicked.connect(lambda checked, v=val: self._on_clicked(v))
+            btn.clicked.connect(lambda *a, v=val: self._on_clicked(v))
 
         self._buttons[0].setChecked(True)
         self._apply_style()
@@ -2292,7 +2292,7 @@ class MainApp:
             a = QAction(theme_labels[tv], window)
             a.setCheckable(True)
             a.setChecked(tv == current_theme)
-            a.triggered.connect(lambda checked, _tv=tv: self._set_theme(
+            a.triggered.connect(lambda *x, _tv=tv: self._set_theme(
                 config, logger, _tv))
             theme_menu.addAction(a)
 
