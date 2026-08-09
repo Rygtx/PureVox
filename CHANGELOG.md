@@ -1,5 +1,25 @@
 # 更新日志
 
+## 2026-08-09 — 修复 EXE 在 Win7 启动失败根因：`build_win.ps1` 误删 Qt6Qml.dll
+
+- **现象**：打包 EXE 在 Win7 上启动即报 `Failed to execute script run_pyside6 ...
+  DLL load failed while importing QtWidgets: 找不到指定的模块`（QEMU Win7 截图 OCR + pefile 分析确认）；
+  源码直跑（`python run_pyside6.py`）无此问题
+- **根因**：PySide6 核心库 `pyside6.abi3.dll`（所有 Qt*.pyd 都链接它）**硬依赖 `Qt6Qml.dll`**；
+  `build_win.ps1` 第 4 步瘦身把 `Qt6Qml.dll`/`Qt6Quick.dll` 一并删除，导致 `import QtWidgets`
+  时模块缺失。**与 pyinstaller/hooks-contrib 版本无关**——此前 eb5cb02 误锁
+  6.21.0 + 2026.6 并未解决（本机已装同版本仍复现），该 pin 已回退
+- **验证**：把 site-packages 的 `Qt6Qml.dll` 复制回 `_internal\PySide6\`，EXE 立即正常启动
+  （Win7 实机截图确认主界面出现）；pefile 全 bundle 依赖扫描显示缺件仅有
+  `pyside6.abi3.dll→Qt6Qml.dll`、`Qt6QmlModels.dll→Qt6Qml.dll`、
+  `Qt6VirtualKeyboard.dll→Qt6Qml/Qt6Quick.dll`
+- **修复**：`build_win.ps1` 瘦身步骤只删 `Qt6Pdf.dll`/`Qt6DataVisualization.dll`
+  （import 闭包外，安全），**不再删 `Qt6Qml.dll`/`Qt6Quick.dll`**，并加注释警示勿回退；
+  另修 `Set-Content -NoNewline`（PS 6+ 独有参数，Win7 的 PS 5.1 会报错）→ 去掉该参数
+- **requirements-win.txt** 回退 pyinstaller 锁版本（eb5cb02 的错误修复），注释改为记录真实根因
+
+---
+
 ## 2026-08-09 — Win7 实测 PySide6 兼容 + 打包补 Win7 缺失 DLL（勿回退）
 
 - **Win7 真机验证结论（QEMU Win7 SP1 实测）**：

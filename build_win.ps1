@@ -19,7 +19,9 @@ if (Test-Path $embeddedPy) {
 if ($LASTEXITCODE -ne 0) { throw "build_ext failed" }
 
 # 2. Generate version stamp (shown in the window title)
-Set-Content _build_version.py "BUILD_DATE = `"$date`"" -Encoding UTF8 -NoNewline
+#    -NoNewline is PowerShell 6+/7 only; Win7 ships PS 5.1, so write without it
+#    (a trailing newline in _build_version.py is harmless).
+Set-Content _build_version.py "BUILD_DATE = `"$date`"" -Encoding UTF8
 
 # 3. PyInstaller packaging
 #    lazy-imported modules must be hidden-import (function-level `from xx import` is not
@@ -51,10 +53,16 @@ Set-Content _build_version.py "BUILD_DATE = `"$date`"" -Encoding UTF8 -NoNewline
 if ($LASTEXITCODE -ne 0) { throw "PyInstaller failed" }
 
 # 4. Remove unused files (~46MB: tcl/tk + unused PySide6 modules)
+#    WARNING: Qt6Qml.dll / Qt6Quick.dll must NEVER be removed here. pyside6.abi3.dll
+#    (the PySide6 core library every Qt*.pyd links) hard-imports Qt6Qml.dll; deleting
+#    it makes `import QtWidgets` fail on Win7 with "DLL load failed ... specified module not found"
+#    (verified 2026-08-09 via pefile + live Win7 EXE test). Qt6VirtualKeyboard.dll /
+#    Qt6QmlModels.dll collected into the bundle also depend on Qml/Quick. Only Qt6Pdf.dll
+#    and Qt6DataVisualization.dll are safe to drop (nothing in the import closure needs them).
 Remove-Item dist\PureVox\_internal\tcl86t.dll, dist\PureVox\_internal\tk86t.dll, dist\PureVox\_internal\_tkinter.pyd -Force -ErrorAction SilentlyContinue
 Remove-Item dist\PureVox\_internal\_tcl_data, dist\PureVox\_internal\_tk_data, dist\PureVox\_internal\tcl8 -Recurse -Force -ErrorAction SilentlyContinue
 Remove-Item dist\PureVox\_internal\PySide6\opengl32sw.dll -Force -ErrorAction SilentlyContinue
-Remove-Item dist\PureVox\_internal\PySide6\Qt6Quick.dll, dist\PureVox\_internal\PySide6\Qt6Qml.dll, dist\PureVox\_internal\PySide6\Qt6Pdf.dll, dist\PureVox\_internal\PySide6\Qt6DataVisualization.dll -Force -ErrorAction SilentlyContinue
+Remove-Item dist\PureVox\_internal\PySide6\Qt6Pdf.dll, dist\PureVox\_internal\PySide6\Qt6DataVisualization.dll -Force -ErrorAction SilentlyContinue
 Remove-Item dist\PureVox\_internal\PySide6\QtOpenGL.pyd, dist\PureVox\_internal\PySide6\QtQuick.pyd, dist\PureVox\_internal\PySide6\QtQml.pyd, dist\PureVox\_internal\PySide6\QtPdf.pyd -Force -ErrorAction SilentlyContinue
 
 # 4b. Windows 7 compatibility: the bundled onnxruntime.dll imports the two

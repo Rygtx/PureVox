@@ -67,6 +67,11 @@ powershell -ExecutionPolicy Bypass -File build_win.ps1   # 打包 EXE（自动�
   stub 进 `_internal`，勿改回"从构建机 System32 拷"。
 - **MSVC 运行库**：onnxruntime 依赖 MSVCP140/VCRUNTIME140 等，`build_win.ps1` 会把构建机
   System32 的 VC runtime 拷进包，避免 Win7 需单独装 VC++ redist。
+- **打包瘦身勿删 `Qt6Qml.dll`/`Qt6Quick.dll`**：PySide6 核心库 `pyside6.abi3.dll`（所有
+  Qt*.pyd 都链接它）**硬依赖 `Qt6Qml.dll`**，`build_win.ps1` 第 4 步若删除它，EXE 在 Win7
+  启动即报 `DLL load failed while importing QtWidgets: 找不到指定的模块`（2026-08-09 实机
+  pefile 分析确认；与 pyinstaller/hooks-contrib 版本无关）。瘦身只允许删 import 闭包外的
+  `Qt6Pdf.dll`/`Qt6DataVisualization.dll`。
 
 注意：四件套 wheel 名含 `abi3`；在线安装 PySide6==6.1.3 时会自动带对版本。
 
