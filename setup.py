@@ -87,6 +87,9 @@ class BuildExt(_build_ext):
         cmd = [
             cc, "-O2", "-shared", "-static-libgcc", "-mavx2", "-std=gnu11",
             "-DHAVE_CONFIG_H",
+            # mingw gcc 缺 MSVC SAL 宏（_Frees_ptr_opt_ 等），onnxruntime 头会
+            # 因未定义宏连锁产生未知类型 → Release* API 缺失。Win7 实测必须 -include 此头。
+            "-include", _abs("sal_fix.h"),
             "-I" + _abs("packages", "pffft"),
             "-I" + _abs("packages", "libsamplerate"),
             "-I" + ort_inc,

@@ -15,7 +15,10 @@ PyAudio
 # 其 DLL 引用了 Win7 缺失的系统导出 → 运行时 "DLL load failed ... 找不到指定的程序"）。
 # 6.1.3 提供 cp36-cp39 的 win_amd64 wheel，Python 3.8 可装。勿再放开版本（会升到 6.7.x 且 Win7 打不开）。
 PySide6==6.1.3
-cryptography>=41.0.0,<47; python_version < '3.9'
+# cryptography 必须锁 42.0.8（python<3.9，即 Win7/Py3.8 线）：46.x 起 _rust 相关
+# 逻辑打成独立 cryptography_rust.dll，Win7 缺该 DLL → import 报 "找不到指定的程序"；
+# 42.0.8 是实测可用的最后版本。勿放开 <47（会装到 46.x 在 Win7 崩）。
+cryptography==42.0.8; python_version < '3.9'
 cryptography>=41.0.0; python_version >= '3.9'
 zeroconf
 aiohttp>=3.9.0
