@@ -28,8 +28,11 @@ echo cancellation, for both the local microphone and remote network streaming.
 
 > **Windows 7**: Python 3.8 is the last Python supporting Win7; this project's source and its
 > dependencies stay Python 3.8 compatible (model opsets 13/14/15, all ≤16; onnxruntime pinned
-> to 1.11.1). Note the GUI stack PySide6 6.x (Qt6) itself requires Windows 10+, so full Win7
-> desktop support is out of scope.
+> to 1.11.1). The GUI stack is **pinned to `PySide6==6.1.3`** — the last PySide6 that runs on
+> Win7 (Qt 6.2+ officially targets Windows 10+ only). `build_win.ps1` copies the Win10-only
+> API-Set DLLs that onnxruntime imports (prebuilt x64 forwarding stubs, kept in
+> `packages/onnxruntime-win-x64-1.11.1/lib/`) and the MSVC runtime into the bundle, so the EXE
+> runs on Win7 out of the box (do not regress; see AGENTS.md for the measured findings).
 
 ## Quick start
 

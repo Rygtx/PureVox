@@ -93,7 +93,7 @@ jobs:
           CC: ${{ steps.msys2.outputs.msys2-location }}\mingw64\bin\gcc.exe
         run: |
           $env:PATH = "${{ steps.msys2.outputs.msys2-location }}\mingw64\bin;$env:PATH"
-          powershell -ExecutionPolicy Bypass -File build_win.ps1
+          pwsh -NoProfile -ExecutionPolicy Bypass -File build_win.ps1
 
       - name: Upload EXE
         uses: actions/upload-artifact@v4

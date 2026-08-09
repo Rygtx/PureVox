@@ -1,0 +1,7 @@
+LIBRARY api-ms-win-core-libraryloader-l1-2-0.dll
+EXPORTS
+  GetModuleFileNameA = KERNEL32.GetModuleFileNameA
+  GetModuleHandleExW = KERNEL32.GetModuleHandleExW
+  LoadLibraryExW = KERNEL32.LoadLibraryExW
+  GetModuleHandleA = KERNEL32.GetModuleHandleA
+  FreeLibrary = KERNEL32.FreeLibrary

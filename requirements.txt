@@ -11,8 +11,10 @@ PyAudio
 # 注意：这里的 PySide6 是 GUI 栈依赖；onnxruntime 不经过 pip，见 setup.py 注释。
 # 纯 C 引擎（aimic.c / pipewire_client.c）由 gcc 直接构建，ctypes 加载，无 pybind11
 # 编译器依赖：Linux 用 pkg-config + libpipewire-0.3-dev + gcc
-# PySide6 6.x 需 Windows 10+；py3.8 下 pip 取 6.7.x（最后一个 cp38 wheel）
-PySide6>=6.5.0
+# PySide6 必须锁 6.1.3：这是最后一个能跑在 Windows 7 的 PySide6 版本（Qt 6.2+ 官方仅 Windows 10+，
+# 其 DLL 引用了 Win7 缺失的系统导出 → 运行时 "DLL load failed ... 找不到指定的程序"）。
+# 6.1.3 提供 cp36-cp39 的 win_amd64 wheel，Python 3.8 可装。勿再放开版本（会升到 6.7.x 且 Win7 打不开）。
+PySide6==6.1.3
 cryptography>=41.0.0,<47; python_version < '3.9'
 cryptography>=41.0.0; python_version >= '3.9'
 zeroconf

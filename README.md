@@ -26,8 +26,11 @@
 | Linux | Python 3.8+，PipeWire（音频走原生 libpipewire，虚拟麦克风为 null-sink） |
 
 > **Windows 7**：Python 3.8 是最后一个支持 Win7 的 Python，本项目源码与其依赖均保持
-> Python 3.8 兼容（模型 opset 13/14/15，均 ≤16，onnxruntime 定为 1.11.1）。注意 GUI 栈
-> PySide6 6.x（Qt6）本身要求 Windows 10+，Win7 完整桌面支持不在范围内。
+> Python 3.8 兼容（模型 opset 13/14/15，均 ≤16，onnxruntime 定为 1.11.1）。GUI 栈
+> **锁版本 `PySide6==6.1.3`** —— 这是最后一个支持 Win7 的 PySide6（Qt 6.2+ 官方仅
+> Windows 10+）；`build_win.ps1` 打包时会从仓库固化的 x64 转发 stub 补入 onnxruntime
+> 依赖的 Win10 专属 API-Set DLL（`packages/onnxruntime-win-x64-1.11.1/lib/`），并携带
+> MSVC 运行库，使产物在 Win7 开箱即用（勿回退，实测见 AGENTS.md）。
 
 ## 快速开始
 

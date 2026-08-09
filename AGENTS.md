@@ -51,6 +51,30 @@ powershell -ExecutionPolicy Bypass -File build_win.ps1   # 打包 EXE（自动�
 # 链接捆绑的 onnxruntime-win-x64-1.11.1）
 ```
 
+### Windows 7 兼容性（实测结论，勿回退）
+
+纯 PySide6 6.1.3 包无法直接跑 Win7——Qt 6.2+ 官方仅 Win10+，6.6.x import 即报
+`DLL load failed ... 找不到指定的程序`；**PySide6==6.1.3 是最后一个支持 Win7 的版本**
+（requirements.txt 已锁死并注释原因）。另外两个 Win7 缺失项必须在打包时补：
+
+- **API-Set 转发 DLL**：捆绑的 onnxruntime.dll 还导入 `api-ms-win-core-libraryloader-l1-2-0.dll`
+  和 `api-ms-win-core-processtopology-obsolete-l1-1-0.dll`（Win8+ 的 API-Set 由内核虚拟解析，
+  Win7 与其构建机 System32 均无物理文件）。仓库在
+  `packages/onnxruntime-win-x64-1.11.1/lib/` 固化两个 **x64 转发 stub**（导出符号转发到
+  KERNEL32；生成材料见其下 `apiset/*.def`，用 mingw `x86_64-w64-mingw32-gcc -shared`
+  复现，例如 `x86_64-w64-mingw32-gcc -shared stub.c apiset/libloader.def -o
+  api-ms-win-core-libraryloader-l1-2-0.dll`）。`build_win.ps1` 打包时从仓库拷这两个
+  stub 进 `_internal`，勿改回"从构建机 System32 拷"。
+- **MSVC 运行库**：onnxruntime 依赖 MSVCP140/VCRUNTIME140 等，`build_win.ps1` 会把构建机
+  System32 的 VC runtime 拷进包，避免 Win7 需单独装 VC++ redist。
+
+注意：四件套 wheel 名含 `abi3`；在线安装 PySide6==6.1.3 时会自动带对版本。
+
+**`.ps1` 脚本必须纯 ASCII（英文）**：`build_win.ps1` / `bootstrap_python38.ps1`
+不含中文/非 ASCII/BOM。Windows PowerShell 5.1 对无 BOM 的 UTF-8 脚本按 ANSI
+(cp1252/GBK) 误读导致语法错误（`chcp 65001` 只在本机掩盖）；中文文件名
+（如 `用户手册.html`）在脚本里用通配符（`*.html`）引用，不写字面量。
+
 ### Linux
 
 依赖因发行版而异（Ubuntu / Fedora / AOSC 包名不同，参考 `.github/workflows/linux.yml` 与 README）。AOSC 示例：

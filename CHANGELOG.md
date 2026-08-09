@@ -1,5 +1,22 @@
 # 更新日志
 
+## 2026-08-09 — Win7 实测 PySide6 兼容 + 打包补 Win7 缺失 DLL（勿回退）
+
+- **Win7 真机验证结论（QEMU Win7 SP1 实测）**：
+  - PySide6 6.6.x **不兼容 Win7**（Qt 6.2+ 官方仅 Win10+），`import QtWidgets` 报
+    `DLL load failed ... 找不到指定的程序`；**`PySide6==6.1.3` 是最后一个支持 Win7 的版本**
+    （requirements.txt 已锁死并注释）；6.1.3 在 Win7 + Python 3.8.10 下导入/建 QApplication 通过
+  - 捆绑的 `onnxruntime.dll` 还导入两个 **Win7 没有的 API-Set 转发 DLL**：
+    `api-ms-win-core-libraryloader-l1-2-0.dll`、`api-ms-win-core-processtopology-obsolete-l1-1-0.dll`
+    （用 pefile 逐个比对 System32 缺件确认），无它们则 `LoadLibrary(aimic.dll)` 报
+    "找不到指定的模块"；Win7 还需 MSVC 运行库 `MSVCP140/VCRUNTIME140/ucrtbase`
+- `build_win.ps1` 新增步骤 4b：打包时从仓库固化的 stub（非构建机 System32，实测构建机
+  也无物理文件）补入上述 API-Set 转发 stub，并携带 MSVC 运行库，使 Win7 无需单独装
+  VC++ redist（只补缺失项，不覆盖 PyInstaller 产物）
+- AGENTS.md 新增「Windows 7 兼容性（实测结论，勿回退）」小节，记录以上两条硬性条件
+
+---
+
 ## 2026-08-09 — 完成 Windows mingw 构建（aimic.dll）并接通 CI EXE 打包（Python 3.8）
 
 - 修复 `aimic.c` Windows 编译失败根因：`windows.h`/`windef.h` 定义的 16 位历史遗留
