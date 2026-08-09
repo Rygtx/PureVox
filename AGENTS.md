@@ -51,7 +51,7 @@ chcp 65001
 powershell -ExecutionPolicy Bypass -File bootstrap_python38.ps1
 # 方式二（系统 Python）：pip install -r requirements.txt -r requirements-win.txt
 python run_pyside6.py
-powershell -ExecutionPolicy Bypass -File build_win.ps1   # 打包 EXE（自动用 packages\python38w\python.exe）
+powershell -ExecutionPolicy Bypass -File build_win.ps1   # 打包 ZIP（自动用 packages\python38w\python.exe）
 # 注：Windows 侧 aimic.dll 用 mingw gcc 编译（setup.py 走 CC 或 PATH 上的 gcc，
 # 链接捆绑的 onnxruntime-win-x64-1.11.1）
 ```
@@ -94,7 +94,7 @@ powershell -ExecutionPolicy Bypass -File build_win.ps1   # 打包 EXE（自动�
 
 ### Linux
 
-依赖因发行版而异（Ubuntu / Fedora / AOSC 包名不同，参考 `.github/workflows/linux.yml` 与 README）。AOSC 示例：
+依赖因发行版而异（Ubuntu / Fedora / AOSC 包名不同，参考 `.github/workflows/ci.yml` 与 README）。AOSC 示例：
 
 ```bash
 sudo oma install -y gcc pkgconf pipewire libpipewire-0.3-devel
@@ -102,7 +102,9 @@ sudo oma install -y gcc pkgconf pipewire libpipewire-0.3-devel
 ./bootstrap_python38.sh
 ./py38 setup.py build_ext --inplace --force   # 产出 libaimic.so + libpvpipe.so
 ./py38 run_pyside6.py
-bash pack_deb.sh                              # 打包 deb → dist/purevox_<ver>_amd64.deb
+bash pack_deb.sh                              # deb → dist/purevox_<ver>_amd64_<stamp>.deb
+bash pack_rpm.sh                              # rpm → dist/purevox_<ver>_<stamp>.x86_64.rpm
+bash pack_appimage.sh                         # AppImage → dist/purevox_<stamp>.AppImage
 ```
 
 deb 布局：`/opt/purevox/` 放全部源码+libaimic.so/libpvpipe.so+模型+html+捆绑的 `libonnxruntime.so*`（1.11.1）；
@@ -125,14 +127,16 @@ cd android
 要求：JDK 17、SDK platform 34、NDK 27、CMake 3.22.1。首次编译需 Opus 源码放到
 `android/opus-src/`（gitignore，JNI CMake 引用该路径）。
 
-### CI（`.github/workflows/`）
+### CI（`.github/workflows/ci.yml`，精简为通用包 deb/rpm/appimage + zip + apk）
 
-- `linux.yml`：分两个 job——
-  - `build`（Ubuntu 22.04 / 24.04 / Fedora 容器矩阵）：装系统依赖 + gcc 编纯 C 共享库（libaimic.so + libpvpipe.so），import 冒烟测试；Ubuntu 额外跑 `pack_deb.sh` 出 deb 并上传产物。onnxruntime 用仓库内已捆绑的预编译 1.11.1 SDK，**不 pip 装 onnxruntime**
-  - `python38_smoke`：官方 `python:3.8-bullseye` 容器，验证纯 C 库在最低 Python 3.8 环境可编译、可 ctypes 装载
-- `windows.yml`：windows-latest + Python 3.8（与内嵌运行时一致），msys2/mingw-w64 gcc 编译 `aimic.dll`
-  + 语法/导入冒烟；`package` job 走 `build_win.ps1`（PyInstaller + 7z 自解压）自动产 EXE 并上传
-- `android.yml`：ubuntu-latest 编 debug APK（JDK17 + SDK 34 + NDK r27）；先下载 opus 源码到 `android/opus-src/`，产物上传 APK
+- `linux` job：容器矩阵只留 3 项，产出通用安装包——
+  - `ubuntu-22.04`：gcc 编纯 C 库 + import 冒烟 + `pack_deb.sh` 出 deb + `pack_appimage.sh` 出 AppImage（best-effort，捆绑内嵌 python38）
+  - `fedora`：编库 + 冒烟 + `pack_rpm.sh` 出 rpm
+  - `python3.8`：官方 `python:3.8-bullseye`，验证纯 C 库在最低 Python 3.8 可编译、可 ctypes 装载
+  - onnxruntime 用仓库内捆绑的预编译 1.11.1 SDK，**不 pip 装 onnxruntime**
+- `windows` job：windows-latest + Python 3.8 + msys2/mingw gcc 编 `aimic.dll` + 语法/导入冒烟；`build_win.ps1` 出 **ZIP**（`dist/PureVox_<yyyy-MM-dd-HHmm>.zip`，不再产自解压 EXE）并上传
+- `android` job：ubuntu-latest 编 debug APK（JDK17 + SDK 34 + NDK r27）；下载 opus 源码到 `android/opus-src/`，产物改名 `PureVoxMic-<yyyy-MM-dd-HHmm>.apk`
+- **时间戳统一**：所有产物文件名带 `yyyy-MM-dd-HHmm`（复用原 7z SFX 的 `$date` 规则），仅文件名带，包内版本字段不变
 - **onnxruntime 预编译 SDK（双平台统一 1.11.1）**：Windows 用捆绑 `packages/onnxruntime-win-x64-1.11.1`；Linux/macOS 默认捆绑 `packages/onnxruntime-linux-x64-1.11.1`（`include/`+`lib/`），不再依赖系统 onnxruntime 包。setup.py 仍支持 `ORT_INCLUDE_DIR` / `ORT_LIB_DIR` 环境变量覆盖（CI/pip 场景，wheel 内 .so 带版本号后缀，需先建 `libonnxruntime.so` 软链接再 `-lonnxruntime`，运行时 `LD_LIBRARY_PATH` 指向 capi 目录）
 
 ---
@@ -156,7 +160,7 @@ cd android
 | `dialog_about.py` / `dialog_eq.py` / `dialog_tse_reference.py` | 关于 / 均衡器 / TSE 参考录音弹框（统一 `dialog_` 前缀） |
 | `html/` | 浏览器端远程推流页面 —— `index.html`、`app.js`、`audio-capture.js`、`ws-client.js`、Opus WASM 编码器 |
 | `vbcable_installer.py` | VB-CABLE 驱动静默安装（仅 Windows），驱动包缺失时引导下载 |
-| `build_win.ps1` / `pack_deb.sh` / `setup.py` | Windows 打包 / Linux deb 打包 / 纯 C 共享库构建（gcc，`build_ext --inplace` 产出 libaimic.so + libpvpipe.so） |
+| `build_win.ps1` / `pack_deb.sh` / `pack_rpm.sh` / `pack_appimage.sh` / `setup.py` | Windows ZIP 打包 / Linux deb / rpm / AppImage 打包 / 纯 C 共享库构建（gcc，`build_ext --inplace` 产出 libaimic.so + libpvpipe.so） |
 
 ### Linux 音频架构（原生 PipeWire，强制）
 
@@ -245,6 +249,7 @@ AEC far-end：独立输入流 `PureVox-far`（`stream.capture.sink=tap 扬声器
 9. **品牌拼写规约** — 品牌名一律 `PureVox`；`purevox` 全小写仅限平台/协议强制标识（见命名规范），改大小写视为破坏行为。
 10. **许可证头** — 每个源码文件顶部必须带 GPL-3.0 版权头 + 模型声明 + `SPDX-License-Identifier: GPL-3.0-or-later`（照抄 `audio_processor.py` 顶部，按 `#`/`//` 注释风格替换）；新增文件也必须带。
 11. **README 双语约定** — 默认中文 `README.md`，英文单独 `README_EN.md`；改文件名/平台结构/打包命令时两处必须同步，不得改名或删除。
+12. **C 源码禁止中文（纯 ASCII）** — `*.c`/`*.h` 的注释与字符串一律英文 ASCII，禁止任何非 ASCII 字符（含中文注释）。`aimic.c` 由 Windows 的 mingw gcc 编译，中文注释/非 UTF-8 编码会破坏 Windows CI；`pipewire_client.c` 虽仅 Linux 编译也应遵守。新增/修改 C 代码时不得加入中文注释（历史中文注释需逐步清理）。
 
 ---
 

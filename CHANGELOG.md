@@ -1,5 +1,22 @@
 # 更新日志
 
+## 2026-08-10 — Linux 输出延迟优化 + C 源码去中文 + CI 精简
+
+- **Linux 输出流延迟**：实测 `PureVox-output` 流协商缓冲高达 12288 样本（256ms），
+  null-sink 大缓冲突发消费导致输出环堆积。`create_stream` 显式发 `SPA_PARAM_Buffers`
+  （4096B=1024 样本）后降到 1024 样本（21ms）；`RING_CAPACITY` 从 2s(96000) 收到
+  4 hop(4096/85ms) 封顶。输入环稳态保持 ~0。
+- **C 源码禁止中文**：`aimic.c` 全部中文注释转为 ASCII（该文件由 Windows mingw 编译，
+  非 UTF-8/中文会破坏 Windows CI）；AGENTS.md 工程约定新增第 12 条硬性规则。`pipewire_client.c`
+  为 Linux 专用，新增行亦保持 ASCII。
+- **CI 精简**（`.github/workflows/ci.yml`）：Linux 容器矩阵只留 3 项——`ubuntu-22.04`
+  （deb + AppImage best-effort）、`fedora`（rpm）、`python3.8`（最低运行时底线验证）；
+  Windows 由自解压 EXE 改 **ZIP**（`build_win.ps1` 不再拼 7z.sfx）；Android APK 改名。
+- **时间戳统一**：所有产物文件名带 `yyyy-MM-dd-HHmm`（复用原 7z SFX 的 `$date` 规则），
+  仅文件名带，包内版本字段不变。新增 `pack_rpm.sh` / `pack_appimage.sh`。
+
+---
+
 ## 2026-08-09 — 修复 Linux 虚拟麦克风破坏系统托盘的根因 + 改为健康双出口
 
 - **现象**：Linux 上跑 `run_pyside6.py` 后，系统托盘音量控件清空（无设备）、

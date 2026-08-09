@@ -1,5 +1,5 @@
-# PureVox - Windows packaging script (PyInstaller EXE + 7z SFX)
-# Output: dist/PureVox_<yyyy-MM-dd-HHmm>.exe
+# PureVox - Windows packaging script (PyInstaller + ZIP)
+# Output: dist/PureVox_<yyyy-MM-dd-HHmm>.zip
 # Usage:  powershell -ExecutionPolicy Bypass -File build_win.ps1
 $ErrorActionPreference = "Stop"
 
@@ -102,14 +102,12 @@ foreach ($vc in @("msvcp140.dll", "msvcp140_1.dll", "vcruntime140.dll", "vcrunti
     }
 }
 
-# 5. Pack as a self-extracting EXE (7z.sfx + config + 7z archive)
+# 5. Pack as a ZIP archive (no self-extracting EXE; timestamp rule reused from 7z)
 Push-Location dist
-..\packages\7z\7z.exe a "PureVox_$date.7z" "PureVox" | Out-Null
-& cmd /c "copy /b ..\packages\7z\7z.sfx + ..\sfx_config.txt + PureVox_$date.7z PureVox_$date.exe >nul"
-Remove-Item "PureVox_$date.7z"
+..\packages\7z\7z.exe a "PureVox_$date.zip" "PureVox" | Out-Null
 Pop-Location
 
 # 6. Copy docs to the output directory (manual has a non-ASCII filename, match by glob)
 Copy-Item *.html, CHANGELOG.md dist\ -Force
 
-Write-Host "==> Done: dist/PureVox_$date.exe"
+Write-Host "==> Done: dist/PureVox_$date.zip"

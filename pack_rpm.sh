@@ -1,0 +1,128 @@
+#!/bin/bash
+# PureVox - Fedora/RHEL RPM packaging script
+# Output: dist/purevox_<version>-<rev>_<date>.x86_64.rpm
+# Requires: gcc, pkg-config, libpipewire-0.3-devel, rpm-build, python3 (for icon)
+set -e
+cd "$(dirname "$0")"
+
+VERSION="1.0.6"
+REV="1"
+ARCH="x86_64"
+PKG_NAME="purevox"
+# Timestamp reuses the 7z rule (yyyy-MM-dd-HHmm), filename only
+DATE="$(date +%Y-%m-%d-%H%M)"
+DIST="dist"
+STAGE="${TMPDIR:-/tmp}/purevox_rpm_build"
+SPEC="$STAGE/purevox.spec"
+ROOT="$STAGE/root"
+
+echo "==> build pure C shared libraries (libaimic.so + libpvpipe.so)"
+python3 setup.py build_ext --inplace --force >/dev/null
+[ -f "libaimic.so" ] || { echo "missing libaimic.so"; exit 1; }
+[ -f "libpvpipe.so" ] || { echo "missing libpvpipe.so"; exit 1; }
+
+echo "==> prepare staging $STAGE"
+rm -rf "$STAGE"
+mkdir -p "$ROOT/opt/purevox" "$ROOT/usr/bin" \
+         "$ROOT/usr/share/applications" \
+         "$ROOT/usr/share/icons/hicolor/256x256/apps"
+
+echo "==> copy sources/models/icon"
+for f in \
+    audio_processor.py config_manager.py dialog_about.py dialog_eq.py logger.py \
+    model_config.py run_pyside6.py spectrum_histogram.py theme_colors.py \
+    dialog_tse_reference.py ui_pyside6.py user_paths.py wav_io.py \
+    aimic.py pvpipe.py \
+    aec9_ep0544.onnx tse15_stream_ep_0673.onnx v9_fft2048_band256_epoch_261.onnx \
+    audio_icon_off.ico audio_icon_on.ico; do
+    cp "$f" "$ROOT/opt/purevox/"
+done
+cp "libaimic.so" "$ROOT/opt/purevox/"
+cp "libpvpipe.so" "$ROOT/opt/purevox/"
+
+echo "==> bundle onnxruntime 1.11.1 (aimic links libonnxruntime.so.1.11.1)"
+cp packages/onnxruntime-linux-x64-1.11.1/lib/libonnxruntime.so* "$ROOT/opt/purevox/"
+
+echo "==> copy html/ server/ pvplatform/"
+cp -r html "$ROOT/opt/purevox/"
+mkdir -p "$ROOT/opt/purevox/server"
+cp server/*.py "$ROOT/opt/purevox/server/"
+cp -r pvplatform "$ROOT/opt/purevox/"
+find "$ROOT/opt/purevox" -name "__pycache__" -type d -exec rm -rf {} + 2>/dev/null || true
+
+echo "==> /usr/bin/purevox launcher"
+cat > "$ROOT/usr/bin/purevox" <<'EOF'
+#!/bin/sh
+export LD_LIBRARY_PATH="/opt/purevox${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+cd /opt/purevox || exit 1
+exec /usr/bin/python3 /opt/purevox/run_pyside6.py "$@"
+EOF
+chmod +x "$ROOT/usr/bin/purevox"
+
+echo "==> desktop file"
+cat > "$ROOT/usr/share/applications/purevox.desktop" <<'EOF'
+[Desktop Entry]
+Type=Application
+Name=PureVox
+Name[zh_CN]=PureVox
+GenericName=AI Mic Noise Reduction
+GenericName[zh_CN]=AI 麦克风降噪
+Comment=Real-time AI microphone noise reduction
+Comment[zh_CN]=实时 AI 麦克风降噪
+Exec=/usr/bin/purevox
+Icon=purevox
+Terminal=false
+Categories=AudioVideo;Audio;Utility;
+Keywords=mic;noise;denoise;audio;PureVox;
+StartupNotify=false
+EOF
+
+echo "==> icon (ico -> png)"
+magick audio_icon_on.ico[0] -resize 256x256 \
+    "$ROOT/usr/share/icons/hicolor/256x256/apps/purevox.png" 2>/dev/null \
+ || python3 -c "
+from PIL import Image
+im = Image.open('audio_icon_on.ico')
+im = im.convert('RGBA').resize((256, 256), Image.LANCZOS)
+im.save('$ROOT/usr/share/icons/hicolor/256x256/apps/purevox.png')
+" 2>/dev/null || true
+
+echo "==> spec"
+cat > "$SPEC" <<EOF
+Name:           $PKG_NAME
+Version:        $VERSION
+Release:        $REV
+Summary:        AI microphone noise reduction
+License:        GPL-3.0-or-later
+BuildArch:      $ARCH
+
+%description
+Real-time AI microphone noise reduction, echo cancellation and target
+speaker extraction. Installs under /opt/purevox.
+
+%install
+cp -a $ROOT/. %{buildroot}/
+
+%files
+/opt/purevox
+/usr/bin/purevox
+/usr/share/applications/purevox.desktop
+/usr/share/icons/hicolor/256x256/apps/purevox.png
+
+%post
+gtk-update-icon-cache /usr/share/icons/hicolor 2>/dev/null || true
+
+%postun
+gtk-update-icon-cache /usr/share/icons/hicolor 2>/dev/null || true
+EOF
+
+echo "==> rpmbuild"
+mkdir -p "$STAGE"/{BUILD,RPMS,SOURCES,SPECS,SRPMS}
+rpmbuild --define "_topdir $STAGE" --define "buildroot $ROOT" \
+    -bb "$SPEC" >/dev/null
+RPMSRC="$STAGE/RPMS/$ARCH/${PKG_NAME}-${VERSION}-${REV}.$ARCH.rpm"
+[ -f "$RPMSRC" ] || { echo "rpm not produced"; exit 1; }
+mkdir -p "$DIST"
+rm -f "$DIST/${PKG_NAME}-${VERSION}-${REV}_${DATE}.$ARCH.rpm"
+mv "$RPMSRC" "$DIST/${PKG_NAME}-${VERSION}-${REV}_${DATE}.$ARCH.rpm"
+echo "==> done: $DIST/${PKG_NAME}-${VERSION}-${REV}_${DATE}.$ARCH.rpm"

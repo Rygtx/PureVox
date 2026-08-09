@@ -1,4 +1,4 @@
-/* PureVox — AI 麦克风降噪工具
+/* PureVox - AI microphone denoise tool
  * Copyright (C) 2024-2026 a2heng <752848283@qq.com>
  *
  * PureVox is licensed under the GNU General Public License v3.0 or
@@ -15,9 +15,9 @@
  *
  * SPDX-License-Identifier: GPL-3.0-or-later
  *
- * PureVox 纯 C 音频引擎：降噪/TSE/AEC/EQ/VAD/AGC/压缩器 + STFT + RingBuffer。
- * ONNX 走 C API（onnxruntime_c_api.h），FFT 用 pffft，重采样用 libsamplerate。
- * ctypes 绑定见 aimic.py（加载 libaimic.so），Python 侧不依赖 numpy/torch。
+ * PureVox pure-C audio engine: denoise/TSE/AEC/EQ/VAD/AGC/compressor + STFT + RingBuffer.
+ * ONNX via C API (onnxruntime_c_api.h), FFT via pffft, resample via libsamplerate.
+ * ctypes binding in aimic.py (loads libaimic.so); Python side has no numpy/torch dep.
  */
 
 #include <stdio.h>
@@ -34,8 +34,8 @@
 #if defined(_WIN32)
 #define NOMINMAX
 #include <windows.h>
-/* windows.h/windef.h 会定义空的 far/near 宏（16 位历史遗留），会把本文件
- * 的 far 参数名与 far_history_ 等标识符全部吞掉导致编译失败；手动清除。 */
+/* windows.h/windef.h define empty far/near macros (16-bit legacy) that swallow
+ * our far param name and far_history_ identifiers and break compilation; clear. */
 #undef far
 #undef near
 #endif
@@ -47,7 +47,7 @@
 static const size_t HOP_LENGTH = 1024;
 static const float  SAMPLE_RATE = 48000.0f;
 
-/* ───────────────────────── 跨平台互斥锁 ───────────────────────── */
+/* ------------------------- cross-platform mutex ------------------------- */
 #if defined(_WIN32)
 typedef SRWLOCK pv_mutex_t;
 static void pv_mutex_init(pv_mutex_t* m)   { InitializeSRWLock(m); }
@@ -63,7 +63,7 @@ static void pv_mutex_unlock(pv_mutex_t* m) { pthread_mutex_unlock(m); }
 static void pv_mutex_destroy(pv_mutex_t* m){ pthread_mutex_destroy(m); }
 #endif
 
-/* ───────────────────────── 通用小工具 ───────────────────────── */
+/* ------------------------- small utilities ------------------------- */
 static inline float clip_sample(float x) {
     if (isnan(x) || isinf(x)) return 0.0f;
     if (x > 1.0f) return 1.0f;
@@ -75,7 +75,7 @@ static void clip_buffer(float* data, size_t len) {
     for (size_t i = 0; i < len; ++i) data[i] = clip_sample(data[i]);
 }
 
-/* sqrt-Hann 分析窗（torch.hann_window().pow(0.5) 语义） */
+/* sqrt-Hann analysis window (torch.hann_window().pow(0.5) semantics) */
 static void make_sqrt_hann(float* w, int n) {
     for (int i = 0; i < n; ++i) {
         float hann = 0.5f - 0.5f * (float)cos(2.0 * M_PI * i / n);
@@ -83,7 +83,7 @@ static void make_sqrt_hann(float* w, int n) {
     }
 }
 
-/* 可变长 float 缓冲（等价 C++ std::vector<float> 的最小实现） */
+/* growable float buffer (minimal equivalent of C++ std::vector<float>) */
 typedef struct {
     float* data;
     size_t len;
@@ -129,7 +129,7 @@ static void fvec_erase_front(FVec* v, size_t n) {
     v->len -= n;
 }
 
-/* ───────────────────────── ONNX C API 封装 ───────────────────────── */
+/* ------------------------- ONNX C API wrapper ------------------------- */
 typedef struct {
     const OrtApi* api;
     OrtEnv* env;
@@ -216,8 +216,8 @@ static int onnx_model_open(OnnxModel* m, const char* name, const char* path,
         m->input_ndims[i] = nd;
         m->input_shapes[i] = (int64_t*)calloc(nd ? nd : 1, sizeof(int64_t));
         if (nd > 0) m->api->GetDimensions(tinfo, m->input_shapes[i], nd);
-        /* CastTypeInfoToTensorInfo 返回的 tensor info 由 type info 持有，
-         * 不能单独 ReleaseTensorTypeAndShapeInfo（1.11.1 会内存重复释放崩溃） */
+        /* CastTypeInfoToTensorInfo result is owned by the type info; do NOT
+         * ReleaseTensorTypeAndShapeInfo separately (1.11.1 double-free crash) */
         m->api->ReleaseTypeInfo(typeinfo);
     }
     for (size_t i = 0; i < no; ++i) {
@@ -278,7 +278,8 @@ static OrtValue* ort_tensor(OnnxModel* m, float* data, size_t count,
     return v;
 }
 
-/* 按 input_names 顺序建 tensor 数组；未知输入建零长 tensor 占位，保证名/值索引对齐 */
+/* build tensor array in input_names order; unknown inputs get zero-length
+ * placeholder tensors so name/value indexes stay aligned */
 static void ort_build_inputs(OnnxModel* m, OrtValue** vals,
                              const char* match[], float** ptrs[], size_t* counts[],
                              size_t n_match) {
@@ -592,7 +593,7 @@ void compressor_process(Compressor* c, float* data, size_t len) {
     }
 }
 
-/* ───────────────────────── EQ（61 段 peaking） ───────────────────────── */
+/* ------------------------- EQ (61-band peaking) ------------------------- */
 #define EQ_BANDS 61
 #define EQ_Q 1.414f
 
@@ -633,7 +634,7 @@ static BiquadCoeff design_peaking_eq(float freq, float gain_db, float q, float s
  * DenoiseProcessor — purevox9 (2048 FFT + Band256, Single STFT)
  *   ONNX: spec [1,1025,1,2], enc_c [1,77106], dec_c [1,53862],
  *         tfa_c [1,1056], inter_c [1,1024]
- *   外部接口：1024 采样块（DENOISE_HOP=1024）。
+ *   external interface: 1024-sample blocks (DENOISE_HOP=1024).
  * ═══════════════════════════════════════════════════════════════
  */
 #define DENOISE_NFFT 2048
@@ -699,7 +700,7 @@ static void denoise_free_buffers(DenoiseProcessor* d) {
     fvec_free(&d->acc_output_);
 }
 
-/* 纯频域 ONNX：model_spec_ → 推理 → 更新 caches → model_spec_ = enhanced */
+/* pure-frequency-domain ONNX: model_spec_ -> infer -> update caches -> model_spec_ = enhanced */
 static void denoise_run_onnx(DenoiseProcessor* d) {
     OnnxModel* m = &d->m;
     size_t nin = m->n_inputs, nout = m->n_outputs;
@@ -756,7 +757,7 @@ static void denoise_run_onnx(DenoiseProcessor* d) {
     for (size_t i = 0; i < nout && i < 16; ++i) if (outputs[i]) m->api->ReleaseValue(outputs[i]);
 }
 
-/* operand: FFT → 构建 model_spec_ → ONNX */
+/* operand: FFT -> build model_spec_ -> ONNX */
 static void denoise_compute_spec(DenoiseProcessor* d, const float* input_1024) {
     size_t prev_size = DENOISE_NFFT - DENOISE_HOP;
     memcpy(d->fft_in_, d->input_history_, prev_size * sizeof(float));
@@ -835,7 +836,7 @@ DenoiseProcessor* denoise_new(const char* model_path) {
         free(d);
         return NULL;
     }
-    /* 预热：喂 3 段静音块，丢弃输出 */
+    /* warm-up: feed 3 silent blocks, discard output */
     float silent[DENOISE_HOP] = {0.0f};
     float dummy[DENOISE_HOP];
     for (int i = 0; i < 3; ++i) denoise_process_chunk(d, silent, dummy);
@@ -888,7 +889,7 @@ void denoise_reset(DenoiseProcessor* d) {
 
 /* ═══════════════════════════════════════════════════════════════
  * StftProcessor — unified FFT/IFFT/OLA (2048-pt, 1024-hop, 48kHz)
- *   平面频谱 [r0..r1024, i0..i1024] = 2050 floats。
+ *   flat spectrum [r0..r1024, i0..i1024] = 2050 floats.
  * ═══════════════════════════════════════════════════════════════
  */
 #define STFT_NFFT 2048
@@ -997,7 +998,7 @@ static void stft_reset(StftProcessor* s) {
 }
 
 /* ═══════════════════════════════════════════════════════════════
- * TseProcessor — tse15 流式 ONNX（2048 FFT, 1024 HOP, 48kHz, 扁平 cache）
+ * TseProcessor — tse15 streaming ONNX (2048 FFT, 1024 HOP, 48kHz, flat cache)
  *   ONNX: spec_frame [1,2,1,1025] + enr_spec [1,2,Te,1025] + cache_in [319040]
  *         → enh_frame [1,2,1,1025] + cache_out [319040]
  * ═══════════════════════════════════════════════════════════════
@@ -1005,7 +1006,7 @@ static void stft_reset(StftProcessor* s) {
 #define TSE_NFFT 2048
 #define TSE_HOP 1024
 #define TSE_FREQ 1025
-#define TSE_SPEC_FLOATS (2 * TSE_FREQ)          /* 2050 平面 [real, imag] */
+#define TSE_SPEC_FLOATS (2 * TSE_FREQ)          /* 2050 flat [real, imag] */
 #define TSE_ENR_CH 2
 #define TSE_ENR_FLOATS (TSE_ENR_CH * TSE_FREQ)  /* 2050 */
 #define TSE_CACHE_TOTAL 319040
@@ -1028,7 +1029,7 @@ struct TseProcessor {
     float* enr_buf_;          /* n_frames * 2050 */
     size_t enr_len_;
     size_t enr_frames_;
-    float* spec_buf_;         /* 2050 平面 [real|imag] */
+    float* spec_buf_;         /* 2050 flat [real|imag] */
 };
 
 static void dump_bin(const char* path, const float* data, size_t n) {
@@ -1165,7 +1166,7 @@ void tse_set_debug_dump(TseProcessor* t, bool enable, const char* dir) {
     }
 }
 
-/* 纯频域 ONNX：spec_buf_ → 推理 → spec_buf_ = enh_frame，cache_ 更新 */
+/* pure-frequency ONNX: spec_buf_ -> infer -> spec_buf_ = enh_frame, cache_ update */
 static void tse_run_onnx(TseProcessor* t) {
     OnnxModel* m = &t->m;
     size_t nin = m->n_inputs, nout = m->n_outputs;
@@ -1208,7 +1209,7 @@ static void tse_run_onnx(TseProcessor* t) {
     for (size_t i = 0; i < nout && i < 8; ++i) if (outputs[i]) m->api->ReleaseValue(outputs[i]);
 }
 
-/* 平面复数 → pffft packed → IFFT → OLA（process_chunk / from_spec 共用尾部） */
+/* flat complex -> pffft packed -> IFFT -> OLA (shared tail of process_chunk/from_spec) */
 static void tse_synth_ola(TseProcessor* t, const float* in_1024, float* out_1024) {
     t->fft_out_[0] = t->spec_buf_[0];
     t->fft_out_[1] = t->spec_buf_[TSE_FREQ - 1];
@@ -1316,8 +1317,8 @@ void tse_reset(TseProcessor* t) {
 }
 
 /* ═══════════════════════════════════════════════════════════════
- * AecProcessor — aec9 流式 ONNX（NFFT=2048, HOP=1024, FREQ=1025,
- *   Mel-256, delay line, complex mask）。外部接口 1024 采样块。
+ * AecProcessor - aec9 streaming ONNX (NFFT=2048, HOP=1024, FREQ=1025,
+ *   Mel-256, delay line, complex mask). External interface 1024-sample blocks.
  * ═══════════════════════════════════════════════════════════════
  */
 #define AEC_NFFT 2048
@@ -1556,7 +1557,7 @@ static void aec_process_one_frame(AecProcessor* a, const float* mic_1024, const 
 
     aec_run_onnx(a);
 
-    /* 增强帧已写入 fft_out_（packed） → IFFT → OLA */
+    /* enhanced frame already written to fft_out_ (packed) -> IFFT -> OLA */
     pffft_transform_ordered(a->fft_plan_, a->fft_out_, a->ifft_out_, NULL, PFFFT_BACKWARD);
     float scale = 1.0f / AEC_NFFT;
     for (int i = 0; i < AEC_NFFT; ++i) a->ifft_out_[i] *= scale * a->window_[i];
@@ -1673,7 +1674,7 @@ void aec_free(AecProcessor* a) {
 }
 
 /* ═══════════════════════════════════════════════════════════════
- * Resampler — libsamplerate 封装
+ * Resampler - libsamplerate wrapper
  * ═══════════════════════════════════════════════════════════════
  */
 struct Resampler {
@@ -1759,7 +1760,7 @@ void resampler_reset(Resampler* r) {
 }
 
 /* ═══════════════════════════════════════════════════════════════
- * AudioProcessor — 统一处理链：
+ * AudioProcessor - unified processing chain:
  *   pre_gain → EQ → clip → [passthrough|denoise|aec|tse] → compressor
  *   → clip → VAD → AGC
  * ═══════════════════════════════════════════════════════════════
@@ -1928,7 +1929,7 @@ void audio_processor_free(AudioProcessor* ap) {
     free(ap);
 }
 
-/* ── AudioProcessor：EQ / 增益 ── */
+/* -- AudioProcessor: EQ / gain -- */
 void audio_processor_set_eq_gains(AudioProcessor* ap, const float* gains, size_t n) {
     bool any_nonzero = false;
     for (int i = 0; i < EQ_BANDS; ++i) {
@@ -1958,7 +1959,7 @@ void audio_processor_set_pre_gain(AudioProcessor* ap, float gain_db) {
     ap->pre_gain_ = (float)pow(10.0, gain_db / 20.0);
 }
 
-/* ── AudioProcessor：模式 ── */
+/* -- AudioProcessor: mode -- */
 void audio_processor_set_mode(AudioProcessor* ap, int mode) {
     ap->mode_ = mode;
     stft_reset(&ap->stft_);
@@ -2023,7 +2024,7 @@ void audio_processor_get_tse_recording_audio(AudioProcessor* ap, float* out) {
            ap->tse_recording_buffer_.len * sizeof(float));
 }
 
-/* ── AudioProcessor：VAD / AGC / 录音 ── */
+/* -- AudioProcessor: VAD / AGC / recording -- */
 void audio_processor_set_vad_enabled(AudioProcessor* ap, bool enabled) {
     if (enabled && !ap->vad_enabled_) vad_reset(ap->vad_gate_);
     ap->vad_enabled_ = enabled;
@@ -2180,7 +2181,7 @@ size_t audio_processor_viz_output_take(AudioProcessor* ap, float* out, size_t ca
 }
 
 /* ═══════════════════════════════════════════════════════════════
- * 频谱计算 — 128 段 Mel，匹配人耳感知
+ * spectrum - 128-band Mel, matching human perception
  * ═══════════════════════════════════════════════════════════════
  */
 #define SPECTRUM_FFT_SIZE 2048
@@ -2216,12 +2217,12 @@ static void init_mel_filterbank(void) {
         center_freqs[i] = mel_to_hz(melv);
     }
 
-    /* 每个 FFT bin → (band, weight) 稀疏表 */
+    /* each FFT bin -> (band, weight) sparse table */
     float* weights = NULL;
     int* starts = NULL;
     int* ends = NULL;
     int* cnt = NULL;
-    /* 先用计数数组确定每 bin 条数 */
+    /* first use count array to determine entries per bin */
     starts = (int*)calloc(mel_num_bins + 1, sizeof(int));
     cnt = (int*)calloc(mel_num_bins, sizeof(int));
     if (!starts || !cnt) goto fail;
@@ -2243,8 +2244,8 @@ static void init_mel_filterbank(void) {
     weights = (float*)calloc(total ? total : 1, sizeof(float));
     ends = (int*)calloc(total ? total : 1, sizeof(int));
     if (!weights || !ends) goto fail;
-    /* 填入 */
-    /* 用 per-bin 位置标记数组 */
+    /* fill in */
+    /* use per-bin position-mark array */
     {
         int* pos = (int*)calloc(mel_num_bins, sizeof(int));
         if (!pos) goto fail;
@@ -2374,7 +2375,7 @@ void spectrum_warmup(void) {
 }
 
 /* ═══════════════════════════════════════════════════════════════
- * RingBuffer — 线程安全 FIFO（Python 端高频读写）
+ * RingBuffer - thread-safe FIFO (high-frequency read/write from Python)
  * ═══════════════════════════════════════════════════════════════
  */
 struct RingBuffer {

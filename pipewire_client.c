@@ -127,7 +127,7 @@ static size_t spsc_read_or_silence(SPSCRing* s, float* out, size_t n) {
 
 /* ── PwBridge ────────────────────────────────────────────────────────── */
 
-#define RING_CAPACITY 96000 /* 2s @48kHz */
+#define RING_CAPACITY 4096  /* 4 x hop (85ms) max latency ceiling */
 
 typedef struct StreamCtx StreamCtx;
 
@@ -261,6 +261,7 @@ static struct pw_stream* create_stream(PwBridge* self, const char* name, enum pw
         PW_KEY_MEDIA_CATEGORY, "Capture",
         PW_KEY_MEDIA_ROLE, "Communication",
         PW_KEY_TARGET_OBJECT, target,
+        PW_KEY_NODE_LATENCY, "1024/48000",
         NULL);
     if (!props) {
         snprintf(self->last_error_, sizeof(self->last_error_), "创建流失败: %s", name);
@@ -300,14 +301,24 @@ static struct pw_stream* create_stream(PwBridge* self, const char* name, enum pw
     info.rate = 48000;
     info.channels = 1;
 
-    uint8_t buffer[1024];
+    uint8_t buffer[2048];
     struct spa_pod_builder b = SPA_POD_BUILDER_INIT(buffer, sizeof(buffer));
-    const struct spa_pod* params[1];
+    const struct spa_pod* params[2];
     params[0] = spa_format_audio_raw_build(&b, SPA_PARAM_EnumFormat, &info);
+
+    /* Request a small buffer (hop 1024 samples = 4096 bytes) to override the
+       null-sink default (measured 12288 samples = 256ms) that causes bursty
+       consumption and output latency accumulation. */
+    params[1] = (const struct spa_pod*)spa_pod_builder_add_object(
+        &b, SPA_TYPE_OBJECT_ParamBuffers, SPA_PARAM_Buffers,
+        SPA_PARAM_BUFFERS_buffers, SPA_POD_Int(4),
+        SPA_PARAM_BUFFERS_size,   SPA_POD_Int(4096),   /* 1024 samples x 4B */
+        SPA_PARAM_BUFFERS_stride, SPA_POD_Int(4));
+    int n_params = (params[1] != NULL) ? 2 : 1;
 
     if (pw_stream_connect(stream, direction, PW_ID_ANY,
                           (enum pw_stream_flags)(PW_STREAM_FLAG_AUTOCONNECT | PW_STREAM_FLAG_MAP_BUFFERS),
-                          params, 1) < 0) {
+                          params, n_params) < 0) {
         pw_stream_destroy(stream);
         free(ctx);
         if (out_ctx) *out_ctx = NULL;
