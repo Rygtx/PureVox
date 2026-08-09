@@ -20,7 +20,12 @@ Windows / Linux 桌面应用 + Android 客户端：实时 AI 音频降噪 / 目�
 **本项目的单一实现路径（强制执行）**：
 
 - Linux 音频采集/输出**只用原生 PipeWire**（`pvpipe`）；PortAudio/GStreamer/JACK 已弃用
-- 虚拟麦克风只有一种：单声道 null-sink `purevox_out` 的 monitor；不用 pw-loopback、不暴露第二路 Source
+- 虚拟麦克风 = 单声道 null-sink `purevox_out`（sink，唯一写入口）+ 两个出口：
+  ① 内置 monitor `purevox_out.monitor`（宽口径源）；② 非 monitor 真源 `purevox_mic`
+  （由 `module-remap-source` 把 monitor 重映射而来，供 OBS 等"只列真源"软件选麦克风）。
+  不用 pw-loopback。**禁建第二路源用 `module-null-sink media.class=Audio/Source/Virtual`
+  ——实测会把 pipewire-pulse 协议搞坏（pactl 报协议错误、plasma-pa context kaput、
+  系统托盘清空，仅重启 pipewire-pulse 恢复）**，健康方案是 module-remap-source
 - 音频格式一律 **F32 单声道 48kHz**（PipeWire 负责重采样与声道转换，模型永远拿 48k 单声道）
 - 设备枚举只用 `pw-dump` 标准 introspection（`pvplatform.audio.pwpipe_client`）
 
@@ -161,13 +166,23 @@ AEC far-end：独立输入流 `PureVox-far`（`stream.capture.sink=tap 扬声器
 无 PyAudio/PulseAudio monitor 依赖；采样率恒 48kHz 单声道）
 
 - 格式协商 **F32 单声道 48000Hz**：PipeWire 内置重采样 + 声道转换，模型永远拿 48k 单声道，输出自动上混到目标设备声道数，不存在"一个通道一个模型 / 通道不匹配 / 采样率不齐"
-- 虚拟麦克风 = `purevox_out.monitor`（单声道 48kHz，系统录音列表唯一 PureVox 项）；创建/删除走 `pvplatform.system` 的 `virtual_mic_ready()` / `ensure_virtual_mic()` / `remove_virtual_mic()`
+- 虚拟麦克风 = `purevox_out` sink + 两个出口：`purevox_out.monitor`（monitor 源）+ `purevox_mic`
+  （module-remap-source 重映射真源，供 OBS 等"只列真源"软件）。设备命名区分：sink=「PureVox out」，
+  真源=「PureVox mic」。创建/删除走 `pvplatform.system` 的 `virtual_mic_ready()` /
+  `ensure_virtual_mic()` / `remove_virtual_mic()`，均幂等（检测-重置：有则不重建）。
+  已知限制：remap-source 会强制覆盖 `node.description`（"Remapped ... source"），set-param 改不掉
 - 关键坑：
   - 所有 pw_stream 操作必须经 `_run_on_loop` 在 PipeWire 主循环线程执行（`pw_loop_invoke` + 条件变量同步；block 参数不可靠会竞态）
   - 进程回调（数据线程）禁止加锁/分配——pvpipe 用无锁 SPSC 环形缓冲（输入环满丢最旧、输出环满丢新），Python 线程读→降噪→写（2s 缓冲吸收调度抖动），回调只搬数据
   - 永不直接打开虚拟 sink（null-sink 须经 monitor 引用，直接打开会触发 PipeWire ALSA 插件崩溃）
-  - `pactl load-module` 的 `device.description` 不生效，须用 `pw-cli create-node` 设 `node.description`
-  - 设备列表（pw-dump）：输入 = Audio/Source 节点 + `purevox_out.monitor`；排除 PureVox 自身流（`PureVox-*`）、幻影路由（`api.alsa.path` 未指定具体设备，如 `hw:sofhdadsp` 无 `,N`，打开也是静音）、error 状态节点；输出 = Audio/Sink 节点（扬声器 + `purevox_out`）
+  - **不要重启 pipewire-pulse 来"修托盘"**：重启会让 plasma-pa 的 libpulse context 变 kaput、
+    系统托盘清空（KDE 不自动重连）。虚拟麦克风用 `pw-cli create-node` 建（健康），
+    真源用 `module-remap-source`（健康）；`module-null-sink media.class=Audio/Source/Virtual`
+    会弄坏 pipewire-pulse，禁用
+  - 设备列表（pw-dump）：PureVox 自身输入 = Audio/Source 物理麦克风（排除 PureVox-*、purevox
+    源[那是对外输出，选它当输入会回授]、幻影路由 `api.alsa.path` 未指定具体设备如 `hw:sofhdadsp`
+    无 `,N`、error 节点）；输出 = Audio/Sink 节点（扬声器 + `purevox_out`）
+  - VU 电平显示**降噪输出峰值**（`_pw_loop` 里取 `out`，勿改成输入 `data`）
   - UI 下拉框直接显示节点名（node.name），真实节点名存 userData，读下拉框一律走 `_combo_value()`
 
 ### Android 端 (Kotlin)

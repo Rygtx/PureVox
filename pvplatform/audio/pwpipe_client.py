@@ -24,9 +24,10 @@ Linux 原生 PipeWire 输入/输出（ctypes 绑定 pvpipe 的薄封装）。
   - 无 JACK 依赖，更现代；虚拟麦克风生命周期可控（退出即清理）。
 
 设备列表 = `pw-cli ls Node` 解析的节点名（node.name 稳定）：
-  - 输入：media.class=Audio/Source（物理麦克风 + PureVox 虚拟麦克风 purevox_mic）
+  - 输入：media.class=Audio/Source（物理麦克风 + PureVox 虚拟麦克风 monitor purevox_out.monitor）
   - 输出：media.class=Audio/Sink（扬声器 + PureVox 虚拟麦克风 sink purevox_out）
-  排除 PureVox 自身流节点与 purevox_out 的 monitor 源（避免"两个虚拟麦克风"）。
+  排除 PureVox 自身流节点（PureVox-*）与真源 purevox_mic（那是给别人用的
+  "降噪后虚拟麦克风"，不参与 PureVox 自身的输入处理）。
 
 结构：
   - list_sources() / list_destinations()  节点名列表（去重/净化）
@@ -103,14 +104,14 @@ def _is_phantom_route(node: Dict[str, str]) -> bool:
 
 
 def list_sources() -> List[str]:
-    """枚举输入节点名（麦克风选项）。
+    """枚举输入节点名（PureVox 自身的麦克风选项）。
 
-    物理麦克风 = media.class=Audio/Source；排除：
+    PureVox 的输入 = 真实物理麦克风（media.class=Audio/Source）。排除：
       - PureVox 自身流（PureVox-*）
+      - PureVox 虚拟麦克风（purevox_out.monitor / purevox_mic）——那是 PureVox
+        降噪后的**输出**（给别人软件当麦克风），拿它当输入会形成回授
       - 幻影路由（api.alsa.path 未指定具体设备，如 hw:sofhdadsp）与 error 节点
         —— 这类源是 UCM 幻影/死路由，打开也是静音（如本机 Stereo Microphone）
-    PureVox 虚拟麦克风 = 单声道 null-sink purevox_out 的 monitor
-    （purevox_out.monitor，唯一 PureVox 源）。
     """
     nodes = _list_nodes()
     out = []
@@ -120,14 +121,12 @@ def list_sources() -> List[str]:
         name = n["name"]
         if not name or name.startswith("PureVox-"):
             continue
+        if name.startswith("purevox"):
+            continue
         if _is_phantom_route(n):
             continue
         if name not in out:
             out.append(name)
-    # 虚拟麦克风源 = purevox_out 的 monitor（sink 存在时）
-    if any(n["name"] == "purevox_out" for n in nodes):
-        if "purevox_out.monitor" not in out:
-            out.append("purevox_out.monitor")
     return out
 
 
@@ -151,7 +150,7 @@ def list_destinations() -> List[str]:
 def node_description(name: str) -> str:
     """节点名 → node.description（无则返回节点名）。"""
     if name == "purevox_out.monitor":
-        return "PureVox 虚拟麦克风"
+        return "PureVox out"
     for n in _list_nodes():
         if n["name"] == name:
             return n["description"] or name
@@ -160,17 +159,17 @@ def node_description(name: str) -> str:
 
 def source_label(name: str) -> str:
     """输入节点显示名（标记职责）。"""
-    if name == "purevox_out.monitor":
-        return "PureVox 虚拟麦克风（降噪后）"
+    if name == "purevox_mic":
+        return "PureVox mic（虚拟麦克风）"
     if name.startswith("purevox"):
-        return "PureVox 虚拟麦克风（降噪后）"
+        return "PureVox out"
     return "麦克风 · " + (node_description(name) or name)
 
 
 def dest_label(name: str) -> str:
     """输出节点显示名（标记职责）。"""
     if name == "purevox_out":
-        return "PureVox 虚拟麦克风（输出目标，默认）"
+        return "PureVox out（默认）"
     return "播放 · " + (node_description(name) or name)
 
 

@@ -2230,15 +2230,31 @@ def toggle_processing(state, log):
             _sys_beep(880, 140)
 
 
+def _reset_virtual_mic(logger, window=None):
+    """手动重置虚拟麦克风：移除后立即重建两个出口。
+
+    Linux 采用「检测-重置」模型：启动时检测到已存在则不重建（避免频繁
+    创建/删除）；虚拟麦克风异常/陈旧时用菜单按钮一键重置。
+    注意：绝不在重置里重启 pipewire-pulse——实测重启会让 plasma-pa 的
+    libpulse context 变 kaput、系统托盘清空（KDE 不会自动重连）。
+    """
+    remove_virtual_mic(logger)
+    if ensure_virtual_mic(logger):
+        logger.sys("虚拟音频已重置")
+        QTimer.singleShot(300, lambda: _state.main_panel.refresh_devices()
+                          if _state.main_panel else None)
+    else:
+        logger.err("虚拟音频重置失败")
+
+
 def quit_app(window):
     log = _state.logger or get_logger()
     _stop_network_server(_state, log)
     stop_processing(_state, log)
     if _state.tray_icon:
         _state.tray_icon.hide()
-    if IS_LINUX:
-        # 退出时卸载虚拟麦克风（null-sink + 桥接 loopback）
-        remove_virtual_mic(log)
+    # Linux 采用「检测-重置」模型：退出不卸载虚拟麦克风（避免频繁创建/删除），
+    # 下次启动 detect 到已存在便不重建；异常时用菜单「重置虚拟音频」手动处理。
     QApplication.quit()
 
 
@@ -2303,6 +2319,10 @@ class MainApp:
         vb = QAction("VB设置", window)
         vb.triggered.connect(lambda: open_vb_panel(logger))
         menubar.addAction(vb)
+        if IS_LINUX:
+            reset = QAction("重置虚拟音频", window)
+            reset.triggered.connect(lambda: _reset_virtual_mic(logger, window))
+            menubar.addAction(reset)
         about = QAction("关于", window)
         about.triggered.connect(lambda: self._show_about(window))
         menubar.addAction(about)

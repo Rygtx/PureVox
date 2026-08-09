@@ -1,5 +1,36 @@
 # 更新日志
 
+## 2026-08-09 — 修复 Linux 虚拟麦克风破坏系统托盘的根因 + 改为健康双出口
+
+- **现象**：Linux 上跑 `run_pyside6.py` 后，系统托盘音量控件清空（无设备）、
+  `pactl` 间歇报"连接失败：协议错误"，只有 `systemctl --user restart pipewire
+  pipewire-pulse wireplumber` 能恢复。100% 复现。
+- **根因**：`pvplatform/system/_posix.py` 用 `pactl load-module module-null-sink
+  media.class=Audio/Source/Virtual sink_name=purevox_mic` 创建第二路非 monitor 源时，
+  该模块把 **pipewire-pulse 协议状态弄坏**——plasma-pa 的 libpulse context 变
+  `kaput`（日志 `org.kde.plasma.pulseaudio: context kaput`），于是托盘清空；且 KDE
+  的 plasma-pa 不会自动重连，只能重启 pipewire-pulse。同时确认重启 pipewire-pulse
+  本身也会触发 `context kaput`（重启会短暂打断托盘）。
+- **修复**：
+  - 第二路真源改用标准 `pactl load-module module-remap-source
+    master=purevox_out.monitor source_name=purevox_mic`，把 monitor 重映射成
+    非监视器真源（`media.class=Audio/Source`、无 `monitor_of`，OBS 可选），自动
+    取数、无需额外 pw-link。实测 pactl 全程正常、不再清托盘。
+  - `ensure_virtual_mic` 保留「检测-重置」幂等（有则不重建）；`remove_virtual_mic`
+    卸载 sink + remap 模块。
+  - 菜单「重置虚拟音频」**去掉重启 pipewire-pulse 逻辑**（那正是清托盘元凶），
+    改为仅 remove + ensure 重建。
+  - VU 电平显示改为降噪**输出**峰值（`_pw_loop` 原误设输入 `data`，改为输出 `out`）。
+  - `list_sources()` 排除 `purevox_out.monitor`/`purevox_mic`（那是 PureVox 输出，
+    拿它当输入会回授）。
+  - 设备命名区分：sink=「PureVox out」，真源=「PureVox mic（虚拟麦克风）」。
+- **已知限制**：`module-remap-source` 会强制覆盖 `node.description` 为
+  "Remapped purevox_out.monitor source"（`set-param`/`source_properties` 改不掉）；
+  PureVox 自己 UI 已显示正确名，其他软件看到的是 remap 默认名。
+- **勿回退**：不要用 `module-null-sink media.class=Audio/Source/Virtual` 建第二路源。
+
+---
+
 ## 2026-08-09 — 修复 EXE 在 Win7 启动失败根因：`build_win.ps1` 误删 Qt6Qml.dll
 
 - **现象**：打包 EXE 在 Win7 上启动即报 `Failed to execute script run_pyside6 ...

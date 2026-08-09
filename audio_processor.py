@@ -1030,7 +1030,6 @@ class AudioThread(threading.Thread):
                 if self._viz_enabled:
                     viz_in = self.processor.process_eq_only(list(data))
                     self._spectrum_in.write(viz_in)
-                    self._vu_peak = max(abs(x) for x in data) if data else 0.0
 
                 while len(acc) >= HOP_LENGTH:
                     chunk = acc[:HOP_LENGTH]
@@ -1051,6 +1050,8 @@ class AudioThread(threading.Thread):
                         except Exception:
                             pass
                     bridge.write(list(out))
+                    # VU 电平显示降噪输出（out）的峰值
+                    self._vu_peak = max(abs(x) for x in out) if out else 0.0
                     if self._viz_enabled:
                         self._spectrum_out.write(list(out))
                     fc += 1

@@ -67,6 +67,7 @@ dist/
 _build_version.py
 .codegraph
 .reasonix
+.opencode
 
 # Training data / training scripts (not shipped)
 /merged_noisy_files.wav

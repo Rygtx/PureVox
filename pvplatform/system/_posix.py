@@ -23,7 +23,7 @@ POSIX（Linux / macOS）系统服务实现。
     - 提示音：终端 BEL 或 Qt QApplication.beep()
     - 声音面板：pavucontrol / systemsettings
     - 提权：pkexec（可选）
-    - 虚拟麦克风：PipeWire null-sink（purevox_out）+ pw-loopback → Audio/Source（purevox_mic）
+    - 虚拟麦克风：PipeWire null-sink purevox_out，其内置 monitor 即虚拟麦克风
 """
 
 import os
@@ -33,13 +33,23 @@ import threading
 import time
 from typing import Optional
 
-# Linux 虚拟麦克风：
-#   VIRTUAL_MIC_SINK   = 单声道 null-sink（降噪音频的输出目标）
-#   VIRTUAL_MIC_SOURCE = 虚拟麦克风源 = sink 的 monitor（purevox_out.monitor）
-#   VIRTUAL_MIC_LABEL  = 显示名
+# Linux 虚拟麦克风（双出口，同一路降噪音频，单一生产者 purevox_out）：
+#   VIRTUAL_MIC_SINK   = 单声道 null-sink（唯一写入口，PureVox 降噪音频的输出目标）
+#   VIRTUAL_MIC_SOURCE = sink 的内置 monitor（purevox_out.monitor，宽口径源）
+#   VIRTUAL_MIC_MIC    = 非 monitor 真源（purevox_mic），供 OBS 等"只列真源"软件选
+#                        麦克风用；由 module-remap-source 把 monitor 重映射而来，
+#                        自动取数，无第二生产者。
+#   VIRTUAL_MIC_LABEL  = sink/monitor 显示名（out）
+#   VIRTUAL_MIC_MIC_LABEL = 真源显示名（mic）
+# 重要：建纯真源**不能**用 `pactl load-module module-null-sink
+# media.class=Audio/Source/Virtual`——实测会弄坏 pipewire-pulse 协议状态（pactl 报
+# "连接失败：协议错误"、plasma-pa context kaput、系统托盘清空，仅重启 pipewire-pulse
+# 才恢复）。健康方案是 module-remap-source（见 _create_virtual_mic_source）。
 VIRTUAL_MIC_SINK = "purevox_out"
 VIRTUAL_MIC_SOURCE = "purevox_out.monitor"
-VIRTUAL_MIC_LABEL = "PureVox 虚拟麦克风"
+VIRTUAL_MIC_MIC = "purevox_mic"
+VIRTUAL_MIC_LABEL = "PureVox out"
+VIRTUAL_MIC_MIC_LABEL = "PureVox mic"
 
 LOCK_PATH = os.path.join(os.path.expanduser("~"), ".purevox", "purevox.lock")
 AUTOSTART_PATH = os.path.join(
@@ -174,19 +184,23 @@ def run_as_admin_posix(cmd: str, logger) -> bool:
 
 
 # ── 虚拟麦克风（Linux）───────────────────────────────────────────────
-# 架构（原生 PipeWire，单一虚拟麦克风源）：
-#   1. 只建一个单声道 null-sink purevox_out（node.description="PureVox 虚拟
-#      麦克风"，audio.position=[MONO]）。
-#   2. 虚拟麦克风源 = purevox_out 的 monitor（purevox_out.monitor）——系统
-#      录音列表只有一个 PureVox 项，且是单声道 48kHz。
-#   3. PureVox 降噪音频经原生 PipeWire 输出流 → purevox_out（见
-#      pvplatform.audio.pwpipe_client）。
+# 架构（原生 PipeWire，单一生产者、双出口，两者均健康）：
+#   1. 单生产者：只有一个单声道 null-sink purevox_out（降噪音频唯一写入口，
+#      node.description="PureVox 虚拟麦克风"，audio.position=[MONO]）。
+#   2. 出口 1 · monitor：purevox_out 的内置监视器源 purevox_out.monitor——
+#      系统录音列表的一个 PureVox 项，单声道 48kHz；Audacity / 浏览器 /
+#      pavucontrol 等"列出全部源"的软件可选它当麦克风。
+#   3. 出口 2 · 真源：module-remap-source 把 purevox_out.monitor 重映射成
+#      非 monitor 源 purevox_mic（media.class=Audio/Source、无 monitor_of），
+#      自动从 monitor 取数，无第二生产者；OBS 等"只列真源"的软件在麦克风
+#      下拉能选到它。
 #
-# 为什么不用 pw-loopback 再暴露一个 Audio/Source（旧架构）：
-#   旧架构 null-sink + pw-loopback → purevox_mic 会在录音列表出现两个
-#   PureVox 源（purevox_out.monitor 静音冗余 + purevox_mic），且 loopback
-#   进程异常退出会残留"没运行也有虚拟麦克风"。monitor 作为唯一虚拟麦克风
-#   干净无残留。
+# 为什么纯真源用 module-remap-source 而非 module-null-sink：
+#   曾用 `pactl load-module module-null-sink media.class=Audio/Source/Virtual
+#   sink_name=purevox_mic` 建非 monitor 源，实测该模块会把 pipewire-pulse 协议
+#   状态搞坏（pactl 报"连接失败：协议错误"、plasma-pa context kaput、系统托盘
+#   清空，仅重启 pipewire-pulse 能恢复）。module-remap-source 是标准重映射，
+#   实测健康且自带取数，无需额外 pw-link。
 #
 # 注意：PortAudio 直接打开 null-sink 会触发 PipeWire ALSA 插件堆损坏
 # （free(): corrupted unsorted chunks），PureVox 永不直接打开它（走原生
@@ -209,12 +223,12 @@ def _pw_node_id(node_name: str) -> Optional[int]:
 
 
 def virtual_mic_ready() -> bool:
-    """虚拟麦克风（purevox_out sink，其 monitor 即虚拟麦克风源）是否已创建。"""
+    """虚拟麦克风（purevox_out sink，其 monitor 即虚拟麦克风）是否已创建。"""
     return _pw_node_id(VIRTUAL_MIC_SINK) is not None
 
 
 def _kill_stray_loopbacks() -> None:
-    """杀掉旧架构残留的 pw-loopback 进程（其 purevox_mic 源随之消失）。"""
+    """杀掉旧架构残留的 pw-loopback 进程（防御性清理，当前架构不再使用）。"""
     try:
         subprocess.run(["pkill", "-9", "-x", "pw-loopback"],
                        capture_output=True, text=True, timeout=5)
@@ -222,12 +236,45 @@ def _kill_stray_loopbacks() -> None:
         pass
 
 
-def ensure_virtual_mic(logger) -> bool:
-    """确保虚拟麦克风（单声道 null-sink purevox_out）存在，返回是否可用。
+def _create_virtual_mic_source(logger) -> bool:
+    """创建非 monitor 真源 purevox_mic（供 OBS 等"只列真源"的软件当麦克风）。
 
-    虚拟麦克风源 = purevox_out.monitor（系统录音列表唯一 PureVox 项）。
-    PureVox 降噪音频经原生 PipeWire 输出流送入 purevox_out。
-    已存在时幂等；同时清理旧架构残留 loopback。
+    用标准 pulse 模块 module-remap-source 把 purevox_out.monitor 重映射成一个
+    新源（media.class=Audio/Source、无 monitor_of），自动从 monitor 取数，无需
+    额外 pw-link。实测比 module-null-sink+media.class=Audio/Source/Virtual 健康
+    ——后者会弄坏 pipewire-pulse 协议（pactl 报协议错误、托盘清空）。无
+    pactl/pipewire-pulse 时返回 False（此时仍保有 monitor 出口）。
+    """
+    if _pw_node_id(VIRTUAL_MIC_MIC) is not None:
+        return True
+    try:
+        r = subprocess.run(
+            ["pactl", "load-module", "module-remap-source",
+             "master=" + VIRTUAL_MIC_SOURCE,
+             "source_name=" + VIRTUAL_MIC_MIC,
+             "channel_map=mono",
+             "source_properties=device.description=" + VIRTUAL_MIC_MIC_LABEL],
+            capture_output=True, text=True, timeout=10)
+        if r.returncode != 0:
+            logger.warn(f"创建虚拟麦克风源失败（无 pactl/pipewire-pulse？): {r.stderr.strip()}")
+            return False
+    except Exception as e:
+        logger.warn(f"创建虚拟麦克风源异常: {e}")
+        return False
+    time.sleep(0.6)
+    if _pw_node_id(VIRTUAL_MIC_MIC) is None:
+        logger.warn("虚拟麦克风源创建后未就绪")
+        return False
+    return True
+
+
+def ensure_virtual_mic(logger) -> bool:
+    """确保虚拟麦克风（purevox_out sink + 真源 purevox_mic）存在，返回是否可用。
+
+    PureVox 降噪音频经原生 PipeWire 输出流送入 purevox_out；其 monitor
+    （purevox_out.monitor）与重映射真源（purevox_mic）即两个麦克风出口。
+    已存在时幂等（检测-重置：有则不重建）；同时清理旧架构残留 loopback。
+    缺 pactl 时仅保留 monitor 出口。
     """
     logger = _safe_logger(logger)
     _kill_stray_loopbacks()
@@ -245,17 +292,45 @@ def ensure_virtual_mic(logger) -> bool:
             return False
         time.sleep(0.5)
 
-    if virtual_mic_ready():
-        logger.sys(f"虚拟麦克风已就绪 ({VIRTUAL_MIC_SOURCE})")
-        return True
-    logger.err("虚拟麦克风创建后未就绪")
-    return False
+    if not virtual_mic_ready():
+        logger.err("虚拟 sink 创建后未就绪")
+        return False
+
+    if _create_virtual_mic_source(logger):
+        logger.sys(f"虚拟麦克风已就绪 ({VIRTUAL_MIC_SOURCE} / {VIRTUAL_MIC_MIC})")
+    else:
+        logger.warn("虚拟麦克风真源创建失败，仅保留 monitor 出口")
+    return True
+
+
+def _unload_virtual_mic_source(logger) -> None:
+    """卸载纯 non-monitor 真源（按 pactl module 列表定位，module-remap-source）。"""
+    try:
+        out = subprocess.run(["pactl", "list", "short", "modules"],
+                             capture_output=True, text=True, timeout=5).stdout
+        for line in out.splitlines():
+            if VIRTUAL_MIC_MIC in line:
+                mid = line.split()[0]
+                subprocess.run(["pactl", "unload-module", mid],
+                               capture_output=True, text=True, timeout=5)
+                break
+    except Exception:
+        pass
+    # 防御：模块卸载后仍未消失的节点直接 destroy
+    node_id = _pw_node_id(VIRTUAL_MIC_MIC)
+    if node_id is not None:
+        try:
+            subprocess.run(["pw-cli", "destroy", str(node_id)],
+                           capture_output=True, text=True, timeout=5)
+        except Exception:
+            pass
 
 
 def remove_virtual_mic(logger) -> None:
     """卸载虚拟麦克风（幂等；无则忽略）。"""
     logger = _safe_logger(logger)
     _kill_stray_loopbacks()
+    _unload_virtual_mic_source(logger)
     node_id = _pw_node_id(VIRTUAL_MIC_SINK)
     if node_id is not None:
         try:
