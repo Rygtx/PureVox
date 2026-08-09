@@ -31,7 +31,6 @@ from dataclasses import dataclass
 
 from PySide6.QtGui import QColor, QPalette
 from PySide6.QtWidgets import QApplication
-from PySide6.QtCore import Qt
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -229,7 +228,7 @@ def is_dark_current() -> bool:
     if app:
         pal = app.palette()
         return pal.window().color().lightness() < 128
-    return QApplication.styleHints().colorScheme() == Qt.ColorScheme.Dark
+    return QApplication.palette().window().color().lightness() < 128
 
 
 def get_theme_palette(dark: bool) -> PaletteDef:

@@ -232,7 +232,7 @@ def _sync_theme_ui(app: QApplication, config) -> None:
     manual = (mode != "system")
 
     if mode == "system":
-        dark = app.styleHints().colorScheme() == Qt.ColorScheme.Dark
+        dark = is_dark_current()
     else:
         dark = (mode == "dark")
 

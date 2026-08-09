@@ -70,6 +70,13 @@ powershell -ExecutionPolicy Bypass -File build_win.ps1   # 打包 EXE（自动�
 
 注意：四件套 wheel 名含 `abi3`；在线安装 PySide6==6.1.3 时会自动带对版本。
 
+**Qt 6.5+ API 禁忌（Win7 实测 2026-08-09）**：`QStyleHints::colorScheme()` 与
+`Qt.ColorScheme` 是 Qt 6.5+ 才有，Win7 锁定的 PySide6 6.1.3 上没有——启动即抛
+`AttributeError: 'QStyleHints' object has no attribute 'colorScheme'`。深色判定一律用
+**调色板亮度**（`app.palette().window().color().lightness() < 128`，Qt 6.1 即可用），
+已固化在 `theme_colors.is_dark_current()`（2014 版），UI 主题同步 `_sync_theme_ui`
+也走它。新增代码禁写 `styleHints().colorScheme()`。
+
 **`.ps1` 脚本必须纯 ASCII（英文）**：`build_win.ps1` / `bootstrap_python38.ps1`
 不含中文/非 ASCII/BOM。Windows PowerShell 5.1 对无 BOM 的 UTF-8 脚本按 ANSI
 (cp1252/GBK) 误读导致语法错误（`chcp 65001` 只在本机掩盖）；中文文件名
