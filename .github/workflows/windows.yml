@@ -10,10 +10,10 @@ jobs:
     name: Build aimic.dll + Py3.8 smoke
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Set up Python 3.8
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: "3.8"
 
@@ -57,10 +57,10 @@ jobs:
     runs-on: windows-latest
     needs: build
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Set up Python 3.8
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: "3.8"
 
@@ -96,7 +96,7 @@ jobs:
           pwsh -NoProfile -ExecutionPolicy Bypass -File build_win.ps1
 
       - name: Upload EXE
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: PureVox-win-x64
           path: dist/PureVox_*.exe

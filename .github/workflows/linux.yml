@@ -26,7 +26,7 @@ jobs:
     container:
       image: ${{ matrix.container }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Install system dependencies
         run: |
@@ -60,7 +60,7 @@ jobs:
 
       - name: Upload deb artifact
         if: matrix.distro != 'fedora'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: purevox-deb-${{ matrix.distro }}
           path: dist/purevox_*.deb
@@ -74,7 +74,7 @@ jobs:
     container:
       image: python:3.8-bullseye
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Install gcc + PipeWire devel
         run: |
