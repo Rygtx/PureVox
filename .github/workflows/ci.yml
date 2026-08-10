@@ -69,8 +69,8 @@ jobs:
       - name: Package deb (Ubuntu)
         if: matrix.pkg_deb
         run: |
-          python3 -m pip install --upgrade --break-system-packages pillow 2>/dev/null \
-            || python3 -m pip install --upgrade pillow >/dev/null
+          python3 -m pip install --break-system-packages pillow 2>/dev/null \
+            || python3 -m pip install pillow >/dev/null
           bash pack_deb.sh
           ls -lh dist/PureVox-Linux-x64-*.deb
 
@@ -85,8 +85,8 @@ jobs:
       - name: Package rpm (Fedora)
         if: matrix.pkg_rpm
         run: |
-          python3 -m pip install --upgrade --break-system-packages pillow 2>/dev/null \
-            || python3 -m pip install --upgrade pillow >/dev/null
+          python3 -m pip install --break-system-packages pillow 2>/dev/null \
+            || python3 -m pip install pillow >/dev/null
           bash pack_rpm.sh
           ls -lh dist/PureVox-Linux-x64-*.rpm
 
@@ -129,20 +129,22 @@ jobs:
         uses: actions/setup-python@v6
         with:
           python-version: "3.8"
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-win.txt
 
       - name: Set up mingw-w64 gcc
         id: msys2
         uses: msys2/setup-msys2@v2
         with:
           msystem: MINGW64
-          update: true
           install: >-
             mingw-w64-x86_64-gcc
 
       - name: Install Python deps
         shell: pwsh
         run: |
-          python -m pip install --upgrade pip
           python -m pip install -q -r requirements.txt -r requirements-win.txt
 
       - name: Build aimic.dll (mingw gcc)
@@ -168,7 +170,7 @@ jobs:
       - name: Download opus.dll (gitignored, needed by server/)
         shell: pwsh
         run: |
-          Invoke-WebRequest -Uri "https://github.com/DSharpPlus/DSharpPlus/raw/master/docs/natives/vnext_natives_win32_x64.zip" -OutFile "$env:TEMP\opus.zip"
+          curl.exe -fsSL -L "https://github.com/DSharpPlus/DSharpPlus/raw/master/docs/natives/vnext_natives_win32_x64.zip" -o "$env:TEMP\opus.zip"
           Expand-Archive -Path "$env:TEMP\opus.zip" -DestinationPath "$env:TEMP\opus" -Force
           Copy-Item "$env:TEMP\opus\libopus.dll" "server\opus.dll" -Force
           if (-not (Test-Path "server\opus.dll")) { throw "opus.dll not found" }
@@ -179,7 +181,7 @@ jobs:
           CC: ${{ steps.msys2.outputs.msys2-location }}\mingw64\bin\gcc.exe
         run: |
           $env:PATH = "${{ steps.msys2.outputs.msys2-location }}\mingw64\bin;$env:PATH"
-          pwsh -NoProfile -ExecutionPolicy Bypass -File build_win.ps1
+          pwsh -NoProfile -ExecutionPolicy Bypass -File build_win.ps1 -SkipC
 
       - name: Upload ZIP
         uses: actions/upload-artifact@v5

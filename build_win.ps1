@@ -1,6 +1,8 @@
 # PureVox - Windows packaging script (PyInstaller + ZIP)
 # Output: dist/PureVox-Windows-x64-<yyyy-MM-dd-HHmm>-release.zip
-# Usage:  powershell -ExecutionPolicy Bypass -File build_win.ps1
+# Usage:  powershell -ExecutionPolicy Bypass -File build_win.ps1 [-SkipC]
+#   -SkipC: skip the aimic.dll gcc build (CI already built it in an earlier step)
+param([switch]$SkipC)
 $ErrorActionPreference = "Stop"
 
 $date = Get-Date -Format 'yyyy-MM-dd-HHmm'
@@ -16,8 +18,10 @@ if (Test-Path $embeddedPy) {
 }
 
 # 1. Build the C shared library (aimic.dll)
-& $PY setup.py build_ext --inplace --force
-if ($LASTEXITCODE -ne 0) { throw "build_ext failed" }
+if (-not $SkipC) {
+    & $PY setup.py build_ext --inplace --force
+    if ($LASTEXITCODE -ne 0) { throw "build_ext failed" }
+}
 
 # 2. Generate version stamp (shown in the window title)
 #    -NoNewline is PowerShell 6+/7 only; Win7 ships PS 5.1, so write without it
