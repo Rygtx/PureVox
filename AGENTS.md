@@ -130,7 +130,8 @@ cd android
 
 ### CI（`.github/workflows/ci.yml`，精简为通用包 deb/rpm/appimage + 产物目录 + apk）
 
-- **触发方式：只有 push tag（`v*`）才跑 CI**，分支 push 不触发（保持日常快速提交零成本）；需验证分支时可 `workflow_dispatch` 手动跑。release 由 tag 触发后自动附产物（见下 `release` job）
+- **触发方式：push tag 触发 CI 构建 + 自动发 release 两件事**，分支 push 不触发（保持日常快速提交零成本）；需验证分支时可 `workflow_dispatch` 手动跑（仅触发三构建 job，不触发 release）。
+- **tag 命名规则**：`v<yyyy.MM.dd.HHmm>`（如 `v2026.08.10.1517`）。tag 名同时定义产物体内版本（`v` 去掉即 `yyyy.MM.dd.HHmm`），所有 job 的产物时间戳/版本都从 `${GITHUB_REF_NAME}` 推导，避免各 job 并发时刻漂移。回复发版即 `git tag v<yyyy.MM.dd.HHmm> && git push origin <tag>`。
 - `linux` job：容器矩阵只留 3 项，产出通用安装包——
   - `ubuntu-22.04`：gcc 编纯 C 库 + import 冒烟 + `pack_deb.sh` 出 deb + `pack_appimage.sh` 出 AppImage（best-effort，捆绑内嵌 python38）
   - `fedora`：编库 + 冒烟 + `pack_rpm.sh` 出 rpm
