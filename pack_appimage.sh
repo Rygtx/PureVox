@@ -88,5 +88,6 @@ TOOL="$STAGE/appimagetool"
 chmod +x "$TOOL"
 mkdir -p "$DIST"
 rm -f "$DIST/$APPIMG_FILE"
-"$TOOL" "$APPDIR" "$DIST/$APPIMG_FILE" >/dev/null
+# CI 容器无 FUSE，AppImage 工具需用 --appimage-extract-and-run（本地有 FUSE 时参数无害）
+"$TOOL" --appimage-extract-and-run "$APPDIR" "$DIST/$APPIMG_FILE" >/dev/null
 echo "==> done: $DIST/$APPIMG_FILE"
