@@ -262,6 +262,17 @@ AEC far-end：独立输入流 `PureVox-far`（`stream.capture.sink=tap 扬声器
   - 速率补偿: 输出缓冲 >128ms 时主动丢弃多余帧
 - **旧配置兼容**: `WASAPI_input_device` → `input_device` 等迁移在 `ConfigManager.load_config()` 中。
 
+### 长时间运行稳定性观察（2026-08-10，代码走查记录，尚未实测）
+
+**结论**：2 小时连续运行**声音本身不会劣化**（无累积延迟/爆音/数值漂移），但存在一个内存型长期隐患和一个事件型弱点：
+
+- **无数值溢出/回绕（安全）**：C/Python 环形缓冲读写位置全用 `size_t`/无界 int（单调递增不回绕成负数），满时丢最旧/丢新有界。无 float 位置累加（2^24 精度丢失点不存在）。最接近的 `int` 计数器是 TSE 调试帧号（~530 天回绕，与音频无关）。AEC/EQ 状态皆为有界信号值，libsamplerate 用 double 长程稳定。
+- **无延迟累积（安全）**：网络模式 `acc` 硬顶 171ms（`MAX_ACC=1024*8`）、输出缓冲 >128ms 即丢（`TARGET_OBUF`）、本地 SPSC 环 85ms 有界。水位被阈值夹牢，不会单向漂移。
+- **无内存泄漏（正常路径，安全）**：ONNX session 只创建一次（无周期性重建），OrtValue 每帧创建/释放配对；AEC far 流创建/销毁对称并释放 `far_ctx_`；进程回调无 malloc/free。
+- **⚠️ 高危内存隐患（已确认，待修复）**：`_network_loop` 每帧走 `process_pipeline`（audio_processor.py:952）→ C 侧无条件向 `viz_in_48k_`/`viz_out_48k_` 追加（aimic.c:2143/2146/2152/2155），而唯一排空点被 `_viz_enabled` 门控（audio_processor.py:978-985），窗口隐藏到托盘即置 False（ui_pyside6.py:2209）。FVec 只扩不缩 → **约 1.4GB/小时**增长，2h 可达 GB 级 OOM。范围**仅**网络模式；本地 `_pw_loop`/全双工走 `process`/`process_eq_only`，不经 viz append，不受影响。修复方向：drain 与 `_viz_enabled` 解耦，或 C 侧给 viz 缓冲设上限超限丢旧。
+- **⚠️ 事件型弱点（非时间累积）**：pipewire_client.c 无 `pw_core_add_listener`/core error/lost 监听，无自动重连。运行中 USB 拔插/PipeWire 重启 → 流静默冻结且 `pvb_active()` 仍返回 true，无恢复。优先级低于 viz 泄漏。
+- **低危**：网络补偿不对称——欠载时重复上一帧（audio_processor.py:739-746）+ 睡眠单向减速，偶发 21.3ms 冻结/丢片伪影（次/数十分钟级）；`_network_loop` 每帧 `acc = acc[HOP:]` list 切片分配抖动；输入 SPSC 环"满时生产者也会写 `r_`"（pipewire_client.c:92-93）违反纯 SPSC 契约，但仅过载瞬时自愈。
+
 ---
 
 ## 许可证
