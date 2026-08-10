@@ -72,14 +72,14 @@ jobs:
           python3 -m pip install --upgrade --break-system-packages pillow 2>/dev/null \
             || python3 -m pip install --upgrade pillow >/dev/null
           bash pack_deb.sh
-          ls -lh dist/purevox_*.deb
+          ls -lh dist/PureVox-Linux-x64-*.deb
 
       - name: Upload deb artifact
         if: matrix.pkg_deb
         uses: actions/upload-artifact@v5
         with:
-          name: purevox-deb-${{ steps.ts.outputs.stamp }}
-          path: dist/purevox_*.deb
+          name: PureVox-Linux-x64-${{ steps.ts.outputs.stamp }}-release-deb
+          path: dist/PureVox-Linux-x64-*.deb
           if-no-files-found: error
 
       - name: Package rpm (Fedora)
@@ -88,14 +88,14 @@ jobs:
           python3 -m pip install --upgrade --break-system-packages pillow 2>/dev/null \
             || python3 -m pip install --upgrade pillow >/dev/null
           bash pack_rpm.sh
-          ls -lh dist/purevox_*.rpm
+          ls -lh dist/PureVox-Linux-x64-*.rpm
 
       - name: Upload rpm artifact
         if: matrix.pkg_rpm
         uses: actions/upload-artifact@v5
         with:
-          name: purevox-rpm-${{ steps.ts.outputs.stamp }}
-          path: dist/purevox_*.rpm
+          name: PureVox-Linux-x64-${{ steps.ts.outputs.stamp }}-release-rpm
+          path: dist/PureVox-Linux-x64-*.rpm
           if-no-files-found: error
 
       - name: Package AppImage (best-effort, bundles embedded python38)
@@ -103,15 +103,15 @@ jobs:
         continue-on-error: true
         run: |
           bash pack_appimage.sh
-          ls -lh dist/purevox_*.AppImage
+          ls -lh dist/PureVox-Linux-x64-*.AppImage
 
       - name: Upload AppImage artifact
         if: matrix.pkg_appimage
         continue-on-error: true
         uses: actions/upload-artifact@v5
         with:
-          name: purevox-appimage-${{ steps.ts.outputs.stamp }}
-          path: dist/purevox_*.AppImage
+          name: PureVox-Linux-x64-${{ steps.ts.outputs.stamp }}-release-appimage
+          path: dist/PureVox-Linux-x64-*.AppImage
           if-no-files-found: ignore
 
   windows:
@@ -119,6 +119,11 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v5
+
+      - name: Set build timestamp (reuse 7z rule yyyy-MM-dd-HHmm)
+        id: ts
+        shell: pwsh
+        run: echo "stamp=$(Get-Date -Format 'yyyy-MM-dd-HHmm')" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
 
       - name: Set up Python 3.8
         uses: actions/setup-python@v6
@@ -179,8 +184,8 @@ jobs:
       - name: Upload ZIP
         uses: actions/upload-artifact@v5
         with:
-          name: PureVox-win-x64
-          path: dist/PureVox_*.zip
+          name: PureVox-Windows-x64-${{ steps.ts.outputs.stamp }}-release
+          path: dist/PureVox-Windows-x64-*.zip
           if-no-files-found: error
 
   android:
@@ -188,6 +193,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
+
+      - name: Set build timestamp (reuse 7z rule yyyy-MM-dd-HHmm)
+        id: ts
+        run: echo "stamp=$(date +'%Y-%m-%d-%H%M')" >> "$GITHUB_OUTPUT"
 
       - name: Set up JDK 17
         uses: actions/setup-java@v4
@@ -218,11 +227,11 @@ jobs:
       - name: Rename APK with timestamp (reuse 7z rule yyyy-MM-dd-HHmm)
         run: |
           stamp=$(date +'%Y-%m-%d-%H%M')
-          mv android/app/build/outputs/apk/debug/app-debug.apk "PureVoxMic-$stamp.apk"
+          mv android/app/build/outputs/apk/debug/app-debug.apk "PureVox-Android-arm64-$stamp-debug.apk"
 
       - name: Upload APK
         uses: actions/upload-artifact@v5
         with:
-          name: PureVoxMic-apk
-          path: PureVoxMic-*.apk
+          name: PureVox-Android-arm64-${{ steps.ts.outputs.stamp }}-debug-apk
+          path: PureVox-Android-arm64-*.apk
           if-no-files-found: error

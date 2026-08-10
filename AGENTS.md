@@ -134,9 +134,9 @@ cd android
   - `fedora`：编库 + 冒烟 + `pack_rpm.sh` 出 rpm
   - `python3.8`：官方 `python:3.8-bullseye`，验证纯 C 库在最低 Python 3.8 可编译、可 ctypes 装载
   - onnxruntime 用仓库内捆绑的预编译 1.11.1 SDK，**不 pip 装 onnxruntime**
-- `windows` job：windows-latest + Python 3.8 + msys2/mingw gcc 编 `aimic.dll` + 语法/导入冒烟；`build_win.ps1` 出 **ZIP**（`dist/PureVox_<yyyy-MM-dd-HHmm>.zip`，不再产自解压 EXE）并上传
-- `android` job：ubuntu-latest 编 debug APK（JDK17 + SDK 34 + NDK r27）；下载 opus 源码到 `android/opus-src/`，产物改名 `PureVoxMic-<yyyy-MM-dd-HHmm>.apk`
-- **时间戳统一**：所有产物文件名带 `yyyy-MM-dd-HHmm`（复用原 7z SFX 的 `$date` 规则），仅文件名带，包内版本字段不变
+- `windows` job：windows-latest + Python 3.8 + msys2/mingw gcc 编 `aimic.dll` + 语法/导入冒烟；`build_win.ps1` 出 **ZIP**（`PureVox-Windows-x64-<yyyy-MM-dd-HHmm>-release.zip`）并上传
+- `android` job：ubuntu-latest 编 debug APK（JDK17 + SDK 34 + NDK r27）；下载 opus 源码到 `android/opus-src/`，产物改名 `PureVox-Android-arm64-<yyyy-MM-dd-HHmm>-debug.apk`
+- **产物命名统一**：`PureVox-<平台>-<架构>-<yyyy-MM-dd-HHmm>-<release|debug>.<ext>`（Windows zip / Linux deb / rpm / AppImage 一律 release，Android 为 debug）。仅文件名带时间戳，包内版本字段不变。deb 的 DEBIAN/control Version 仍用 VERSION-REV。
 - **onnxruntime 预编译 SDK（双平台统一 1.11.1）**：Windows 用捆绑 `packages/onnxruntime-win-x64-1.11.1`；Linux/macOS 默认捆绑 `packages/onnxruntime-linux-x64-1.11.1`（`include/`+`lib/`），不再依赖系统 onnxruntime 包。setup.py 仍支持 `ORT_INCLUDE_DIR` / `ORT_LIB_DIR` 环境变量覆盖（CI/pip 场景，wheel 内 .so 带版本号后缀，需先建 `libonnxruntime.so` 软链接再 `-lonnxruntime`，运行时 `LD_LIBRARY_PATH` 指向 capi 目录）
 
 ---

@@ -94,20 +94,30 @@ PipeWire 负责。虚拟麦克风是单声道 null-sink `purevox_out` 的 monito
 
 ## 打包
 
-### Windows（PyInstaller EXE）
+### Windows（ZIP 打包）
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File build_win.ps1   # 产出 dist/PureVox_<日期>.exe（自解压）
+powershell -ExecutionPolicy Bypass -File build_win.ps1   # 产出 dist/PureVox-Windows-x64-<yyyy-MM-dd-HHmm>-release.zip
 ```
 
-脚本包含完整流程：编译 `aimic.dll`（mingw gcc）→ PyInstaller 打包 → tcl/tk 与无用 PySide6 模块清理 → 7z 自解压 EXE。
-Windows CI（`.github/workflows/windows.yml`）会执行同样流程并上传 EXE 产物。
+脚本包含完整流程：编译 `aimic.dll`（mingw gcc）→ PyInstaller 打包 → tcl/tk 与无用 PySide6 模块清理 → 7z 打包 ZIP。
+Windows CI 会执行同样流程并上传 ZIP 产物。
 
-### Linux（deb）
+### Linux（deb / rpm / AppImage）
 
 ```bash
-bash pack_deb.sh    # 产出 dist/purevox_<version>_amd64.deb，内含源码+.so+模型+html
+bash pack_deb.sh        # 产出 dist/PureVox-Linux-x64-<yyyy-MM-dd-HHmm>-release.deb，内含源码+.so+模型+html
+bash pack_rpm.sh        # 产出 dist/PureVox-Linux-x64-<yyyy-MM-dd-HHmm>-release.rpm（Fedora/RHEL）
+bash pack_appimage.sh   # 产出 dist/PureVox-Linux-x64-<yyyy-MM-dd-HHmm>-release.AppImage（捆绑内嵌 Python3.8）
 ```
+
+| 产物 | 命名规则 |
+|---|---|
+| Windows ZIP | `PureVox-Windows-x64-<date>-release.zip` |
+| Linux deb/rpm/AppImage | `PureVox-Linux-x64-<date>-release.<deb\|rpm\|AppImage>` |
+| Android APK | `PureVox-Android-arm64-<date>-debug.apk` |
+
+时间戳 `<date>` = `yyyy-MM-dd-HHmm`，仅文件名带，包内版本字段不变。
 
 ### Android APK
 

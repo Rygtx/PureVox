@@ -1,6 +1,6 @@
 #!/bin/bash
 # PureVox - AppImage packaging script (universal Linux)
-# Output: dist/PureVox_<yyyy-MM-dd-HHmm>.AppImage
+# Output: dist/PureVox-Linux-x64-<yyyy-MM-dd-HHmm>-release.AppImage
 # Bundles the embedded Python 3.8 (packages/python38) + app + bundled onnxruntime.
 # Requires: gcc, pkg-config, libpipewire-0.3-devel, python3 (build), wget (appimagetool)
 set -e
@@ -8,6 +8,7 @@ cd "$(dirname "$0")"
 
 # Timestamp reuses the 7z rule (yyyy-MM-dd-HHmm)
 DATE="$(date +%Y-%m-%d-%H%M)"
+APPIMG_FILE="PureVox-Linux-x64-${DATE}-release.AppImage"
 DIST="dist"
 STAGE="${TMPDIR:-/tmp}/purevox_appimage"
 APPDIR="$STAGE/AppDir"
@@ -86,6 +87,6 @@ TOOL="$STAGE/appimagetool"
   "https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage"
 chmod +x "$TOOL"
 mkdir -p "$DIST"
-rm -f "$DIST/${APP_NAME}_${DATE}.AppImage"
-"$TOOL" "$APPDIR" "$DIST/${APP_NAME}_${DATE}.AppImage" >/dev/null
-echo "==> done: $DIST/${APP_NAME}_${DATE}.AppImage"
+rm -f "$DIST/$APPIMG_FILE"
+"$TOOL" "$APPDIR" "$DIST/$APPIMG_FILE" >/dev/null
+echo "==> done: $DIST/$APPIMG_FILE"

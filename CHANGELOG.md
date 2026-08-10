@@ -1,5 +1,27 @@
 # 更新日志
 
+## 2026-08-10 — 修复 CI fedora 失败 + 统一产物命名规范
+
+- **修复 fedora job 失败**（CI 实测：上一次远端 push 全绿，本次 `pack_rpm.sh` 更新后
+  fedora 唯一挂掉）：`pack_rpm.sh` 产物名是 `purevox-1.0.6-1_<date>.x86_64.rpm`
+  （`-` 连接 N-V），而 CI 上传步骤用 `ls dist/purevox_*.rpm`（下划线 glob）匹配不到
+  → `ls` 找不到文件 exit 2 → job 失败。产物名与上传 glob 已统一为一个变量
+  `$PKG_FILE` 驱动。
+- **产物命名统一**（用户规范：`软件名称-平台-平台架构-日期作为版本号-发行类型`）：
+  全部产物改为 `PureVox-<平台>-<架构>-<yyyy-MM-dd-HHmm>-<release|debug>.<ext>`——
+  - Windows ZIP：`PureVox-Windows-x64-<date>-release.zip`
+  - Linux deb/rpm/AppImage：`PureVox-Linux-x64-<date>-release.<deb|rpm|AppImage>`
+  - Android APK：`PureVox-Android-arm64-<date>-debug.apk`
+  仅文件名带时间戳，包内版本字段（deb control Version、rpm Version/Release）不变。
+- CI 同步：`ci.yml` 三个 job 的 `steps.ts.outputs.stamp` 均已定义（Windows 用
+  `Get-Date`，Linux/Android 用 `date`）；deb/rpm/AppImage/ZIP/APK 上传步骤的
+  artifact name 与 glob 全部改为新命名；上传 artifact 名同样带平台/架构/类型。
+- 脚本改动：`build_win.ps1`、`pack_deb.sh`、`pack_rpm.sh`、`pack_appimage.sh`
+  （`$PKG_FILE`/`$zipFName` 变量统一驱动文件名，新增时间戳即该变量）。
+- README / README_EN / AGENTS.md 产物描述同步。
+
+---
+
 ## 2026-08-10 — Linux 输出延迟优化 + C 源码去中文 + CI 精简
 
 - **Linux 输出流延迟**：实测 `PureVox-output` 流协商缓冲高达 12288 样本（256ms），

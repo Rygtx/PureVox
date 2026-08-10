@@ -100,20 +100,30 @@ card, neither of which is bundled:
 
 ## Packaging
 
-### Windows (PyInstaller EXE)
+### Windows (ZIP package)
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File build_win.ps1   # produces dist/PureVox_<date>.exe (self-extracting)
+powershell -ExecutionPolicy Bypass -File build_win.ps1   # produces dist/PureVox-Windows-x64-<yyyy-MM-dd-HHmm>-release.zip
 ```
 
 The script runs the full flow: build `aimic.dll` (mingw gcc) → PyInstaller → tcl/tk + unused PySide6 module cleanup →
-7z self-extracting EXE. Windows CI (`.github/workflows/windows.yml`) runs the same flow and uploads the EXE.
+7z ZIP. Windows CI runs the same flow and uploads the ZIP.
 
-### Linux (deb)
+### Linux (deb / rpm / AppImage)
 
 ```bash
-bash pack_deb.sh    # produces dist/purevox_<version>_amd64.deb (source + .so + models + html)
+bash pack_deb.sh        # produces dist/PureVox-Linux-x64-<yyyy-MM-dd-HHmm>-release.deb (source + .so + models + html)
+bash pack_rpm.sh        # produces dist/PureVox-Linux-x64-<yyyy-MM-dd-HHmm>-release.rpm (Fedora/RHEL)
+bash pack_appimage.sh   # produces dist/PureVox-Linux-x64-<yyyy-MM-dd-HHmm>-release.AppImage (bundles embedded Python 3.8)
 ```
+
+| Artifact | Name pattern |
+|---|---|
+| Windows ZIP | `PureVox-Windows-x64-<date>-release.zip` |
+| Linux deb/rpm/AppImage | `PureVox-Linux-x64-<date>-release.<deb\|rpm\|AppImage>` |
+| Android APK | `PureVox-Android-arm64-<date>-debug.apk` |
+
+`<date>` = `yyyy-MM-dd-HHmm`, filename only; the version fields inside the package are unchanged.
 
 ### Android APK
 

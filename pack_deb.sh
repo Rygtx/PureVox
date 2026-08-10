@@ -1,6 +1,6 @@
 #!/bin/bash
 # PureVox — Linux deb 打包脚本
-# 产出: dist/purevox_<version>-<rev>_amd64.deb
+# 产出: dist/PureVox-Linux-x64-<yyyy-MM-dd-HHmm>-release.deb
 #
 # 布局（与既有版本一致）:
 #   /opt/purevox/          全部源码+.so+模型+html+pvplatform
@@ -17,11 +17,10 @@ cd "$(dirname "$0")"
 
 VERSION="1.0.6"
 REV="1"
-ARCH="amd64"
-PKG_NAME="purevox"
 # 时间戳复用 7z 规则（yyyy-MM-dd-HHmm），仅文件名带，control 内 Version 保持 VERSION-REV
 DATE="$(date +%Y-%m-%d-%H%M)"
-PKG_FILE="${PKG_NAME}_${VERSION}-${REV}_${ARCH}_${DATE}.deb"
+PKG_FILE="PureVox-Linux-x64-${DATE}-release.deb"
+ARCH="amd64"
 DIST="dist"
 STAGE="${TMPDIR:-/tmp}/purevox_deb_build"
 ROOT="$STAGE/root"

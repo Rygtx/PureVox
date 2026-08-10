@@ -1,6 +1,6 @@
 #!/bin/bash
 # PureVox - Fedora/RHEL RPM packaging script
-# Output: dist/purevox_<version>-<rev>_<date>.x86_64.rpm
+# Output: dist/PureVox-Linux-x64-<yyyy-MM-dd-HHmm>-release.rpm
 # Requires: gcc, pkg-config, libpipewire-0.3-devel, rpm-build, python3 (for icon)
 set -e
 cd "$(dirname "$0")"
@@ -11,6 +11,7 @@ ARCH="x86_64"
 PKG_NAME="purevox"
 # Timestamp reuses the 7z rule (yyyy-MM-dd-HHmm), filename only
 DATE="$(date +%Y-%m-%d-%H%M)"
+PKG_FILE="PureVox-Linux-x64-${DATE}-release.rpm"
 DIST="dist"
 STAGE="${TMPDIR:-/tmp}/purevox_rpm_build"
 SPEC="$STAGE/purevox.spec"
@@ -123,6 +124,6 @@ rpmbuild --define "_topdir $STAGE" --define "buildroot $ROOT" \
 RPMSRC="$STAGE/RPMS/$ARCH/${PKG_NAME}-${VERSION}-${REV}.$ARCH.rpm"
 [ -f "$RPMSRC" ] || { echo "rpm not produced"; exit 1; }
 mkdir -p "$DIST"
-rm -f "$DIST/${PKG_NAME}-${VERSION}-${REV}_${DATE}.$ARCH.rpm"
-mv "$RPMSRC" "$DIST/${PKG_NAME}-${VERSION}-${REV}_${DATE}.$ARCH.rpm"
-echo "==> done: $DIST/${PKG_NAME}-${VERSION}-${REV}_${DATE}.$ARCH.rpm"
+rm -f "$DIST/$PKG_FILE"
+mv "$RPMSRC" "$DIST/$PKG_FILE"
+echo "==> done: $DIST/$PKG_FILE"
