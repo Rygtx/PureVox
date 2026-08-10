@@ -49,7 +49,8 @@ echo "==> 拷贝源码/模型/图标"
 for f in \
     audio_processor.py config_manager.py dialog_about.py dialog_eq.py logger.py \
     model_config.py run_pyside6.py spectrum_histogram.py theme_colors.py \
-    dialog_tse_reference.py ui_pyside6.py user_paths.py wav_io.py \
+    dialog_tse_reference.py dialog_virtual_mic_linux.py ui_pyside6.py \
+    user_paths.py wav_io.py \
     aimic.py pvpipe.py \
     aec9_ep0544.onnx tse15_stream_ep_0673.onnx v9_fft2048_band256_epoch_261.onnx \
     audio_icon_off.ico audio_icon_on.ico; do
