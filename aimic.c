@@ -143,6 +143,8 @@ typedef struct {
     size_t n_outputs;
     int64_t** input_shapes;
     size_t* input_ndims;
+    int effective_backend_;
+    int backend_reason_;
 } OnnxModel;
 
 static int ort_ok(const OrtApi* api, OrtStatus* st) {
@@ -173,6 +175,62 @@ static int ort_create_session_path(const OrtApi* api, OrtEnv* env, const char* p
 }
 #endif
 
+/* CPU AVX support (gcc/clang builtin; mingw on Windows is gcc too) */
+static int cpu_supports_avx(void) {
+#if defined(__GNUC__) || defined(__clang__)
+    return __builtin_cpu_supports("avx") ? 1 : 0;
+#else
+    return 0;
+#endif
+}
+
+/* printed NPU fallback note once per process, not once per model */
+static int g_npu_warned = 0;
+
+/* Auto backend selection applied to every session:
+ *   1) try an NPU-capable execution provider (OpenVINO on Linux / DirectML on
+ *      Windows / CoreML on macOS) and use it when the runtime provides it;
+ *   2) otherwise use the default CPU execution provider, whose MLAS kernels
+ *      dispatch on CPUID to the best ISA available (AVX if the CPU has it,
+ *      else SSE).  effective_backend_ reflects what will actually run and
+ *      backend_reason_ why NPU is not in use (0 = NPU active). */
+static int onnx_apply_backend(OnnxModel* m) {
+    m->effective_backend_ = cpu_supports_avx() ? AIMIC_BACKEND_AVX : AIMIC_BACKEND_SSE;
+    m->backend_reason_ = AIMIC_BACKEND_REASON_OK;
+#if defined(_WIN32)
+    m->backend_reason_ = AIMIC_BACKEND_REASON_NPU_NO_ENTRY;
+    if (!g_npu_warned) {
+        fprintf(stderr, "aimic: NPU backend (DirectML EP) not in this build, using CPU\n");
+        g_npu_warned = 1;
+    }
+#elif defined(__APPLE__)
+    m->backend_reason_ = AIMIC_BACKEND_REASON_NPU_NO_ENTRY;
+    if (!g_npu_warned) {
+        fprintf(stderr, "aimic: NPU backend (CoreML EP) not in this build, using CPU\n");
+        g_npu_warned = 1;
+    }
+#else
+    /* Linux: OpenVINO EP covers Intel NPU/GPU/CPU when the runtime is
+     * OpenVINO-enabled; device_type can be overridden via PUREVOX_OV_DEVICE
+     * (e.g. NPU).  Fails cleanly when the EP is not compiled in. */
+    OrtOpenVINOProviderOptions ov;
+    memset(&ov, 0, sizeof(ov));
+    const char* dev = getenv("PUREVOX_OV_DEVICE");
+    ov.device_type = dev ? dev : "CPU_FP32";
+    ov.num_of_threads = 0;
+    if (ort_ok(m->api, m->api->SessionOptionsAppendExecutionProvider_OpenVINO(m->opts, &ov))) {
+        m->effective_backend_ = AIMIC_BACKEND_NPU;
+    } else {
+        m->backend_reason_ = AIMIC_BACKEND_REASON_NPU_UNAVAILABLE;
+        if (!g_npu_warned) {
+            fprintf(stderr, "aimic: NPU backend (OpenVINO EP) unavailable, using CPU\n");
+            g_npu_warned = 1;
+        }
+    }
+#endif
+    return m->effective_backend_;
+}
+
 static int onnx_model_open(OnnxModel* m, const char* name, const char* path,
                            OrtLoggingLevel level, GraphOptimizationLevel gopt) {
     memset(m, 0, sizeof(*m));
@@ -185,6 +243,7 @@ static int onnx_model_open(OnnxModel* m, const char* name, const char* path,
     if (!ort_ok(m->api, m->api->SetInterOpNumThreads(m->opts, 1))) return -1;
     if (!ort_ok(m->api, m->api->SetSessionExecutionMode(m->opts, ORT_SEQUENTIAL))) return -1;
     if (!ort_ok(m->api, m->api->SetSessionGraphOptimizationLevel(m->opts, gopt))) return -1;
+    onnx_apply_backend(m);
     if (!ort_ok(m->api, m->api->GetAllocatorWithDefaultOptions(&m->allocator))) return -1;
     if (!ort_ok(m->api, m->api->CreateMemoryInfo("Cpu", OrtArenaAllocator, 0,
                                                  OrtMemTypeDefault, &m->meminfo))) return -1;
@@ -1790,6 +1849,8 @@ struct AudioProcessor {
     bool compressor_enabled_;
     FVec tse_recording_buffer_;
     bool recording_enabled_;
+    int backend_effective_;
+    int backend_reason_;
 };
 
 static void ap_apply_eq(AudioProcessor* ap, float* data, size_t len) {
@@ -1879,6 +1940,8 @@ AudioProcessor* audio_processor_new(float pre_gain_db, const char* denoise_model
     ap->far_rms_target_ = 0.05f;
     ap->io_in_sr_ = 48000;
     ap->io_out_sr_ = 48000;
+    ap->backend_effective_ = AIMIC_BACKEND_AVX;
+    ap->backend_reason_ = AIMIC_BACKEND_REASON_OK;
 
     ap->eq_filters_ = (BiquadCoeff*)calloc(EQ_BANDS, sizeof(BiquadCoeff));
     if (!ap->eq_filters_) { free(ap); return NULL; }
@@ -1902,6 +1965,18 @@ AudioProcessor* audio_processor_new(float pre_gain_db, const char* denoise_model
     if (tse_model_path && tse_model_path[0]) ap->tse_ = tse_new(tse_model_path);
     if (aec_model_path && aec_model_path[0]) ap->aec_ = aec_new(aec_model_path);
     if (denoise_model_path && denoise_model_path[0]) ap->denoise_ = denoise_new(denoise_model_path);
+    /* Report the effective backend / fallback reason (all models share the
+     * same backend, so use whichever one is loaded). */
+    if (ap->denoise_) {
+        ap->backend_effective_ = ap->denoise_->m.effective_backend_;
+        ap->backend_reason_ = ap->denoise_->m.backend_reason_;
+    } else if (ap->tse_) {
+        ap->backend_effective_ = ap->tse_->m.effective_backend_;
+        ap->backend_reason_ = ap->tse_->m.backend_reason_;
+    } else if (ap->aec_) {
+        ap->backend_effective_ = ap->aec_->m.effective_backend_;
+        ap->backend_reason_ = ap->aec_->m.backend_reason_;
+    }
     return ap;
 }
 
@@ -1910,6 +1985,14 @@ void audio_processor_cleanup(AudioProcessor* ap) {
     if (ap->denoise_) { denoise_free(ap->denoise_); ap->denoise_ = NULL; }
     if (ap->tse_) { tse_free(ap->tse_); ap->tse_ = NULL; }
     if (ap->aec_) { aec_free(ap->aec_); ap->aec_ = NULL; }
+}
+
+int audio_processor_backend_effective(const AudioProcessor* ap) {
+    return ap ? ap->backend_effective_ : AIMIC_BACKEND_AVX;
+}
+
+int audio_processor_backend_reason(const AudioProcessor* ap) {
+    return ap ? ap->backend_reason_ : AIMIC_BACKEND_REASON_OK;
 }
 
 void audio_processor_free(AudioProcessor* ap) {

@@ -357,6 +357,35 @@ AGC、VAD，31 段均衡器在菜单「设置 → 均衡器」打开。</p>
 
 CHANGELOG_TEXT = """# 更新日志
 
+## 2026-08-11 — 推理后端改为自动选择（NPU → AVX → SSE）
+
+- **移除「推理后端」下拉框**：后端不再需要手动选择，创建模型时自动按
+  NPU → AVX → SSE 顺序选取：优先尝试 NPU 执行提供程序（Linux OpenVINO /
+  Windows DirectML），不可用则回退 CPU——CPU 支持 AVX 用 AVX，不支持则 SSE
+  （ORT 内核本就按 CPUID 自动选择最佳指令集）
+- **实际生效后端仍可见**：启动日志打印 `[启动] 推理后端: ...`，若 NPU 不可用会
+  注明原因；捆绑的 onnxruntime 1.11.1 是纯 CPU 构建（已移除 SSE 限制配置项、
+  CPU EP 不读任何会话配置，实测确认），故当前实际生效为 AVX
+- 移除 `inference_backend` 配置键（不再需要）
+
+## 2026-08-11 — 降低 PipeWire 状态日志频率
+
+- `[PipeWire] 处理 N 帧 (rms=...)` 状态日志由每 100 帧（约 2 秒）改为每 1000 帧
+  （约 21 秒）打印一次，减少刷屏
+
+## 2026-08-11 — 窗口标题版本号随 tag 打包
+
+- **Linux 不再显示「开发版」**：deb / rpm / AppImage 打包脚本按 tag
+  （`GITHUB_REF_NAME`）生成 `_build_version.py`，窗口标题与包版本/文件名同源；
+  本地手动打包回退当前时间
+- **Windows 标题日期取 tag**：`build_win.ps1` 生成版本戳时优先用
+  `GITHUB_REF_NAME`（v<yyyy.MM.dd.HHmm> → yyyy-MM-dd-HHmm），不再用构建机本地时间
+
+## 2026-08-11 — 移除窗口隐藏时的频谱调试日志刷屏
+
+- `_feed_visualizer` 中遗留的 `[调试] _feed: ...` dev 日志在窗口最小化到托盘时每帧
+  打印一条，已删除该调试分支（频谱仅在可见时更新，行为不变）
+
 ## 2026-08-11 — Windows 设备枚举对齐 WASAPI
 
 - **Windows 设备枚举只留 WASAPI host API**：`get_device_names` / `get_device_id`

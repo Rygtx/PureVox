@@ -1056,7 +1056,7 @@ class AudioThread(threading.Thread):
                         self._spectrum_out.write(list(out))
                     fc += 1
 
-                if fc % 100 == 0:
+                if fc % 1000 == 0:
                     _module_log(f"[PipeWire] 处理 {fc} 帧 (rms={_rms_of(data):.4f})")
         finally:
             _module_log("[PipeWire] 循环退出")
@@ -1500,7 +1500,11 @@ def create_audio_processor(pre_gain_db: float,
                            tse_model_path: str = "",
                            aec_model_path: str = ""):
     """创建 C++ 音频处理器实例。
-    返回 aimic.AudioProcessor（直接使用，无 Python 包装）。"""
+    返回 aimic.AudioProcessor（直接使用，无 Python 包装）。
+
+    推理后端自动选择（NPU → AVX/SSE），实际生效情况可用
+    processor.backend_info() 查询。
+    """
     if not CPP_AVAILABLE:
         raise RuntimeError("C++ module aimic not available. Please build it first.")
     if noise_model_path and not os.path.exists(noise_model_path):

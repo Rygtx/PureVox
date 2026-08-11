@@ -43,6 +43,10 @@ _MODE_DENOISE = 1
 _MODE_AEC = 2
 _MODE_TSE = 3
 
+_BACKEND_AVX = 0
+_BACKEND_SSE = 1
+_BACKEND_NPU = 2
+
 
 def _preload_onnxruntime():
     """预加载捆绑的 onnxruntime（满足 libaimic.so 的 DT_NEEDED）。
@@ -163,6 +167,8 @@ _tse_set_debug_dump = _fn("tse_set_debug_dump", None, _c_void_p, _c_bool, _c_cha
 _ap_new = _fn("audio_processor_new", _c_void_p, _c_float, _c_char_p, _c_char_p, _c_char_p)
 _ap_free = _fn("audio_processor_free", None, _c_void_p)
 _ap_cleanup = _fn("audio_processor_cleanup", None, _c_void_p)
+_ap_backend_effective = _fn("audio_processor_backend_effective", _c_int, _c_void_p)
+_ap_backend_reason = _fn("audio_processor_backend_reason", _c_int, _c_void_p)
 _ap_set_eq_gains = _fn("audio_processor_set_eq_gains", None, _c_void_p, _c_float_p, _c_size)
 _ap_get_eq_freqs = _fn("audio_processor_get_eq_freqs", None, _c_void_p, _c_float_p)
 _ap_get_eq_band_count = _fn("audio_processor_get_eq_band_count", _c_int, _c_void_p)
@@ -230,6 +236,14 @@ MODE_PASSTHROUGH = _MODE_PASSTHROUGH
 MODE_DENOISE = _MODE_DENOISE
 MODE_AEC = _MODE_AEC
 MODE_TSE = _MODE_TSE
+
+BACKEND_AVX = _BACKEND_AVX
+BACKEND_SSE = _BACKEND_SSE
+BACKEND_NPU = _BACKEND_NPU
+
+BACKEND_REASON_OK = 0
+BACKEND_REASON_NPU_UNAVAILABLE = 1
+BACKEND_REASON_NPU_NO_ENTRY = 2
 
 
 def compute_spectrum(samples):
@@ -437,6 +451,19 @@ class AudioProcessor:
                 self._p = None
         except Exception:
             pass
+
+    # ── 推理后端（自动选择：NPU → AVX/SSE；查询实际生效情况）──
+    def backend_effective(self):
+        """返回实际生效的推理后端（aimic.BACKEND_*）。"""
+        return int(_ap_backend_effective(self._p))
+
+    def backend_reason(self):
+        """返回 NPU 未生效的原因码（aimic.BACKEND_REASON_*；0 表示 NPU 已生效）。"""
+        return int(_ap_backend_reason(self._p))
+
+    def backend_info(self):
+        """返回 (实际生效后端, NPU 未生效原因码)。"""
+        return (self.backend_effective(), self.backend_reason())
 
     # ── 基础控制 ──
     def cleanup(self):

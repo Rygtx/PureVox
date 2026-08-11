@@ -141,6 +141,22 @@ def _combo_value(combo) -> str:
     return combo.currentText() if combo is not None else ""
 
 
+# 推理后端（自动选择）：实际生效后端 + NPU 未生效原因 → 中文状态文本
+_BACKEND_LABELS = {0: "AVX", 1: "SSE", 2: "NPU"}
+_BACKEND_REASON_NOTES = {
+    0: "",
+    1: "（NPU 执行提供程序不可用，已用 CPU 运行）",
+    2: "（当前平台无 NPU 执行提供程序，已用 CPU 运行）",
+}
+
+
+def _backend_status_text(eff, reason) -> str:
+    """格式化推理后端状态文本（实际生效 + 回退原因）。"""
+    name = _BACKEND_LABELS.get(eff, "AVX")
+    note = _BACKEND_REASON_NOTES.get(reason, "")
+    return f"{name}{note}"
+
+
 class DebouncedSaver:
     def __init__(self, config: ConfigManager, delay_ms: int = 500):
         self._config = config
@@ -1821,6 +1837,12 @@ def start_processing(state, log):
         log.msg(f"[启动] 创建音频处理器 (mode={mode}, pre={pre})...")
         proc = create_audio_processor(pre, denoise_path, tse_path, aec_path)
         state.processor = proc
+        if hasattr(proc, 'backend_info'):
+            try:
+                _eff, _reason = proc.backend_info()
+                log.msg(f"[启动] 推理后端: {_backend_status_text(_eff, _reason)}")
+            except Exception:
+                pass
 
         # ── EQ ──
         if state.config:
@@ -2114,16 +2136,6 @@ def _feed_visualizer(state):
                 out_data = None
             if in_data or out_data:
                 state.spectrum_widget.update_spectrum(in_data, out_data)
-        elif state.logger:
-            _sw = getattr(state, 'spectrum_widget', None)
-            _sp_in = getattr(th, '_spectrum_in', None)
-            _avail = _sp_in.available() if _sp_in else -1
-            _wvis = _sw.isVisible() if _sw else "无widget"
-            _wpar = _sw.parent() if _sw else None
-            _ppar = _wpar.isVisible() if _wpar else "无父"
-            state.logger.dev(
-                f"[调试] _feed: sw={_sw is not None} vis={_wvis} 父vis={_ppar} "
-                f"winvis={_sw.window().isVisible() if _sw else '-'} in_avail={_avail}")
     except Exception:
         _log = state.logger or get_logger()
         _log.err(f"[频谱] _feed_visualizer 异常: {_tb.format_exc()}")

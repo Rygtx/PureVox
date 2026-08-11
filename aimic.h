@@ -38,6 +38,16 @@ extern "C" {
 #define AIMIC_MODE_AEC 2
 #define AIMIC_MODE_TSE 3
 
+/* ── inference backend (auto-selected) ── */
+#define AIMIC_BACKEND_AVX 0  /* default CPU EP, ORT picks best ISA (AVX if CPU has it) */
+#define AIMIC_BACKEND_SSE 1  /* default CPU EP on CPUs without AVX */
+#define AIMIC_BACKEND_NPU 2  /* NPU execution provider active */
+
+/* Effective backend status: reason says why NPU is not in use (0 = NPU active) */
+#define AIMIC_BACKEND_REASON_OK              0
+#define AIMIC_BACKEND_REASON_NPU_UNAVAILABLE 1  /* NPU EP append failed (not compiled into runtime) */
+#define AIMIC_BACKEND_REASON_NPU_NO_ENTRY    2  /* no NPU EP entry point on this platform */
+
 /* 不透明类型 */
 typedef struct VadGate        VadGate;
 typedef struct AgcController  AgcController;
@@ -128,9 +138,11 @@ void            resampler_reset(Resampler*);
 
 /* ─────────────────────── AudioProcessor ─────────────────────── */
 AudioProcessor* audio_processor_new(float pre_gain_db, const char* denoise_model_path,
-                                    const char* tse_model_path, const char* aec_model_path);
+                                     const char* tse_model_path, const char* aec_model_path);
 void            audio_processor_free(AudioProcessor*);
 void            audio_processor_cleanup(AudioProcessor*);
+int             audio_processor_backend_effective(const AudioProcessor*);
+int             audio_processor_backend_reason(const AudioProcessor*);
 void            audio_processor_set_eq_gains(AudioProcessor*, const float* gains, size_t n);
 void            audio_processor_get_eq_freqs(AudioProcessor*, float* freqs);
 int             audio_processor_get_eq_band_count(AudioProcessor*);
