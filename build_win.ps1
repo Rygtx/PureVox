@@ -103,7 +103,7 @@ foreach ($vc in @("msvcp140.dll", "msvcp140_1.dll", "vcruntime140.dll", "vcrunti
     }
 }
 
-# 5. Copy docs next to the bundle (manual has a non-ASCII filename, match by glob)
-Copy-Item *.html, CHANGELOG.md dist\ -Force
+# (no doc copy step: the 关于 dialog embeds the manuals and the changelog
+#  entirely in dialog_about.py; CHANGELOG.md / 用户手册.html are deleted)
 
 Write-Host "==> Done: dist/PureVox"

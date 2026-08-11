@@ -34,7 +34,13 @@ ALSA=8、JACK=12、Core Audio=5…），且同一数值在另一平台毫无意�
 
 from .. import IS_WINDOWS, IS_LINUX, IS_MACOS
 
-# 端口音频 host API 类型编号（PortAudio PaHostApiTypeId）
+# 端口音频 host API 类型编号（PortAudio PaHostApiTypeId，跨平台固定不变）。
+# 出处：PortAudio 官方 include/portaudio.h 的 PaHostApiTypeId 枚举
+# （https://github.com/PortAudio/portaudio，master 及更早稳定版一致）：
+#   paDirectSound=1、paMME=2、paASIO=3、paSoundManager=4、paCoreAudio=5、
+#   paOSS=7、paALSA=8、paAL=9、paBeOS=10、paWDMKS=11、paJACK=12、
+#   paWASAPI=13、paAudioScienceHPI=14、paAudioIO=15、paPulseAudio=16、paSndio=17
+# 用法：枚举时按 dev['hostApi'] 匹配，避免把 Windows 的 13 硬编码含义串到别的平台。
 API_DIRECTSOUND = 1
 API_MME = 2
 API_ASIO = 3
@@ -43,8 +49,8 @@ API_OSS = 7
 API_ALSA = 8
 API_JACK = 12
 API_WASAPI = 13
-API_PULSE = 15
-API_SNDIO = 16
+API_PULSE = 16
+API_SNDIO = 17
 
 # 网络输入模式（非 PortAudio host API）
 API_NETWORK = 99
@@ -128,6 +134,10 @@ def resolve_api_names(api_type: int) -> list:
 def get_host_api_indices(p, api_type: int) -> list:
     """按名字匹配 host API 索引列表（跨平台）。
 
+    名字用大小写不敏感的子串匹配：PyAudio 的 host API 名带厂商前缀
+    （WASAPI 实为 "Windows WASAPI"、"Windows DirectSound"、"Windows WDM-KS"），
+    精确相等会匹配不到而误触兜底枚举全部。
+
     若配置的 API 名在本机一个都没匹配到（例如配置存了 Windows 的
     PulseAudio/WASAPI，但当前 PortAudio 构建只有 ALSA/OSS/JACK），
     回退到全部 host API——保证虚拟 sink（可能挂在任意 API 下）仍能被枚举。
@@ -135,13 +145,15 @@ def get_host_api_indices(p, api_type: int) -> list:
     names = resolve_api_names(api_type)
     if not names:
         return []
+    needle_tokens = [n.lower() for n in names]
     indices = []
     for i in range(p.get_host_api_count()):
         try:
             info = p.get_host_api_info_by_index(i)
         except Exception:
             continue
-        if info.get('name') in names:
+        hay = (info.get('name') or '').lower()
+        if any(tok in hay for tok in needle_tokens):
             indices.append(i)
     # 配置的 API 名在本机不存在 → 全枚举兜底（虚拟 sink 等跨 API 设备）
     if not indices:

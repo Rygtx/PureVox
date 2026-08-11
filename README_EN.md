@@ -7,8 +7,7 @@ echo cancellation, for both the local microphone and remote network streaming.
 
 ## Docs
 
-- 📖 [User manual (Chinese)](用户手册.html)
-- 📋 [Changelog](CHANGELOG.md)
+- 📖 The manual (Chinese) and the changelog are built into the app — menu "关于" (About: intro / Windows / Linux guides / changelog / license).
 
 ## Features
 

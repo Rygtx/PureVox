@@ -34,7 +34,6 @@ from typing import Any, Callable, List, Optional, Tuple
 from pvplatform.system import (
     acquire_single_instance, is_autostart, enable_autostart, disable_autostart,
     beep as _sys_beep, open_sound_panel as _sys_open_sound_panel,
-    open_virtual_cable_panel as _sys_open_vb,
     add_firewall_rule as _sys_add_firewall,
     system_accent_color, set_titlebar_theme,
     run_as_admin as _sys_run_as_admin,
@@ -2244,9 +2243,6 @@ class MainApp:
         snd = QAction("系统声音", window)
         snd.triggered.connect(lambda: open_sound_panel(logger))
         menubar.addAction(snd)
-        vb = QAction("VB设置", window)
-        vb.triggered.connect(lambda: open_vb_panel(logger))
-        menubar.addAction(vb)
         vmic = QAction("虚拟声卡", window)
         vmic.triggered.connect(lambda: _virtual_mic_dialog(logger, window))
         menubar.addAction(vmic)
@@ -2579,13 +2575,15 @@ class MainApp:
             QTimer.singleShot(500, lambda: start_processing(_state, _state.logger))
 
     def _check_vbcable(self):
-        """启动后检测 VB-Cable（仅 Windows）：config 开启检测则弹出面板。
-        面板内部自行检测并显示状态；用户勾选\"跳过\"后不再提示。"""
+        """启动后检测 VB-CABLE（仅 Windows）：开启检测时才检查，
+        只有未安装才弹面板；已安装则无事发生。"""
         if not IS_WINDOWS or not _state.config:
             return
         if not _state.config.get("vbcable_check_enabled", True):
             return
-        from dialog_vbcable_check import show_vbcable_dialog
+        from dialog_vbcable_check import show_vbcable_dialog, vbcable_installed
+        if vbcable_installed():
+            return
         show_vbcable_dialog(_state.config)
         QTimer.singleShot(1000, lambda: _state.main_panel.refresh_devices()
                           if _state.main_panel else None)
@@ -2717,9 +2715,6 @@ def toggle_hotkey(config, logger):
 
 def open_sound_panel(logger):
     _sys_open_sound_panel(logger)
-
-def open_vb_panel(logger):
-    _sys_open_vb(logger)
 
 def stop_processing_for_update(state, logger):
     if state.is_processing:

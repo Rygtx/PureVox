@@ -1587,7 +1587,8 @@ def get_device_names(api_type: int = None) -> Tuple[List[str], List[str]]:
     PureVox 虚拟麦克风 purevox_out.monitor），输出 = Audio/Sink 节点（扬声器 +
     purevox_out）。返回 node.name（稳定，可直接作 pw_stream 目标）。
 
-    非 Linux 平台：枚举全部 host API（不按 API 过滤），设备按方向区分。
+    Windows：只枚举 WASAPI host API 下的设备，
+    避免混入其它 host API 的重复/无关端点，设备按方向区分。
     """
     if api_type is None:
         api_type = default_api_type()
@@ -1595,10 +1596,16 @@ def get_device_names(api_type: int = None) -> Tuple[List[str], List[str]]:
         return _pw_sources(), _pw_dests()
     p = pyaudio.PyAudio()
     try:
+        host_api_indices = _get_host_api_indices(p, api_type)
         input_names: List[str] = []
         output_names: List[str] = []
         for i in range(p.get_device_count()):
-            dev = p.get_device_info_by_index(i)
+            try:
+                dev = p.get_device_info_by_index(i)
+            except Exception:
+                continue
+            if dev['hostApi'] not in host_api_indices:
+                continue
             name = dev['name'].strip()
             if dev['maxInputChannels'] > 0 and name not in input_names:
                 input_names.append(name)
@@ -1621,7 +1628,10 @@ def get_device_id(device_name: str, is_input: bool, api_type: int = None) -> Opt
     # Linux：输入/输出都是 PipeWire 节点名，直接使用，无 PortAudio 索引
     if IS_LINUX:
         return None
-    input_names, output_names = get_device_names(api_type=api_type)
+    try:
+        input_names, output_names = get_device_names(api_type=api_type)
+    except Exception:
+        input_names, output_names = [], []
     target_names = input_names if is_input else output_names
 
     matched_names = [name for name in target_names if name.startswith(device_name)]
@@ -1634,8 +1644,14 @@ def get_device_id(device_name: str, is_input: bool, api_type: int = None) -> Opt
 
     p = pyaudio.PyAudio()
     try:
+        host_api_indices = _get_host_api_indices(p, api_type)
         for i in range(p.get_device_count()):
-            dev = p.get_device_info_by_index(i)
+            try:
+                dev = p.get_device_info_by_index(i)
+            except Exception:
+                continue
+            if dev['hostApi'] not in host_api_indices:
+                continue
             if dev['name'].strip() == matched_names[0]:
                 if is_input and dev.get('maxInputChannels', 0) <= 0:
                     continue

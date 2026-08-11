@@ -12,10 +12,15 @@ Windows / Linux 桌面应用 + Android 客户端：实时 AI 音频降噪 / 目�
 
 **功能最小化模型** —— 本项目的首要约束：
 
+0. **更新日志写在哪里**：每次发版/改动（新增、删除、行为变化）都在
+   `dialog_about.py` 的 `CHANGELOG_TEXT`（内嵌快照）顶部追加一条「日期 — 标题」记录。
+   仓库**没有独立的 CHANGELOG.md / 用户手册文件**——用户手册与更新日志全部内嵌于
+   `dialog_about.py`（「关于」对话框整页标签展示），写入时保持中文、无 emoji。
+
 1. **一个功能只有一条规范实现路径**。禁止"功能 ABC 三种都能用"的设计——多套平行实现等于高维护成本。新增功能有多个可行做法时，只保留一种并写进文档，其余不进入代码。
-2. **先扩展，再新建**。开新方法 / 新类 / 新文件之前，先搞清楚已有方法能否扩展：优先 改已有函数/类 → 加参数/加配置 → 复用既有抽象；确认确实无法扩展才允许新建，并在 CHANGELOG 说明为何不能扩展。
+2. **先扩展，再新建**。开新方法 / 新类 / 新文件之前，先搞清楚已有方法能否扩展：优先 改已有函数/类 → 加参数/加配置 → 复用既有抽象；确认确实无法扩展才允许新建，并在更新日志（`dialog_about.py` 的 `CHANGELOG_TEXT`）说明为何不能扩展。
 3. **被替代的实现不保留平行代码**。如 Linux 的 PortAudio/GStreamer/JACK、旧虚拟麦克风架构等已弃用方案，直接删除，不留"备选"。
-4. **改动前先读对应模块，尊重既有设计意图**；删除功能需在 CHANGELOG 记录。
+4. **改动前先读对应模块，尊重既有设计意图**；删除功能需在更新日志（`dialog_about.py` 的 `CHANGELOG_TEXT`）记录。
 
 **本项目的单一实现路径（强制执行）**：
 
@@ -90,8 +95,8 @@ powershell -ExecutionPolicy Bypass -File build_win.ps1   # 打包产物目录 di
 
 **`.ps1` 脚本必须纯 ASCII（英文）**：`build_win.ps1` / `bootstrap_python38.ps1`
 不含中文/非 ASCII/BOM。Windows PowerShell 5.1 对无 BOM 的 UTF-8 脚本按 ANSI
-(cp1252/GBK) 误读导致语法错误（`chcp 65001` 只在本机掩盖）；中文文件名
-（如 `用户手册.html`）在脚本里用通配符（`*.html`）引用，不写字面量。
+(cp1252/GBK) 误读导致语法错误（`chcp 65001` 只在本机掩盖）；脚本须引用中文
+文件名时用通配符（`*.html`）匹配，不写字面量。
 
 ### Linux
 
@@ -183,9 +188,10 @@ cd android
 | `server/` | 远程麦克风 HTTPS/WSS 服务器 —— `https_server.py`、`audio_bridge.py`(RemoteAudioSource)、`opus_codec.py`、`mdns_publisher.py`、`tls_manager.py` |
 | `config_manager.py` | JSON 配置读写，启动时迁移旧 key；api_type/output_device 平台感知默认值 |
 | `model_config.py` | ONNX 模型文件名常量 |
-| `dialog_about.py` / `dialog_eq.py` / `dialog_tse_reference.py` | 关于 / 均衡器 / TSE 参考录音弹框（统一 `dialog_` 前缀） |
+| `dialog_about.py` | 关于对话框（单一菜单「关于」打开，整页标签）—— 介绍 / Windows 使用说明 / Linux 使用说明 / 更新日志 / 许可证，内容全部内嵌 py（中文，无 emoji）。**更新日志的唯一维护位置就是本文件的 `CHANGELOG_TEXT`**：无独立 CHANGELOG.md 文件，发版/改动时在快照顶部追加 |
+| `dialog_eq.py` / `dialog_tse_reference.py` | 均衡器 / TSE 参考录音弹框（统一 `dialog_` 前缀） |
 | `html/` | 浏览器端远程推流页面 —— `index.html`、`app.js`、`audio-capture.js`、`ws-client.js`、Opus WASM 编码器 |
-| `dialog_vbcable_check.py` | VB-CABLE 虚拟麦克风检测弹框（仅 Windows；只检测不自动安装，给下载/教程指引，复选框默认勾选检测、取消即跳过不再提示） |
+| `dialog_vbcable_check.py` | VB-CABLE 虚拟声卡检测面板（仅 Windows；只检测不自动安装。统一结构：状态灯 + 双端点说明[CABLE Input 接 PureVox 输出 / CABLE Output 作虚拟麦克风，均 48kHz] + 驱动卡片[打开控制面板/下载/教程]）。检测开关默认开启，但**仅未安装才弹框**，取消勾选即跳过不再提示 |
 | `dialog_virtual_mic_linux.py` | Linux 虚拟声卡状态面板 —— 指示灯 + 双出口说明 + 手动「创建/清理」（启动不自动创建，`ensure_virtual_mic`/`remove_virtual_mic` 全幂等） |
 | `build_win.ps1` / `pack_deb.sh` / `pack_rpm.sh` / `pack_appimage.sh` / `setup.py` | Windows 产物目录打包（PyInstaller，CI 上传自动压缩）/ Linux deb / rpm / AppImage 打包 / 纯 C 共享库构建（gcc，`build_ext --inplace` 产出 libaimic.so + libpvpipe.so） |
 
@@ -263,7 +269,7 @@ AEC far-end：独立输入流 `PureVox-far`（`stream.capture.sink=tap 扬声器
 ## 命名规范
 
 ### 品牌名
-**品牌名统一为 `PureVox`**（P、V 大写）。所有用户可见文本——窗口标题、UI 文案、日志、关于对话框、README、用户手册、CHANGELOG、菜单——一律用 `PureVox`，禁止 `Purevox` / `purevox` / `PUREVOX` 等变体。
+**品牌名统一为 `PureVox`**（P、V 大写）。所有用户可见文本——窗口标题、UI 文案、日志、关于对话框、README、更新日志、菜单——一律用 `PureVox`，禁止 `Purevox` / `purevox` / `PUREVOX` 等变体。
 
 ### 代码内部标识符
 - 含品牌名的 Python 类/标识符统一 `PureVox...`（如 `PureVoxServer`）
@@ -307,7 +313,7 @@ AEC far-end：独立输入流 `PureVox-far`（`stream.capture.sink=tap 扬声器
   - 速率补偿: 输出缓冲 >128ms 时主动丢弃多余帧
 - **本地（Linux）低延迟是唯一做过优化的一条**（非网络）：
   - `create_stream` 显式发 `SPA_PARAM_Buffers`（4096B=1024 样本）→ 输出流缓冲
-    从 12288 样本（256ms）降到 1024 样本（~21ms）/hop，见 CHANGELOG 2026-08-10
+    从 12288 样本（256ms）降到 1024 样本（~21ms）/hop，见更新日志 2026-08-10
   - `RING_CAPACITY`（pipewire_client.c）从 2s(96000) 收到 4 hop(4096/85ms) 封顶，
     输入环稳态保持 ~0；本地全链路延迟即 ~1 帧 + hop
   - 网络模式不受此优化影响：仍走热路径外缓冲，该条数值不适用于本地
