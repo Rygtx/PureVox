@@ -187,13 +187,20 @@ static int cpu_supports_avx(void) {
 /* printed NPU fallback note once per process, not once per model */
 static int g_npu_warned = 0;
 
+/* TODO(NPU): the bundled onnxruntime 1.11.1 is a pure-CPU build, so the NPU
+ * (DirectML / CoreML / OpenVINO) branch below is dead code kept on purpose as
+ * the reference path for adding an NPU execution provider later -- when that
+ * happens, build a runtime with the EP compiled in and re-test this branch.
+ * The CPU path (MLAS) already dispatches to the best ISA automatically. */
+
 /* Auto backend selection applied to every session:
  *   1) try an NPU-capable execution provider (OpenVINO on Linux / DirectML on
  *      Windows / CoreML on macOS) and use it when the runtime provides it;
  *   2) otherwise use the default CPU execution provider, whose MLAS kernels
  *      dispatch on CPUID to the best ISA available (AVX if the CPU has it,
- *      else SSE).  effective_backend_ reflects what will actually run and
- *      backend_reason_ why NPU is not in use (0 = NPU active). */
+ *      else SSE).  effective_backend_ is a pure report of what MLAS will run
+ *      (NPU = 0 when active), it does not change behaviour for the CPU path;
+ *      backend_reason_ explains why NPU is not in use (0 = NPU active). */
 static int onnx_apply_backend(OnnxModel* m) {
     m->effective_backend_ = cpu_supports_avx() ? AIMIC_BACKEND_AVX : AIMIC_BACKEND_SSE;
     m->backend_reason_ = AIMIC_BACKEND_REASON_OK;

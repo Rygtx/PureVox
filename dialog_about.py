@@ -357,6 +357,22 @@ AGC、VAD，31 段均衡器在菜单「设置 → 均衡器」打开。</p>
 
 CHANGELOG_TEXT = """# 更新日志
 
+## 2026-08-12 — 移除编译期 `-mavx2`，全 CPU 兼容
+
+- **`setup.py` 编 `aimic.dll`/`libaimic.so` 去掉 `-mavx2`**：一律用 `-O2`
+  默认基线（x86-64 的 SSE2）。原因：`-mavx2` 让 gcc 对整个 aimic.c+pffft+
+  libsamplerate 无差别生成 AVX 指令且不做运行时检测，在无 AVX 的老 CPU
+  （酷睿4代以前）上，pffft FFT 热身即 `0xc000001d` 非法指令崩溃。
+  实测：带 `-mavx2` 时 DLL 含 3888 条 AVX 指令、推理 4.010ms/帧、老 CPU
+  崩溃；去掉后 0 条、5.629ms/帧、全 CPU 兼容（远低于 20.8ms 实时预算）。
+- **模型推理性能不受影响**：onnxruntime 的 MLAS 内核在运行时按 CPUID
+  dispatch（SSE2→AVX→AVX2 自动选最优），与本库编译参数无关。
+- **「推理后端」日志改为纯报告**：`cpu_supports_avx()` 探测 CPU 能力并打印
+  AVX/SSE，仅反映 MLAS 会跑哪档内核，不参与行为决策；NPU 分支保留为**死代码
+  示例**（捆绑 onnxruntime 1.11.1 为纯 CPU 构建，DirectML/OpenVINO EP 必然
+  失败），作为日后加入 NPU 执行提供程序的参考路径，见 `aimic.c`
+  `onnx_apply_backend` 的 TODO(NPU) 注释。
+
 ## 2026-08-12 — 48kHz 启动检测补诊断日志 + 修复中文设备名乱码
 
 - **48k 检测失败时输出诊断日志**：`_try_open_48k` 失败打 `[warn]`，包含设备索引/

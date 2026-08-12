@@ -305,7 +305,22 @@ AEC far-end：独立输入流 `PureVox-far`（`stream.capture.sink=tap 扬声器
    实际生效情况由 `audio_processor_backend_effective/reason` 返回（原因码
    `AIMIC_BACKEND_REASON_*`），UI 启动日志据此打印「推理后端: …」。捆绑的
    onnxruntime 1.11.1 为纯 CPU 构建（SSE 限制配置项已移除、CPU EP 不读会话配置，
-   实测确认），故当前实际生效恒为 AVX。新后端必须沿用这条链，禁止另起一套。
+   实测确认）。「推理后端: AVX/SSE」是**纯报告**：仅反映 `cpu_supports_avx()`
+   的 CPUID 探测结果，与 MLAS 运行时内核选择一致（详见 3b），不参与任何行为
+   决策——真正的内核选择由 MLAS 在运行时按 CPUID 完成，与本库无关。NPU 分支
+   是**有意保留的死代码示例**（捆绑 onnxruntime 1.11.1 纯 CPU 构建，DirectML/
+   CoreML/OpenVINO EP 不可用，`SessionOptionsAppendExecutionProvider_*` 必失败），
+   以后要加 NPU 就复用这条路径（编译含 EP 的运行时再试），见 `aimic.c`
+   `onnx_apply_backend` 的 TODO(NPU) 注释。
+3b. **编译基线禁开 `-mavx2`（2026-08-12 实测决策）** — `setup.py` 编 `aimic.dll`/
+    `libaimic.so` 一律用 `-O2` 默认基线（x86-64 的 SSE2），**禁止加 `-mavx2`**。
+    原因：`-mavx2` 让 gcc 对整个 aimic.c+pffft+libsamplerate 无差别生成 AVX 指令
+    且不生成运行时检测，在无 AVX 的老 CPU（酷睿4代以前）上，pffft FFT 热身即
+    `0xc000001d` 非法指令崩溃；去掉后全 CPU 兼容，推理性能大头（ONNX 模型）走
+    onnxruntime MLAS 运行时 CPUID dispatch（SSE2→AVX→AVX2 自动选最优内核），
+    与本库编译参数无关，仅 aimic 自身 DSP（STFT/FFT/前置）从 4.0ms 慢到 5.6ms/
+    帧，仍远低于 20.8ms 实时预算。实测对比表：带 `-mavx2` AVX 指令 3888 条、
+    avg 4.010ms、老 CPU 崩溃；去掉后 0 条、5.629ms、全兼容。
 4. **命名** — Python: snake_case 方法和变量；C++: snake_case 方法和 PascalCase 类；Kotlin: camelCase。
 5. **错误处理** — 内部用 `try/except` + `_module_log()` 记录，不冒泡到 UI 线程；UI 用 `QMessageBox` / `QDialog` 提示。
 6. **日志** — 统一 `logger.py` 的 `Logger` 类，层级 `dev`/`msg`/`warn`/`err`。
