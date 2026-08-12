@@ -21,7 +21,9 @@
 # 检测逻辑（配合 ui_pyside6._check_vbcable）：默认开启检测，但只有在
 # VB-CABLE「未安装」时才弹出面板；已安装则无事发生。面板结构不随安装状态变化：
 # 状态灯 + 双端点说明（48kHz）+ 驱动卡片（打开控制面板/下载/教程）+ 检测开关。
-import subprocess
+#
+# 检测单一实现路径：只走 PyAudio 枚举双端点（CABLE Input 有输出通道 +
+# CABLE Output 有输入通道），不做任何 PnP/驱动的退化回退（退化会误判禁用/残留设备）。
 import threading
 import time as _time
 
@@ -63,8 +65,7 @@ def _check_with_pyaudio() -> bool:
 
 
 def _check_vbcable_installed() -> bool:
-    """判断 VB-CABLE 是否已安装：优先 PyAudio 枚举端点（限时 5s），
-    失败/超时退化为 PowerShell 查询驱动设备。"""
+    """判断 VB-CABLE 是否已安装：PyAudio 枚举双端点（限时 5s）。"""
     result_box = [False]
 
     def worker():
@@ -73,20 +74,7 @@ def _check_vbcable_installed() -> bool:
     thread = threading.Thread(target=worker, daemon=True)
     thread.start()
     thread.join(timeout=5)
-    if result_box[0]:
-        return True
-
-    try:
-        result = subprocess.run(
-            ["powershell", "-Command", "Get-PnpDevice | Where-Object { $_.FriendlyName -like '*VB-Audio Virtual Cable*' }"],
-            capture_output=True,
-            text=True,
-            timeout=10,
-            creationflags=subprocess.CREATE_NO_WINDOW
-        )
-        return "VB-Audio" in result.stdout
-    except Exception:
-        return False
+    return result_box[0]
 
 
 def vbcable_installed() -> bool:

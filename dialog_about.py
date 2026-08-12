@@ -357,6 +357,15 @@ AGC、VAD，31 段均衡器在菜单「设置 → 均衡器」打开。</p>
 
 CHANGELOG_TEXT = """# 更新日志
 
+## 2026-08-12 — 移除 VB-CABLE 检测的 PnP 退化回退
+
+- `dialog_vbcable_check.py` 虚拟声卡检测不再用 PowerShell `Get-PnpDevice` 兜底：
+  只走 PyAudio 枚举双端点（CABLE Input 有输出通道 + CABLE Output 有输入通道，
+  限时 5s）。原退化路径会误判「驱动已装但被禁用 / 半卸载残留」的设备为已安装，
+  且 Get-PnpDevice 需额外拉起 PowerShell（~1s、无窗口）。
+- 检测单一实现路径：不做任何驱动层/PnP 兜底，已安装判定唯一依据是
+  PortAudio 能枚举到可用的 CABLE 双端点
+
 ## 2026-08-11 — 推理后端改为自动选择（NPU → AVX → SSE）
 
 - **移除「推理后端」下拉框**：后端不再需要手动选择，创建模型时自动按
