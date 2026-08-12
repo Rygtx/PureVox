@@ -357,6 +357,18 @@ AGC、VAD，31 段均衡器在菜单「设置 → 均衡器」打开。</p>
 
 CHANGELOG_TEXT = """# 更新日志
 
+## 2026-08-12 — 48kHz 启动检测补诊断日志 + 修复中文设备名乱码
+
+- **48k 检测失败时输出诊断日志**：`_try_open_48k` 失败打 `[warn]`，包含设备索引/
+  名字/默认采样率/输入输出通道数/宿主 API/异常原因；每次启动输出一行汇总
+  （`[48k检测] 输入=OK 输出=FAIL ...`）；弹框阻止启动时打 `[err]` 列出设备名。
+  用于区分「设备真不支持 48k」与「设备被占用/独占」等资源性问题。
+- **修复中文设备名乱码**：PortAudio 返回 UTF-8 设备名，PyAudio 在中文系统
+  （locale=cp936/GBK）先按 GBK 解码、不抛异常就不退回 UTF-8，导致部分中文名
+  （如「线路输入」）变成「绾胯矾杈撳叆」式乱码，且同批设备有乱有正常。
+  新增 `device_api.fix_device_name()`：对乱码串按 GBK 重编码再按 UTF-8 解码还原，
+  正常名字不受影响。`get_device_names` / `get_device_id` 与 48k 诊断日志统一走它。
+
 ## 2026-08-12 — 移除 VB-CABLE 检测的 PnP 退化回退
 
 - `dialog_vbcable_check.py` 虚拟声卡检测不再用 PowerShell `Get-PnpDevice` 兜底：

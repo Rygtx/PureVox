@@ -147,6 +147,12 @@ cd android
 - `release` job：`needs` 三构建 job + `if: startsWith(github.ref,'refs/tags/')`，tag push 时下载全部产物，Windows 目录重打成 zip（`zip -9`），`gh release create` 把 deb / rpm / AppImage / Windows zip / APK 全部 attach
 - **产物命名统一**：`PureVox-<平台>-<架构>-<yyyy-MM-dd-HHmm>-<release|debug>.<ext>`（Windows 上传目录由 CI 自动压缩 / Linux deb / rpm / AppImage 一律 release，Android 为 debug）。文件名时间戳 `yyyy-MM-dd-HHmm`；产物体内版本字段 = `yyyy.MM.dd.HHmm`（如 `2026.08.10.1517`，deb control / rpm / setup.py 一致，**由 tag 名 `v<yyyy.MM.dd.HHmm>` 推导**，避免并发 job 各自 `date` 导致产物版本不一）。
 - **窗口标题版本戳 `_build_version.py` 同样由 tag 推导**：`ui_pyside6.py` 顶部 `try: from _build_version import BUILD_DATE`，缺失回退「开发版」。四个打包脚本（`pack_deb.sh` / `pack_rpm.sh` / `pack_appimage.sh` / `build_win.ps1`）都在打包时把 `BUILD_DATE = "yyyy-MM-dd-HHmm"` 写入产物内的 `_build_version.py`（tag 触发取 `GITHUB_REF_NAME`，本地回退当前时间），保证窗口标题与包版本/文件名同源；该文件已在 `.gitignore`，勿提交。新增打包脚本必须照此生成。
+  - **Windows(PyInstaller) 的 `_build_version.py` 无需 `--add-data`（2026-08-12 实测）**：PyInstaller
+    静态分析 `ui_pyside6.py`/`run_pyside6.py` 顶层的 `from _build_version import BUILD_DATE`，
+    会把仓库根的 `_build_version.py` 当作**模块编译进 PYZ**（`dist\PureVox\_internal\` 下看不到
+    独立 `.py` 文件，属正常），运行时 import 正常、窗口标题带日期。勿再加 `--add-data="_build_version.py;."`
+    ——PYZ 里没有它、且会被 PyInstaller 以模块方式收集，加 add-data 只会让文件重复打包。验证方法：
+    启动 `dist\PureVox\PureVox.exe` 后抓窗口标题（Win32 `EnumWindows` + `GetWindowText` 按 PID 过滤）。
 - **onnxruntime 预编译 SDK（双平台统一 1.11.1）**：Windows 用捆绑 `packages/onnxruntime-win-x64-1.11.1`；Linux/macOS 默认捆绑 `packages/onnxruntime-linux-x64-1.11.1`（`include/`+`lib/`）。setup.py 仍支持 `ORT_INCLUDE_DIR` / `ORT_LIB_DIR` 环境变量覆盖（CI/pip 场景，wheel 内 .so 带版本号后缀，需先建 `libonnxruntime.so` 软链接再 `-lonnxruntime`，运行时 `LD_LIBRARY_PATH` 指向 capi 目录）
 - **Linux job 按发行版分开是刻意设计，勿合并成一个 job**（2026-08-10 决策）：deb 在
   Ubuntu、rpm 在 Fedora 产出，是因为 rpm 打包须依赖 `rpmbuild` 与真实 Fedora 包名解析

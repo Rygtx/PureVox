@@ -55,6 +55,31 @@ API_SNDIO = 17
 # 网络输入模式（非 PortAudio host API）
 API_NETWORK = 99
 
+
+def fix_device_name(name: str) -> str:
+    """修复 PortAudio 在中文 Windows 上返回的乱码设备名。
+
+    PortAudio 返回的设备名是 UTF-8 字节；PyAudio 按
+    locale.getpreferredencoding()（中文系统是 cp936/GBK）先解码一次，
+    只有解码抛异常才退回 UTF-8。UTF-8 的中文名恰能被 GBK 拼成合法字符时
+    不会抛异常，于是得到「UTF-8 字节被 GBK 误读」的乱码串（如
+    「线路输入」→「绾胯矾杈撳叆」）。同批设备里有的乱、有的正常，
+    取决于各名字节能否拼成合法 GBK 序列。
+
+    修复：把乱码串按 GBK 重新编码回原始 UTF-8 字节，再按 UTF-8 解码。
+    对本来就是合法文本的字符串，GBK 编码再 UTF-8 解码要么抛异常、
+    要么结果等于原串，故不影响正常名字。
+    """
+    if not name:
+        return name
+    try:
+        fixed = name.encode("gbk").decode("utf-8")
+    except (UnicodeEncodeError, UnicodeDecodeError):
+        return name
+    if fixed == name or "\ufffd" in fixed:
+        return name
+    return fixed
+
 # 编号 → host API 显示名（仅列当前会用到的）
 PTYPE_TO_NAME = {
     API_DIRECTSOUND: "DirectSound",

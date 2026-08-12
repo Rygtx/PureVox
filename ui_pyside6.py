@@ -1758,7 +1758,9 @@ def start_processing(state, log):
                     + (f"\n[启动] PipeWire 监听: {mp_mon}" if mp_mon else ""))
 
         def _try_open_48k(_p, device_id, is_input):
-            """尝试以 48kHz 打开设备流（共用 PyAudio 实例），成功返回 True"""
+            """尝试以 48kHz 打开设备流（共用 PyAudio 实例），成功返回 True。
+            失败时记录诊断日志（设备名/默认采样率/通道数/宿主 API/异常原因），
+            区分「真不支持 48k」与「设备被占用/独占」等资源性问题。"""
             if device_id is None:
                 return True
             try:
@@ -1774,7 +1776,30 @@ def start_processing(state, log):
                                 frames_per_buffer=1024)
                 s.close()
                 return True
-            except Exception:
+            except Exception as e:
+                try:
+                    from pvplatform.audio import device_api as _dapi
+                    try:
+                        info = _p.get_device_info_by_index(device_id)
+                        info = dict(info)
+                    except Exception:
+                        info = {}
+                    name = _dapi.fix_device_name(info.get('name', '?'))
+                    try:
+                        host = _p.get_host_api_info(info['hostApi'])['name'] if info.get('hostApi') is not None else "?"
+                    except Exception:
+                        host = "?"
+                    detail = (
+                        f"device={device_id} name={name!r} "
+                        f"sr={info.get('defaultSampleRate', '?')} "
+                        f"in_ch={info.get('maxInputChannels', '?')} "
+                        f"out_ch={info.get('maxOutputChannels', '?')} "
+                        f"host={host}"
+                    )
+                except Exception:
+                    detail = f"device={device_id}（设备信息读取失败）"
+                log.warn(f"[48k检测] {('输入' if is_input else '输出')}打开失败: "
+                         f"{detail} 原因: {e}")
                 return False
 
         # 检测输入/输出/监听设备（共用 PyAudio 避免频繁创建）。
@@ -1811,10 +1836,19 @@ def start_processing(state, log):
                             failed_aec = True
                     except Exception:
                         pass
+                log.msg(
+                    "[48k检测] 输入=%s 输出=%s 监听=%s AEC=%s"
+                    % ("OK" if not failed_in else "FAIL",
+                       "OK" if not failed_out else "FAIL",
+                       "OK" if not failed_mon else "FAIL",
+                       "OK" if not failed_aec else ("FAIL" if mode == MODE_AEC else "跳过")))
             finally:
                 _p.terminate()
 
         if failed_in or failed_out or failed_mon or failed_aec:
+            _names = [n for n in (in_name, out_name, mon_name, aec_name) if n]
+            log.err("[48k检测] 存在不支持 48kHz 的设备，已弹框阻止启动: %s"
+                    % ("、".join(_names) if _names else "（设备名读取失败）"))
             _warn_48k(failed_in, failed_out, failed_mon, failed_aec,
                       in_name, out_name, mon_name, aec_name, log)
             return

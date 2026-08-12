@@ -1610,7 +1610,7 @@ def get_device_names(api_type: int = None) -> Tuple[List[str], List[str]]:
                 continue
             if dev['hostApi'] not in host_api_indices:
                 continue
-            name = dev['name'].strip()
+            name = _device_api.fix_device_name(dev['name']).strip()
             if dev['maxInputChannels'] > 0 and name not in input_names:
                 input_names.append(name)
             if dev['maxOutputChannels'] > 0 and name not in output_names:
@@ -1656,7 +1656,7 @@ def get_device_id(device_name: str, is_input: bool, api_type: int = None) -> Opt
                 continue
             if dev['hostApi'] not in host_api_indices:
                 continue
-            if dev['name'].strip() == matched_names[0]:
+            if _device_api.fix_device_name(dev['name']).strip() == matched_names[0]:
                 if is_input and dev.get('maxInputChannels', 0) <= 0:
                     continue
                 if not is_input and dev.get('maxOutputChannels', 0) <= 0:
