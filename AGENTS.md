@@ -278,8 +278,10 @@ AEC far-end：独立输入流 `PureVox-far`（`stream.capture.sink=tap 扬声器
     PureVox 自己输出**（实测读到回读正弦 rms=0.27）。ALSA 输入下拉须枚举物理麦克风
     （pw-dump 的 Audio/Source，排除 `purevox_mic`/`*.monitor`），PCM 名用
     `pulse:<node.name>`（如 `pulse:alsa_input...Mic2__source`），显式指定源绕开默认。
-    本机板载麦 Mic2 实测 `pulse:Mic2` 可打开但拾音极弱（可能幻影/低增益），无可用物理
-    麦的机器 ALSA 输入采集受限，但对外虚拟麦克风不受影响。
+    本机板载 sof-hda 声卡的数字麦（Mic1）与模拟麦（Mic2）是两个**真实物理麦克风**
+    （声卡的两个接口，需在系统声卡设置里激活对应接口），Mic2 实测 `pulse:Mic2`
+    可打开但拾音极弱（模拟麦灵敏度/增益特性，非假设备），无可用物理麦的机器 ALSA
+    输入采集受限，但对外虚拟麦克风不受影响。
   - **capture 流关闭必须用 `snd_pcm_drop`（2026-08-13 实测）**：`als_close` 对 in/far
     （capture）用 `snd_pcm_drain` 会**无限阻塞**（实测 pcm.pulse 采集 stop 时 UI 卡死，
     `pthread_join` 已返回、卡在 drain）；capture 用 `snd_pcm_drop`（立即丢弃），playback
@@ -288,9 +290,15 @@ AEC far-end：独立输入流 `PureVox-far`（`stream.capture.sink=tap 扬声器
   执行（`pw_loop_invoke` + 条件变量同步；block 参数不可靠会竞态）。
 - **进程回调（数据线程）禁止加锁/分配**——pvpipe 用无锁 SPSC 环形缓冲（输入环满丢最旧、
   输出环满丢新），Python 线程读→降噪→写（2s 缓冲吸收调度抖动），回调只搬数据。
-- 设备列表（pw-dump）：PureVox 自身输入 = Audio/Source 物理麦克风（排除 PureVox-*、purevox
-  源[那是对外输出，选它当输入会回授]、幻影路由 `api.alsa.path` 未指定具体设备如 `hw:sofhdadsp`
-  无 `,N`、error 节点）；输出 = Audio/Sink 节点（扬声器 + `purevox_out`）
+- 设备列表（pw-dump）：Linux **按声卡枚举设备**——一个声卡（如 sof-hda-dsp）有多个
+  **接口**，各自对应真实设备/麦克风（数字麦 Mic1 / 模拟麦 Mic2 / 扬声器 / HDMI 等），
+  需在系统声卡设置（pavucontrol / alsamixer / UCM）里激活对应接口，接口即对应到该设备。
+  PureVox 自身输入 = Audio/Source 物理麦克风（排除 PureVox-*、purevox 源[那是对外输出，
+  选它当输入会回授]、error 死节点）。数字麦（Digital Microphone/Mic1）与模拟麦
+  （Stereo Microphone/Mic2）是同一声卡的**两个不同接口、各对应一个真实物理麦克风**，
+  二者都应列出（与 ALSA 接口 `_pulse_source_ports` 宽松枚举一致）；**禁止按
+  api.alsa.path 无 `,dev` 把板载卡接口当"假设备"排除**——旧版曾把 Mic2 误杀
+  导致 PipeWire 少列一个麦。输出 = Audio/Sink 节点（扬声器 + `purevox_out`）
 - VU 电平显示**降噪输出峰值**（`_pw_loop` 里取 `out`，勿改成输入 `data`）
 - UI 下拉框直接显示节点名（node.name），真实节点名存 userData，读下拉框一律走 `_combo_value()`
 

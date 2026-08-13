@@ -99,7 +99,8 @@ if IS_LINUX:
         ALSA 输入**必须**用 `pulse:<source>` 显式指定物理麦克风：`pcm.pulse` 读
         pipewire-pulse 的**默认 source**，而 `purevox_mic`（虚拟麦克风真源）会抢占
         默认 source 导致回读 PureVox 自己输出（实测 pcm.pulse 读到回读正弦）。
-        用宽松枚举（含被 pwpipe 判为幻影的板载麦，如本机 Mic2），排除 PureVox
+        用宽松枚举（数字/模拟双物理麦都列出，如本机 Mic1/Mic2，是同一声卡的
+        两个接口、各对应一个真实物理麦克风），排除 PureVox
         自身源（purevox_mic / *.monitor）避免回授。物理 plughw 仍由 _alsa_devices 列。
         """
         import subprocess as _sp

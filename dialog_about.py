@@ -300,7 +300,10 @@ _LINUX_BODY = """
 
 <h2>第 1 步：选择设备</h2>
 <ol>
-<li><strong>输入设备</strong>：选择物理麦克风（PipeWire 直接枚举设备名）；</li>
+<li><strong>输入设备</strong>：选择物理麦克风。Linux 按<strong>声卡</strong>枚举设备——
+    一个声卡有多个<strong>接口</strong>（如板载声卡的数字麦 Mic1 / 模拟麦 Mic2 /
+    扬声器），各接口对应真实设备，需在系统声卡设置（pavucontrol / alsamixer）里
+    激活对应接口，即可采集到该接口对应的麦克风/设备声音；</li>
 <li><strong>输出设备</strong>：选扬声器/耳机即可；想让其它软件使用降噪后的声音时，
    选 <strong>PureVox 虚拟麦克风</strong>（见下一步）；</li>
 <li><strong>采样率</strong>：PipeWire 统一重采样为 48kHz 单声道，无需手动设置。</li>
@@ -358,6 +361,17 @@ AGC、VAD，31 段均衡器在菜单「设置 → 均衡器」打开。</p>
 
 CHANGELOG_TEXT = """# 更新日志
 
+## 2026-08-13 — 修正 Linux 设备枚举认知：按声卡枚举，数字/模拟双麦克风皆真实
+
+- **修正设备枚举认知：数字/模拟双麦克风皆真实**：数字麦（Digital Microphone/Mic1）
+  与模拟麦（Stereo Microphone/Mic2）是**同一块声卡（如 sof-hda-dsp）的两个接口，
+  各对应一个真实物理麦克风**，二者都应列为输入；旧版按 `api.alsa.path` 无 `,dev`
+  把 Mic2 误判排除，导致 PipeWire 少列一个麦（与 ALSA 接口宽松枚举不一致）
+- **设备枚举按声卡组织**：Linux 一个声卡有多个接口（Mic1 数字麦 / Mic2 模拟麦 /
+  扬声器 / HDMI 等），各接口对应真实设备，需在系统声卡设置（pavucontrol /
+  alsamixer / UCM）里激活对应接口，接口即对应到该设备的声音
+- PipeWire 与 ALSA 接口的物理麦克风枚举逻辑对齐（都宽松列出双物理麦）
+
 ## 2026-08-13 — Linux 新增本地接口 ALSA（原生备选）
 
 - **音频接口下拉框改为「本地接口 PipeWire（默认）」+「本地接口 ALSA」+「网络(API)」三项**：
@@ -387,7 +401,9 @@ CHANGELOG_TEXT = """# 更新日志
   （exit=0 无效），导致 pcm.pulse 输入**回读 PureVox 自己输出**（实测读到回读正弦
   rms=0.27）。ALSA 输入下拉改用 `pulse:<node.name>`（pw-dump 枚举物理麦克风，排除
   `purevox_mic`/`*.monitor`）显式指定源绕开默认；无 PipeWire 的纯 ALSA 系统用
-  `plughw:C,D` 直连。本机板载麦 Mic2 实测 `pulse:Mic2` 可打开但拾音极弱
+  `plughw:C,D` 直连。本机板载 sof-hda 声卡的数字麦（Mic1）与模拟麦（Mic2）是
+  两个**真实物理麦克风**（声卡的两个接口，需在系统声卡设置里激活对应接口），
+  Mic2 实测 `pulse:Mic2` 可打开但拾音极弱（模拟麦灵敏度/增益特性，非假设备）
 - **设备枚举**：ALSA 模式输入/输出下拉前置物理麦克风（`pulse:<source>`）与虚拟麦克风
   （`purevox_out`），并列出 `plughw:C,D` 物理设备；注意大量 HDMI 为**未连接假设备**
   （本机仅 Headphones 输出 + Mic2 输入可用），真正可用端点通常只有物理耳机/板载麦
@@ -620,7 +636,7 @@ CHANGELOG_TEXT = """# 更新日志
 - **本地输出流低延迟**（唯一优化过的延迟路径，网络模式不受益）：
   `create_stream` 显式 `SPA_PARAM_Buffers`(4096B=1024 样本) → 输出流缓冲 12288→1024
   样本（256ms→21ms）；`RING_CAPACITY` 收窄到 4 hop(4096/85ms) 封顶，输入环稳态 ~0
-- 设备枚举修正 USB 麦克风误判幻影路由（`device.bus=usb` 直接放行）；VU 电平显示
+- 设备枚举修正 USB 麦克风误判（`device.bus=usb` 直接放行）；VU 电平显示
   降噪输出峰值
 - **禁用/踩坑（违反即弄坏系统托盘/协议）**：禁 `module-null-sink
   media.class=Audio/Source/Virtual`（弄坏 pipewire-pulse）、禁 `pw-loopback`（旧架构，

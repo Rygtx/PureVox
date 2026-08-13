@@ -81,28 +81,6 @@ def _list_nodes() -> List[Dict[str, str]]:
     return nodes
 
 
-def _is_phantom_route(node: Dict[str, str]) -> bool:
-    """ALSA 捕获路径未指定具体设备（hw:<card> 无 ,<dev>）→ 幻影/默认路由。
-
-    例：hw:sofhdadsp（卡默认，常解析到非真实捕获）vs hw:sofhdadsp,6（具体 PCM）。
-    这类源即使能"打开"，采集到的也是纯静音。另：error 状态的节点同样排除。
-    """
-    if node.get("state") == "error":
-        return True
-    # USB 设备上的 hw:card（无 ,设备）是真实采集（如 hw:1/hw:2），不是幻影路由。
-    # 幻影路由只出现在内部/板载（platform/sof 类）卡，打开也是静音。
-    if (node.get("device_bus") or "").strip().lower() == "usb":
-        return False
-    path = (node.get("api_alsa_path") or "").strip().lower()
-    if not path:
-        return False
-    if path.startswith("hw:") and "," not in path:
-        return True
-    if path in ("default", "plughw", "hw"):
-        return True
-    return False
-
-
 def list_sources() -> List[str]:
     """枚举输入节点名（PureVox 自身的麦克风选项）。
 
@@ -110,8 +88,13 @@ def list_sources() -> List[str]:
       - PureVox 自身流（PureVox-*）
       - PureVox 虚拟麦克风（purevox_out.monitor / purevox_mic）——那是 PureVox
         降噪后的**输出**（给别人软件当麦克风），拿它当输入会形成回授
-      - 幻影路由（api.alsa.path 未指定具体设备，如 hw:sofhdadsp）与 error 节点
-        —— 这类源是 UCM 幻影/死路由，打开也是静音（如本机 Stereo Microphone）
+      - error 状态的死节点
+
+    注意：**不按 api.alsa.path 排除板载卡接口**（数字麦 Mic1 与模拟麦 Mic2 是
+    同一块 sof-hda 声卡的两个接口、各对应一个真实物理麦克风，如本机 Mic2
+    `hw:sofhdadsp` 无 `,dev` 也是真实可用、running 状态），与 ALSA 接口
+    `_pulse_source_ports` 的宽松枚举一致——二者都应列出，按接口做排除会导致
+    PipeWire 少列物理麦克风。
     """
     nodes = _list_nodes()
     out = []
@@ -123,7 +106,7 @@ def list_sources() -> List[str]:
             continue
         if name.startswith("purevox"):
             continue
-        if _is_phantom_route(n):
+        if n.get("state") == "error":
             continue
         if name not in out:
             out.append(name)
