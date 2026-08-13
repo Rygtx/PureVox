@@ -32,20 +32,14 @@ def _default_api_type() -> int:
     return 13      # API_TYPE_WASAPI
 
 
-def _default_output_device() -> str:
-    """平台默认输出设备：
-    - Windows 用 VB-CABLE 虚拟声卡（CABLE Input）
-    - Linux/macOS 无虚拟声卡概念，留空由 UI 首项兜底
-      （Linux 虚拟麦克风由系统桥接，不通过 PortAudio 直接打开）
-    """
-    if sys.platform.startswith("win"):
-        return "CABLE Input"
-    return ""
-
-
 @dataclass
 class ConfigDefaults:
-    """默认配置常量。"""
+    """默认配置常量。
+
+    设备键按接口隔离、显式写全（阅读直观，不做动态生成）：
+    每个接口都有 input / output / monitor 三个设备键，另有 AEC far 端键。
+    接口后缀与 `device_api.API_CONFIG_SUFFIX` 一致。
+    """
     # 模式
     mode: str = "denoise"  # "off" / "denoise" / "tse"
     # 增益
@@ -65,14 +59,63 @@ class ConfigDefaults:
     eq_preset_7: List[float] = field(default_factory=lambda: [0.0] * 61)
     eq_active_slot: int = 0
     eq_current_gains: List[float] = field(default_factory=lambda: [0.0] * 61)
-    # 设备
+    # 接口
     api_type: int = field(default_factory=_default_api_type)
-    input_device: str = ""
-    output_device: str = field(default_factory=_default_output_device)
-    monitor_device: str = ""
-    aec_far_sink: str = ""  # AEC far 端手动选择（node.name，Linux）
     NETWORK_input_url: str = "ws://0.0.0.0:59123/ws/audio"
     monitor_enabled: bool = False
+
+    # ── 设备键（按接口隔离；默认全留空，UI 缺省强制选枚举列表第一个）──
+    # WASAPI（Windows 默认接口）
+    input_device_wasapi: str = ""
+    output_device_wasapi: str = ""
+    monitor_device_wasapi: str = ""
+    aec_far_sink_wasapi: str = ""
+    # MME（Windows 旧版接口）
+    input_device_mme: str = ""
+    output_device_mme: str = ""
+    monitor_device_mme: str = ""
+    aec_far_sink_mme: str = ""
+    # PulseAudio（Linux 默认接口）
+    input_device_pulse: str = ""
+    output_device_pulse: str = ""
+    monitor_device_pulse: str = ""
+    aec_far_sink_pulse: str = ""
+    # ALSA（Linux 备选接口）
+    input_device_alsa: str = ""
+    output_device_alsa: str = ""
+    monitor_device_alsa: str = ""
+    aec_far_sink_alsa: str = ""
+    # DirectSound（Windows）
+    input_device_directsound: str = ""
+    output_device_directsound: str = ""
+    monitor_device_directsound: str = ""
+    aec_far_sink_directsound: str = ""
+    # ASIO
+    input_device_asio: str = ""
+    output_device_asio: str = ""
+    monitor_device_asio: str = ""
+    aec_far_sink_asio: str = ""
+    # Core Audio（macOS 默认接口）
+    input_device_coreaudio: str = ""
+    output_device_coreaudio: str = ""
+    monitor_device_coreaudio: str = ""
+    aec_far_sink_coreaudio: str = ""
+    # OSS
+    input_device_oss: str = ""
+    output_device_oss: str = ""
+    monitor_device_oss: str = ""
+    aec_far_sink_oss: str = ""
+    # JACK
+    input_device_jack: str = ""
+    output_device_jack: str = ""
+    monitor_device_jack: str = ""
+    aec_far_sink_jack: str = ""
+    # Sndio
+    input_device_sndio: str = ""
+    output_device_sndio: str = ""
+    monitor_device_sndio: str = ""
+    aec_far_sink_sndio: str = ""
+
     # TSE 参考音频
     tse_reference_wav_path: str = ""
     # 服务器
@@ -89,7 +132,7 @@ class ConfigDefaults:
 
     @classmethod
     def to_dict(cls) -> Dict[str, Any]:
-        """将默认配置转换为字典。"""
+        """将默认配置转换为字典（设备键按接口显式写全）。"""
         instance = cls()
         return {
             "mode": instance.mode,
@@ -98,12 +141,58 @@ class ConfigDefaults:
             "vad_enabled": instance.vad_enabled,
             "compressor_enabled": instance.compressor_enabled,
             "api_type": instance.api_type,
-            "input_device": instance.input_device,
-            "output_device": instance.output_device,
-            "monitor_device": instance.monitor_device,
-            "aec_far_sink": instance.aec_far_sink,
             "NETWORK_input_url": instance.NETWORK_input_url,
             "monitor_enabled": instance.monitor_enabled,
+            # WASAPI
+            "input_device_wasapi": instance.input_device_wasapi,
+            "output_device_wasapi": instance.output_device_wasapi,
+            "monitor_device_wasapi": instance.monitor_device_wasapi,
+            "aec_far_sink_wasapi": instance.aec_far_sink_wasapi,
+            # MME
+            "input_device_mme": instance.input_device_mme,
+            "output_device_mme": instance.output_device_mme,
+            "monitor_device_mme": instance.monitor_device_mme,
+            "aec_far_sink_mme": instance.aec_far_sink_mme,
+            # PulseAudio
+            "input_device_pulse": instance.input_device_pulse,
+            "output_device_pulse": instance.output_device_pulse,
+            "monitor_device_pulse": instance.monitor_device_pulse,
+            "aec_far_sink_pulse": instance.aec_far_sink_pulse,
+            # ALSA
+            "input_device_alsa": instance.input_device_alsa,
+            "output_device_alsa": instance.output_device_alsa,
+            "monitor_device_alsa": instance.monitor_device_alsa,
+            "aec_far_sink_alsa": instance.aec_far_sink_alsa,
+            # DirectSound
+            "input_device_directsound": instance.input_device_directsound,
+            "output_device_directsound": instance.output_device_directsound,
+            "monitor_device_directsound": instance.monitor_device_directsound,
+            "aec_far_sink_directsound": instance.aec_far_sink_directsound,
+            # ASIO
+            "input_device_asio": instance.input_device_asio,
+            "output_device_asio": instance.output_device_asio,
+            "monitor_device_asio": instance.monitor_device_asio,
+            "aec_far_sink_asio": instance.aec_far_sink_asio,
+            # Core Audio
+            "input_device_coreaudio": instance.input_device_coreaudio,
+            "output_device_coreaudio": instance.output_device_coreaudio,
+            "monitor_device_coreaudio": instance.monitor_device_coreaudio,
+            "aec_far_sink_coreaudio": instance.aec_far_sink_coreaudio,
+            # OSS
+            "input_device_oss": instance.input_device_oss,
+            "output_device_oss": instance.output_device_oss,
+            "monitor_device_oss": instance.monitor_device_oss,
+            "aec_far_sink_oss": instance.aec_far_sink_oss,
+            # JACK
+            "input_device_jack": instance.input_device_jack,
+            "output_device_jack": instance.output_device_jack,
+            "monitor_device_jack": instance.monitor_device_jack,
+            "aec_far_sink_jack": instance.aec_far_sink_jack,
+            # Sndio
+            "input_device_sndio": instance.input_device_sndio,
+            "output_device_sndio": instance.output_device_sndio,
+            "monitor_device_sndio": instance.monitor_device_sndio,
+            "aec_far_sink_sndio": instance.aec_far_sink_sndio,
             "tse_reference_wav_path": instance.tse_reference_wav_path,
             "server_enabled": instance.server_enabled,
             "server_port": instance.server_port,
@@ -140,7 +229,7 @@ class ConfigManager:
 
     def load_config(self) -> None:
         """从文件加载配置；文件缺失/损坏/为空时使用默认值。
-        门卫模式：只保留已知配置键，不认识的一律删除。"""
+        强配置：不做旧配置迁移，只保留已知配置键，不认识的一律删除并回退默认。"""
         if not os.path.exists(self._config_path):
             return
         try:
@@ -150,35 +239,51 @@ class ConfigManager:
                     return
                 loaded_config: Dict[str, Any] = json.loads(content)
 
-            # 兼容迁移：旧 key → 新 key
-            _OLD_NEW = {
-                "WASAPI_input_device": "input_device",
-                "WASAPI_output_device": "output_device",
-                "WASAPI_monitor_device": "monitor_device",
-            }
-            for old_k, new_k in _OLD_NEW.items():
-                if old_k in loaded_config and new_k not in loaded_config:
-                    loaded_config[new_k] = loaded_config.pop(old_k)
-                elif old_k in loaded_config:
-                    loaded_config.pop(old_k)
-
             defaults = ConfigDefaults.to_dict()
-            # 白名单：只保留 defaults 中的键
+            # 强配置：不做任何旧配置迁移，只保留 defaults 中的已知键，
+            # 未知/缺失键一律丢弃并回退默认值
             cleaned = {k: v for k, v in loaded_config.items() if k in defaults}
             self._config = {**defaults, **cleaned}
         except (json.JSONDecodeError, OSError):
             return
 
-    # 键输出顺序：设备在前，EQ 在后
+    # 键输出顺序：设备在前，EQ 在后（设备键按接口隔离，显式写全）
     _KEY_ORDER = [
         "mode",
         "pre_gain_db",
         "agc_enabled", "vad_enabled", "compressor_enabled",
         "api_type",
-        "input_device", "output_device",
-        "monitor_device",
-        "aec_far_sink",
         "NETWORK_input_url", "monitor_enabled",
+        # WASAPI
+        "input_device_wasapi", "output_device_wasapi",
+        "monitor_device_wasapi", "aec_far_sink_wasapi",
+        # MME
+        "input_device_mme", "output_device_mme",
+        "monitor_device_mme", "aec_far_sink_mme",
+        # PulseAudio
+        "input_device_pulse", "output_device_pulse",
+        "monitor_device_pulse", "aec_far_sink_pulse",
+        # ALSA
+        "input_device_alsa", "output_device_alsa",
+        "monitor_device_alsa", "aec_far_sink_alsa",
+        # DirectSound
+        "input_device_directsound", "output_device_directsound",
+        "monitor_device_directsound", "aec_far_sink_directsound",
+        # ASIO
+        "input_device_asio", "output_device_asio",
+        "monitor_device_asio", "aec_far_sink_asio",
+        # Core Audio
+        "input_device_coreaudio", "output_device_coreaudio",
+        "monitor_device_coreaudio", "aec_far_sink_coreaudio",
+        # OSS
+        "input_device_oss", "output_device_oss",
+        "monitor_device_oss", "aec_far_sink_oss",
+        # JACK
+        "input_device_jack", "output_device_jack",
+        "monitor_device_jack", "aec_far_sink_jack",
+        # Sndio
+        "input_device_sndio", "output_device_sndio",
+        "monitor_device_sndio", "aec_far_sink_sndio",
         "tse_reference_wav_path",
         "server_enabled", "server_port",
         "theme",

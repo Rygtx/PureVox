@@ -98,7 +98,8 @@ _WINDOWS_BODY = """
 
 <h3>第 3 步：选择设备</h3>
 <ol>
-<li><strong>音频接口</strong>：固定为 <code>Windows WASAPI</code>（Windows 原生低延迟音频接口，无需改动）</li>
+<li><strong>音频接口</strong>：默认 <code>本地接口 WASAPI（默认）</code>（Windows 原生低延迟音频接口）。
+   若 WASAPI 无法正常使用，可改选 <code>本地接口 MME</code>（Windows 旧版接口，延迟较高，仅作备选）</li>
 <li><strong>输入设备</strong>：选择你的物理麦克风（耳机麦克风、桌面麦克风等）</li>
 <li><strong>输出设备</strong>：选择 <strong>CABLE Input</strong>。这个对应的是系统声音里的播放选项卡，降噪后的音频会输出到这里，再从录制选项卡的 CABLE Output 作为虚拟麦克风供其他软件使用。<span style="color:red">注意：不要选你的扬声器/耳机，否则声音会直接外放，虚拟麦克风（CABLE Output）也收不到信号。</span></li>
 <li><strong>监听</strong>（可选）：勾选后选择你的耳机或扬声器，实时听到降噪效果</li>
@@ -356,6 +357,31 @@ AGC、VAD，31 段均衡器在菜单「设置 → 均衡器」打开。</p>
 # ── 更新日志（中文，唯一维护位置：发版时在顶部追加）──
 
 CHANGELOG_TEXT = """# 更新日志
+
+## 2026-08-13 — Windows 新增本地接口 MME + 设备配置按接口隔离
+
+- **音频接口下拉框改为「本地接口 WASAPI（默认）」+「本地接口 MME」+「网络(API)」三项**：
+  Windows 设备枚举与打开流都按所选接口过滤（`get_device_id` / `get_device_names` /
+  48k 检测走 `get_host_api_indices` 分级匹配 host API），不再只有一个本地接口
+- **WASAPI 仍为默认**：默认值、老配置（api_type=13）均不受影响；MME（PortAudio
+  paMME=2）为旧版低延迟备选，仅当 WASAPI 不可用时使用
+- **设备配置按接口隔离，显式写全**：通用键 `input_device` / `output_device` /
+  `monitor_device` / `aec_far_sink` 废弃，改为 `<方向>_device_<接口后缀>` 与
+  `aec_far_sink_<接口后缀>`（如 `input_device_wasapi` / `input_device_mme` /
+  `input_device_pulse`）。`config_manager.py` 的 `ConfigDefaults` 与 `_KEY_ORDER`
+  把全部接口（WASAPI/MME/PulseAudio/ALSA/DirectSound/ASIO/Core Audio/OSS/JACK/
+  Sndio）的键显式写全，不做动态生成，阅读直观
+- **monitor 与 AEC far 分开维护**：监听设备存 `monitor_device_<接口>`，AEC 回声
+  参考 sink 存 `aec_far_sink_<接口>`（Linux 手动选物理扬声器），同一下拉框按模式
+  写不同键，互不覆盖
+- **默认不置空、不特选 CABLE Input**：配置设备值为空或不在枚举列表时，强制回退
+  枚举列表**第一个**并写回配置（用户自行选择 VB 用法）；删除了 Windows 输出默认
+  CABLE Input 与 UI 自动偏好
+- **强配置，不做旧配置迁移**：`ConfigManager.load_config` 只保留已知键，
+  旧 `WASAPI_*` / 通用设备键等未知键一律丢弃回退默认；网络模式输出/监听/AEC far
+  仍用平台默认接口的键
+- **host API 匹配分级化**：`get_host_api_indices` 改为分级匹配——先按配置的 API 名
+  （选 MME 就只列 MME，不再混入 WASAPI），匹配不到再回退平台默认，最后全枚举兜底
 
 ## 2026-08-12 — 移除编译期 `-mavx2`，全 CPU 兼容
 

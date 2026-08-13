@@ -16,7 +16,7 @@
 - 🎛️ 31 段均衡器（EQ）
 - 📊 AGC 自动增益控制 / VAD 静音检测
 - 📱 远程麦克风：手机浏览器 / Android APK 经局域网推流到 PC 处理
-- 🖥️ Windows (WASAPI) 与 Linux (原生 PipeWire) 双平台
+- 🖥️ Windows（WASAPI 默认 / MME 备选）与 Linux（原生 PipeWire）双平台
 
 ## 环境要求
 
@@ -182,7 +182,7 @@ setup.py                  # 纯 C 共享库构建（gcc，产出 libaimic.so + l
 | 桌面 GUI | Python + PySide6 |
 | 音频处理 | 纯 C 共享库（gcc）+ ONNX Runtime C API（频谱/FFT 全在 C 端，Python 仅 ctypes 数据搬运） |
 | Linux 音频 | 原生 PipeWire（libpipewire） |
-| Windows 音频 | WASAPI 全双工 |
+| Windows 音频 | WASAPI 全双工（默认）/ MME 备选 |
 | 服务端 | Python aiohttp + zeroconf + cryptography |
 | 音频编码 | Opus（PC: opuslib，APK: NDK 编译，Web: WASM） |
 | Android | Kotlin + OkHttp + NsdManager + AudioRecord |

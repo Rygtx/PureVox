@@ -53,6 +53,7 @@ from PySide6.QtWidgets import QMessageBox
 from audio_processor import (
     get_local_lan_ip, get_device_names, get_device_id,
     API_TYPE_WASAPI, API_TYPE_NETWORK, get_api_name_by_type,
+    device_config_suffix,
     get_platform_api_options, default_api_type,
     create_audio_processor, start_audio_stream, HOP_LENGTH,
     load_tse_reference,
@@ -95,8 +96,10 @@ def _api_tooltip() -> str:
     if sys.platform.startswith("darwin"):
         return "音频接口(API)：\nCore Audio — macOS 原生音频接口。"
     return ("音频接口(API)：\n"
-            "WASAPI — Windows 原生低延迟音频接口，\n"
-            "         支持共享模式，延迟约 10ms，推荐。")
+            "WASAPI — Windows 原生低延迟音频接口（默认），\n"
+            "         支持共享模式，延迟约 10ms，推荐。\n"
+            "MME    — Windows 旧版音频接口，兼容老驱动，\n"
+            "         延迟较高（约 100ms），仅当 WASAPI 不可用时使用。")
 
 
 def _output_tooltip() -> str:
@@ -973,7 +976,7 @@ class MainPanel(QWidget):
     def _on_dev_changed(self, is_input):
         try:
             name = _combo_value(self._input_combo if is_input else self._output_combo)
-            self._config.set('input_device' if is_input else 'output_device', name)
+            self._config.set(self._device_key("input" if is_input else "output"), name)
             self._save()
             # 切换输出设备时，若监听与输出相同则自动关闭（非 AEC 模式）
             if (not is_input and self._mode != MODE_AEC
@@ -989,15 +992,15 @@ class MainPanel(QWidget):
         try:
             name = _combo_value(self._monitor_combo)
             if self._mode == MODE_AEC:
-                # AEC 模式：下拉框是手动 far 端设备选择
-                self._config.set('aec_far_sink', name)
+                # AEC 模式：下拉框是手动 far 端设备选择（与监听分开存键）
+                self._config.set(self._device_key("far"), name)
                 self._save()
                 if self._get_thread:
                     th = self._get_thread()
                     if th and hasattr(th, 'set_aec_far_sink'):
                         th.set_aec_far_sink(name)
                 return
-            self._config.set('monitor_device', name)
+            self._config.set(self._device_key("monitor"), name)
             self._save()
             if self._monitor_cb.isChecked() and self._get_thread:
                 th = self._get_thread()
@@ -1190,9 +1193,9 @@ class MainPanel(QWidget):
                 enum_api = self._api_type
 
             inp, out = get_device_names(api_type=enum_api)
-            si = self._config.get("input_device")
-            so = self._config.get("output_device")
-            sm = self._config.get("monitor_device")
+            si = self._config.get(self._device_key("input"))
+            so = self._config.get(self._device_key("output"))
+            sm = self._config.get(self._device_key("monitor"))
 
             self._input_combo.blockSignals(True)
             self._output_combo.blockSignals(True)
@@ -1230,17 +1233,21 @@ class MainPanel(QWidget):
                     return True
                 return False
 
-            # 输入选择（旧配置存的是描述名，不匹配 node.name 时回退智能默认）
+            # 输入选择（配置存的是描述名，不匹配时强制回退枚举列表第一个并写回）
             if not is_network:
                 if IS_LINUX:
                     if not si or not _set_by_port(self._input_combo, si):
                         _set_by_port(self._input_combo, _jack_default_mic() if inp else "")
                         if self._input_combo.currentIndex() < 0 and inp:
                             self._input_combo.setCurrentIndex(0)
+                        if self._input_combo.currentIndex() >= 0:
+                            self._config.set(self._device_key("input"),
+                                             _combo_value(self._input_combo))
                 elif si in inp:
                     self._input_combo.setCurrentText(si)
                 elif inp:
                     self._input_combo.setCurrentText(inp[0])
+                    self._config.set(self._device_key("input"), inp[0])
 
             # 输出选择：Linux 一律按 node.name（userData）选
             if IS_LINUX:
@@ -1248,16 +1255,19 @@ class MainPanel(QWidget):
                     _set_by_port(self._output_combo, _jack_default_sink() if out else "")
                     if self._output_combo.currentIndex() < 0 and out:
                         self._output_combo.setCurrentIndex(0)
+                    if self._output_combo.currentIndex() >= 0:
+                        self._config.set(self._device_key("output"),
+                                         _combo_value(self._output_combo))
             elif so in out:
                 self._output_combo.setCurrentText(so)
             elif out:
-                # Windows 优先 CABLE Input（虚拟声卡）
-                preferred = next((d for d in out if "CABLE Input" in d), None) if IS_WINDOWS else None
-                self._output_combo.setCurrentText(preferred or out[0])
+                self._output_combo.setCurrentText(out[0])
+                self._config.set(self._device_key("output"), out[0])
 
             # 监听/AEC far 设备：Linux 按 node.name（userData）选，其余按文本选
+            # monitor（监听）与 far（AEC 回声参考）各自独立存键
             in_aec = self._mode == MODE_AEC
-            sm = self._config.get("aec_far_sink") if in_aec else self._config.get("monitor_device")
+            sm = self._config.get(self._device_key("far")) if in_aec else self._config.get(self._device_key("monitor"))
             mon_selected = False
             if IS_LINUX:
                 mon_selected = _set_by_port(self._monitor_combo, sm)
@@ -1273,6 +1283,10 @@ class MainPanel(QWidget):
                             self._monitor_combo.setCurrentIndex(0)
                     else:
                         self._monitor_combo.setCurrentIndex(0)
+                if self._monitor_combo.currentIndex() >= 0:
+                    self._config.set(
+                        self._device_key("far" if in_aec else "monitor"),
+                        _combo_value(self._monitor_combo))
                 if not in_aec and self._monitor_cb.isChecked():
                     self._monitor_cb.setChecked(False)
                 self._save()
@@ -1395,6 +1409,22 @@ class MainPanel(QWidget):
 
     def _get_root(self):
         return self.window()
+
+    def _device_key(self, kind: str) -> str:
+        """当前接口对应的设备配置键（kind: input/output/monitor/far）。
+
+        设备名按接口隔离存储（如 input_device_wasapi / input_device_mme），
+        因为 WASAPI 与 MME（以及 Linux 各接口）的设备名完全不一致。
+        monitor（监听设备）与 far（AEC 回声参考 sink）是不同概念，各自独立
+        存键：monitor_device_<接口> 与 aec_far_sink_<接口>。
+        网络模式没有本地输入，输出/监听/AEC far 用平台默认接口的键。
+        """
+        api = self._api_type
+        if api == API_TYPE_NETWORK:
+            api = default_api_type()
+        if kind == "far":
+            return f"aec_far_sink_{device_config_suffix(api)}"
+        return f"{kind}_device_{device_config_suffix(api)}"
 
     def _on_url_changed(self):
         self._save_url()
@@ -1975,7 +2005,7 @@ def start_processing(state, log):
         if mode == MODE_AEC and state.processing_thread:
             fac_sink = ""
             if state.config:
-                fac_sink = state.config.get("aec_far_sink", "") or ""
+                fac_sink = state.config.get(mp._device_key("far"), "") or ""
             if use_pw and hasattr(state.main_panel, '_monitor_combo'):
                 # 手动 far 端：下拉框当前选中值（AEC 模式下该行即 far 选择）
                 fac_sink = _combo_value(state.main_panel._monitor_combo) or fac_sink

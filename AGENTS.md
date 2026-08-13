@@ -193,7 +193,7 @@ cd android
 | `aimic.py` / `pvpipe.py` | ctypes 绑定层 —— 加载 libaimic.so / libpvpipe.so，Python 类/方法名与旧 pybind11 绑定完全一致（音频热路径仅做 list↔float 数组搬运） |
 | `pvplatform/` | 平台抽象层 —— `audio/`(SpeakerCapture 三端、device_api、pwpipe_client)、`system/`(单实例/自启动/防火墙/虚拟麦克风，win+posix) |
 | `server/` | 远程麦克风 HTTPS/WSS 服务器 —— `https_server.py`、`audio_bridge.py`(RemoteAudioSource)、`opus_codec.py`、`mdns_publisher.py`、`tls_manager.py` |
-| `config_manager.py` | JSON 配置读写，启动时迁移旧 key；api_type/output_device 平台感知默认值 |
+| `config_manager.py` | JSON 配置读写（强配置，无迁移）；api_type 平台感知默认值、设备键按接口后缀（`<方向>_device_<接口后缀>` / `aec_far_sink_<接口后缀>`，全部接口显式写全） |
 | `model_config.py` | ONNX 模型文件名常量 |
 | `dialog_about.py` | 关于对话框（单一菜单「关于」打开，整页标签）—— 介绍 / Windows 使用说明 / Linux 使用说明 / 更新日志 / 许可证，内容全部内嵌 py（中文，无 emoji）。**更新日志的唯一维护位置就是本文件的 `CHANGELOG_TEXT`**：无独立 CHANGELOG.md 文件，发版/改动时在快照顶部追加 |
 | `dialog_eq.py` / `dialog_tse_reference.py` | 均衡器 / TSE 参考录音弹框（统一 `dialog_` 前缀） |
@@ -296,8 +296,15 @@ AEC far-end：独立输入流 `PureVox-far`（`stream.capture.sink=tap 扬声器
 ## 工程约定
 
 1. **所有设备强制 48kHz** — 启动前逐设备检测，失败弹框阻止，不做重采样或半双工回退。
+   - **Windows 下 WASAPI 严格、MME 宽松是刻意的，勿"修"**（2026-08-13 实测）：
+     WASAPI 共享模式锁死设备 MixFormat，MixFormat=44.1k 的设备请求 48k 即
+     `paInvalidSampleRate (-9997)` 弹框阻止——这是对的，硬上会在建流时失败；
+     MME 是 WDM 旧接口，驱动内部自动重采样，44.1k 硬件也能以 48k 打开并正常出声
+     （PureVox 侧始终处理 48k，转换由 MME 驱动完成，合规），所以 gate 对 MME
+     天然放行不弹框。两者行为差异不是 bug，不要给 MME 加严格 48k 限制。
+     判定依据：设备 `defaultSampleRate=44100` 时 WASAPI 弹框、MME 正常。
 2. **模型规格 48kHz / 2048 NFFT / 1024 hop** — 任何缓冲区/块大小与此冲突的以此为准。
-3. **配置 key 无 API 前缀** — 用 `input_device` / `output_device` / `monitor_device`，不用 `WASAPI_` 前缀。
+3. **配置 key 按接口加后缀** — 设备键为 `<方向>_device_<接口后缀>` 与 `aec_far_sink_<接口后缀>`（如 `input_device_wasapi` / `input_device_mme` / `input_device_pulse` / `aec_far_sink_pulse`），后缀表见 `device_api.API_CONFIG_SUFFIX`；`config_manager.py` 的 `ConfigDefaults` 与 `_KEY_ORDER` 把全部接口的键**显式写全**（不做动态生成，阅读直观）；不用 `WASAPI_` 前缀，也不留无后缀的通用设备键。monitor（监听）与 AEC far 各存各的键。
 3a. **推理后端自动选择（无用户配置）** — 模型会话创建时自动按
    NPU → AVX → SSE 顺序选取：`aimic.c` 的 `onnx_apply_backend` 先尝试 NPU 执行
    提供程序（Linux OpenVINO / Windows DirectML / macOS CoreML），不可用则回退
@@ -347,7 +354,9 @@ AEC far-end：独立输入流 `PureVox-far`（`stream.capture.sink=tap 扬声器
   - `RING_CAPACITY`（pipewire_client.c）从 2s(96000) 收到 4 hop(4096/85ms) 封顶，
     输入环稳态保持 ~0；本地全链路延迟即 ~1 帧 + hop
   - 网络模式不受此优化影响：仍走热路径外缓冲，该条数值不适用于本地
-- **旧配置兼容**: `WASAPI_input_device` → `input_device` 等迁移在 `ConfigManager.load_config()` 中。
+- **强配置（无迁移）**: `ConfigManager.load_config` 不做旧配置迁移，只保留已知键；
+  旧 `WASAPI_*` / 通用设备键一律丢弃回退默认。设备键为带接口后缀的
+  `<方向>_device_<接口后缀>`（如 `input_device_wasapi`、`input_device_mme`）。
 
 ### 长时间运行稳定性观察（2026-08-10，代码走查记录，尚未实测）
 

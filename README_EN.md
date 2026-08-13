@@ -17,7 +17,7 @@ echo cancellation, for both the local microphone and remote network streaming.
 - 🎛️ 31-band EQ
 - 📊 AGC automatic gain control / VAD voice activity detection
 - 📱 Remote microphone: phone browser / Android APK streams over LAN to the PC for processing
-- 🖥️ Windows (WASAPI) and Linux (native PipeWire)
+- 🖥️ Windows (WASAPI default / MME fallback) and Linux (native PipeWire)
 
 ## Requirements
 
@@ -182,7 +182,7 @@ setup.py                  # pure C shared library build (gcc, produces libaimic.
 | Desktop GUI | Python + PySide6 |
 | Audio processing | Pure C shared libs (gcc) + ONNX Runtime C API (all spectrum/FFT in C; Python only does ctypes data marshalling) |
 | Linux audio | Native PipeWire (libpipewire) |
-| Windows audio | WASAPI full-duplex |
+| Windows audio | WASAPI full-duplex (default) / MME fallback |
 | Server | Python aiohttp + zeroconf + cryptography |
 | Audio codec | Opus (PC: opuslib, APK: NDK build, Web: WASM) |
 | Android | Kotlin + OkHttp + NsdManager + AudioRecord |

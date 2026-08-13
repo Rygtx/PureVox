@@ -1559,6 +1559,7 @@ def start_audio_stream(input_id: Optional[int], output_id: int,
 from pvplatform.audio import device_api as _device_api
 
 API_TYPE_WASAPI = _device_api.API_WASAPI
+API_TYPE_MME = _device_api.API_MME
 API_TYPE_NETWORK = _device_api.API_NETWORK
 API_TYPE_PULSE = _device_api.API_PULSE
 API_TYPE_ALSA = _device_api.API_ALSA
@@ -1567,6 +1568,11 @@ API_TYPE_ALSA = _device_api.API_ALSA
 def get_api_name_by_type(api_type: int) -> str:
     """API 类型 → 显示名。"""
     return _device_api.get_api_name(api_type)
+
+
+def device_config_suffix(api_type: int) -> str:
+    """API 类型 → 设备配置键后缀（如 wasapi / mme / pulse）。"""
+    return _device_api.api_config_suffix(api_type)
 
 
 def get_platform_api_options() -> list:
@@ -1591,8 +1597,9 @@ def get_device_names(api_type: int = None) -> Tuple[List[str], List[str]]:
     PureVox 虚拟麦克风 purevox_out.monitor），输出 = Audio/Sink 节点（扬声器 +
     purevox_out）。返回 node.name（稳定，可直接作 pw_stream 目标）。
 
-    Windows：只枚举 WASAPI host API 下的设备，
-    避免混入其它 host API 的重复/无关端点，设备按方向区分。
+    Windows/macOS：只枚举所选 host API（`_get_host_api_indices` 分级匹配，
+    如 WASAPI / MME）下的设备，避免混入其它 host API 的重复/无关端点，
+    设备按方向区分。
     """
     if api_type is None:
         api_type = default_api_type()
@@ -1623,7 +1630,8 @@ def get_device_names(api_type: int = None) -> Tuple[List[str], List[str]]:
 def get_device_id(device_name: str, is_input: bool, api_type: int = None) -> Optional[int]:
     """按设备名获取设备索引（支持前缀模糊匹配）。
 
-    对于 WASAPI，会验证设备方向（输入/输出）匹配，避免返回同名输出端点。
+    对 PortAudio 设备（Windows/macOS），会验证设备方向（输入/输出）匹配，
+    避免返回同名输出端点。
     Linux 走原生 PipeWire（node.name 直接使用，不需要 PortAudio 索引），
     返回 None。
     """

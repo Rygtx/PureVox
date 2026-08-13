@@ -22,8 +22,8 @@ PortAudio 的 host API 类型编号因平台而异（WASAPI=13、PulseAudio=15�
 ALSA=8、JACK=12、Core Audio=5…），且同一数值在另一平台毫无意义。
 为避免把 Windows 的 13 硬编码到 Linux，本模块提供：
 
-    resolve_api_names(api_type)  配置值 → 候选 host API 名字列表
-    _get_host_api_indices(p, api_type)  按名字匹配 host API 索引
+    resolve_api_names(api_type)  配置值 → 名字列表（不含平台回退）
+    get_host_api_indices(p, api_type)  分级匹配 host API 索引（配置名 → 平台默认 → 全枚举）
     platform_default_api_type()  当前平台默认 API 数值
     get_api_options()            UI 下拉选项 [(label, type), ...]
     get_api_name(api_type)       类型 → 显示名
@@ -97,6 +97,26 @@ PTYPE_TO_NAME = {
 # 显示名 → 类型编号
 NAME_TO_PTYPE = {v: k for k, v in PTYPE_TO_NAME.items()}
 
+# API 类型 → 设备配置键后缀（配置 key 按接口隔离，如 input_device_wasapi）。
+# Linux（pulse/alsa）与 Windows（wasapi/mme）设备名完全不一致，须分接口存。
+API_CONFIG_SUFFIX = {
+    API_DIRECTSOUND: "directsound",
+    API_MME: "mme",
+    API_ASIO: "asio",
+    API_COREAUDIO: "coreaudio",
+    API_OSS: "oss",
+    API_ALSA: "alsa",
+    API_JACK: "jack",
+    API_WASAPI: "wasapi",
+    API_PULSE: "pulse",
+    API_SNDIO: "sndio",
+}
+
+
+def api_config_suffix(api_type: int) -> str:
+    """API 类型 → 设备配置键后缀（如 wasapi / mme / pulse）。"""
+    return API_CONFIG_SUFFIX.get(api_type, f"api{api_type}")
+
 
 def platform_default_api_type() -> int:
     """返回当前平台默认的 PortAudio host API 类型编号。"""
@@ -129,31 +149,37 @@ def get_api_name(api_type: int) -> str:
 
 
 def get_api_options() -> list:
-    """返回 UI 下拉选项 [(label, type), ...]：一个本地 + 网络。"""
-    local_type = platform_default_api_type()
-    opts = [("本地设备", local_type)]
+    """返回 UI 下拉选项 [(label, type), ...]：本地接口 + 网络。
+
+    Windows 提供两个本地接口：WASAPI（默认，低延迟）与 MME（旧版备选）；
+    其它平台仍为单一本地接口 + 网络。
+    """
+    opts = []
+    if IS_WINDOWS:
+        opts.append(("本地接口 WASAPI（默认）", API_WASAPI))
+        opts.append(("本地接口 MME", API_MME))
+    else:
+        opts.append(("本地设备", platform_default_api_type()))
     opts.append(("网络(API)", API_NETWORK))
     return opts
 
 
 def resolve_api_names(api_type: int) -> list:
-    """把配置的 api_type 解析为实际 host API 名字候选列表。
+    """把配置的 api_type 解析为实际 host API 名字列表（不含平台回退）。
 
     规则：
       - 网络模式（99）→ 空列表（不走 PortAudio host API）。
-      - 配置的 API 名若在本机 host API 中存在，则匹配之。
-      - 否则回退到平台默认候选（Windows 的 13 在 Linux 上自动变
-        PulseAudio → ALSA）。
+      - 否则返回该 API 在 PortAudio 中的名字（如 WASAPI → ["WASAPI"]）。
+
+    平台回退（配置的 API 在本机不存在时改用平台默认）由
+    `get_host_api_indices` 分级处理：先匹配配置的 API 名，匹配不到再试
+    `platform_api_names()`，最后全枚举兜底。
     """
     if api_type == API_NETWORK:
         return []
-    names = []
     if api_type in PTYPE_TO_NAME:
-        names.append(PTYPE_TO_NAME[api_type])
-    for default_name in platform_api_names():
-        if default_name not in names:
-            names.append(default_name)
-    return names
+        return [PTYPE_TO_NAME[api_type]]
+    return []
 
 
 def get_host_api_indices(p, api_type: int) -> list:
@@ -163,24 +189,31 @@ def get_host_api_indices(p, api_type: int) -> list:
     （WASAPI 实为 "Windows WASAPI"、"Windows DirectSound"、"Windows WDM-KS"），
     精确相等会匹配不到而误触兜底枚举全部。
 
-    若配置的 API 名在本机一个都没匹配到（例如配置存了 Windows 的
-    PulseAudio/WASAPI，但当前 PortAudio 构建只有 ALSA/OSS/JACK），
-    回退到全部 host API——保证虚拟 sink（可能挂在任意 API 下）仍能被枚举。
+    分级匹配：
+      1. 配置的 API 名在本机存在 → 只返回该 API 的索引（选 MME 就只列 MME，
+         不会混入 WASAPI 设备）；
+      2. 配置的 API 不存在（如 Windows 的 WASAPI=13 在 Linux 上）→ 回退到
+         平台默认候选（PulseAudio → ALSA）；
+      3. 仍无匹配 → 全枚举兜底（保证虚拟 sink 等挂在任意 API 下的设备可枚举）。
     """
-    names = resolve_api_names(api_type)
-    if not names:
-        return []
-    needle_tokens = [n.lower() for n in names]
-    indices = []
-    for i in range(p.get_host_api_count()):
-        try:
-            info = p.get_host_api_info_by_index(i)
-        except Exception:
-            continue
-        hay = (info.get('name') or '').lower()
-        if any(tok in hay for tok in needle_tokens):
-            indices.append(i)
-    # 配置的 API 名在本机不存在 → 全枚举兜底（虚拟 sink 等跨 API 设备）
-    if not indices:
-        return list(range(p.get_host_api_count()))
-    return indices
+    def _match(names: list) -> list:
+        needle_tokens = [n.lower() for n in names]
+        indices = []
+        for i in range(p.get_host_api_count()):
+            try:
+                info = p.get_host_api_info_by_index(i)
+            except Exception:
+                continue
+            hay = (info.get('name') or '').lower()
+            if any(tok in hay for tok in needle_tokens):
+                indices.append(i)
+        return indices
+
+    indices = _match(resolve_api_names(api_type))
+    if indices:
+        return indices
+    indices = _match(platform_api_names())
+    if indices:
+        return indices
+    # 全部匹配不到 → 全枚举兜底（虚拟 sink 等跨 API 设备）
+    return list(range(p.get_host_api_count()))
