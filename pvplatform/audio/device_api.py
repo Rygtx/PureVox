@@ -55,6 +55,9 @@ API_SNDIO = 17
 # 网络输入模式（非 PortAudio host API）
 API_NETWORK = 99
 
+# Linux 原生 PipeWire（非 PortAudio host API；ALSA=8 走原生 ALSA 备选）
+API_PIPEWIRE = 98
+
 
 def fix_device_name(name: str) -> str:
     """修复 PortAudio 在中文 Windows 上返回的乱码设备名。
@@ -99,6 +102,7 @@ NAME_TO_PTYPE = {v: k for k, v in PTYPE_TO_NAME.items()}
 
 # API 类型 → 设备配置键后缀（配置 key 按接口隔离，如 input_device_wasapi）。
 # Linux（pulse/alsa）与 Windows（wasapi/mme）设备名完全不一致，须分接口存。
+# Linux 原生 PipeWire（API_PIPEWIRE）复用 pulse 后缀键（历史默认即存于此）。
 API_CONFIG_SUFFIX = {
     API_DIRECTSOUND: "directsound",
     API_MME: "mme",
@@ -110,6 +114,7 @@ API_CONFIG_SUFFIX = {
     API_WASAPI: "wasapi",
     API_PULSE: "pulse",
     API_SNDIO: "sndio",
+    API_PIPEWIRE: "pulse",
 }
 
 
@@ -119,12 +124,11 @@ def api_config_suffix(api_type: int) -> str:
 
 
 def platform_default_api_type() -> int:
-    """返回当前平台默认的 PortAudio host API 类型编号。"""
+    """返回当前平台默认的音频 API 类型编号。"""
     if IS_WINDOWS:
         return API_WASAPI
     if IS_LINUX:
-        # 现代 Linux 桌面普遍是 PipeWire（带 PulseAudio 兼容层），Pulse 优先
-        return API_PULSE
+        return API_PIPEWIRE
     if IS_MACOS:
         return API_COREAUDIO
     return API_ALSA
@@ -145,19 +149,24 @@ def get_api_name(api_type: int) -> str:
     """类型编号 → 显示名。网络模式返回 'NETWORK'。"""
     if api_type == API_NETWORK:
         return "NETWORK"
+    if api_type == API_PIPEWIRE:
+        return "PipeWire"
     return PTYPE_TO_NAME.get(api_type, f"API({api_type})")
 
 
 def get_api_options() -> list:
     """返回 UI 下拉选项 [(label, type), ...]：本地接口 + 网络。
 
-    Windows 提供两个本地接口：WASAPI（默认，低延迟）与 MME（旧版备选）；
-    其它平台仍为单一本地接口 + 网络。
+    Linux 提供两个本地接口：PipeWire（默认，原生）与 ALSA（原生备选）；
+    Windows 提供 WASAPI（默认）与 MME（旧版备选）；macOS 仍单一本地接口 + 网络。
     """
     opts = []
     if IS_WINDOWS:
         opts.append(("本地接口 WASAPI（默认）", API_WASAPI))
         opts.append(("本地接口 MME", API_MME))
+    elif IS_LINUX:
+        opts.append(("本地接口 PipeWire（默认）", API_PIPEWIRE))
+        opts.append(("本地接口 ALSA", API_ALSA))
     else:
         opts.append(("本地设备", platform_default_api_type()))
     opts.append(("网络(API)", API_NETWORK))

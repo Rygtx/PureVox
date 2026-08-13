@@ -24,9 +24,9 @@ from typing import Any, Dict, List
 
 
 def _default_api_type() -> int:
-    """平台默认音频 API 类型（WASAPI=13 / PulseAudio=15 / ALSA=8 / CoreAudio=5）。"""
+    """平台默认音频 API 类型（PipeWire=98 / ALSA=8 / WASAPI=13 / CoreAudio=5）。"""
     if sys.platform.startswith("linux"):
-        return 15  # API_TYPE_PULSE
+        return 98  # API_PIPEWIRE（Linux 默认原生 PipeWire，备选 ALSA=8）
     if sys.platform.startswith("darwin"):
         return 5   # API_TYPE_COREAUDIO
     return 13      # API_TYPE_WASAPI

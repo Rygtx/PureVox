@@ -81,9 +81,12 @@ python3 run_pyside6.py
 ```
 
 Linux 音频基于原生 PipeWire：格式协商 F32 单声道 48000Hz，重采样与声道转换由
-PipeWire 负责。虚拟麦克风是单声道 null-sink `purevox_out` 的 monitor，
+ PipeWire 负责。虚拟麦克风是单声道 null-sink `purevox_out` 的 monitor，
 其它应用可选 **"PureVox 虚拟麦克风"** 作为输入设备。AEC 远端采集（回声参考）
 同样是原生 PipeWire（`stream.capture.sink` 监听扬声器输出）。
+**Linux 本地接口默认 PipeWire，也可选原生 ALSA 备选**（`alsa_client.c` →
+`libpvalsa.so`，F32 单声道 48k 经 `plughw:C,D` 插件转换；AEC far 需自选一个可
+捕获扬声器输出的 ALSA capture 设备）。
 
 ### Windows 远程麦克风附加组件
 
@@ -157,7 +160,7 @@ run_pyside6.py            # 启动入口（单实例锁）
 ui_pyside6.py             # 主 UI（PySide6）：面板、设备选择、模式切换
 audio_processor.py        # 核心音频引擎 + TSE 参考录音工具
 aimic.c + aimic.py         # C 音频核心 → aimic.dll / libaimic.so（mingw gcc）+ ctypes 绑定
-pipewire_client.c + pvpipe.py  # 原生 PipeWire 桥 → libpvpipe.so（Linux，纯 C + ctypes）
+pipewire_client.c + pvpipe.py + alsa_client.c + pvalsa.py  # 原生 PipeWire/ALSA 桥 → libpvpipe.so/libpvalsa.so（Linux，纯 C + ctypes）
 pvplatform/               # 平台抽象：audio/（设备枚举、SpeakerCapture）、system/（单实例/虚拟麦克风）
 config_manager.py         # JSON 配置（旧 key 自动迁移）
 model_config.py           # ONNX 模型文件名常量

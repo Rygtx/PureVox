@@ -84,11 +84,14 @@ python3 run_pyside6.py
 ```
 
 Linux audio uses native PipeWire: the format is negotiated as F32 mono 48000 Hz, with
-resampling and channel conversion handled by PipeWire. The virtual microphone is the
-monitor of a mono null-sink named `purevox_out`; other apps can select
+ resampling and channel conversion handled by PipeWire. The virtual microphone is the
+ monitor of a mono null-sink named `purevox_out`; other apps can select
 **"PureVox 虚拟麦克风"** (PureVox Virtual Mic) as their input device. The AEC far-end
 (echo reference) is also captured natively via PipeWire (`stream.capture.sink` on the
 speaker sink).
+**The Linux local interface defaults to PipeWire, with an optional native ALSA backup**
+(`alsa_client.c` → `libpvalsa.so`, F32 mono 48k converted via the `plughw:C,D` plugin;
+AEC far-end requires choosing an ALSA capture device that can record the speaker output).
 
 ### Windows remote-mic add-ons
 
@@ -157,7 +160,7 @@ run_pyside6.py            # entry point (single-instance lock)
 ui_pyside6.py             # main UI (PySide6): panels, device selection, mode switching
 audio_processor.py        # core audio engine + TSE reference recording utilities
 aimic.c + aimic.py         # C audio core → aimic.dll / libaimic.so (mingw gcc) + ctypes binding
-pipewire_client.c + pvpipe.py  # native PipeWire bridge → libpvpipe.so (Linux, pure C + ctypes)
+pipewire_client.c + pvpipe.py + alsa_client.c + pvalsa.py  # native PipeWire/ALSA bridges → libpvpipe.so/libpvalsa.so (Linux, pure C + ctypes)
 pvplatform/               # platform abstraction: audio/ (enum, SpeakerCapture), system/ (single-instance, virtual mic)
 config_manager.py         # JSON config (migrates legacy keys)
 model_config.py           # ONNX model filename constants

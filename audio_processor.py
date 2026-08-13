@@ -56,6 +56,104 @@ if IS_LINUX:
     from pvplatform.audio.pwpipe_client import PwBridge as _PwBridge
     from pvplatform.audio.pwpipe_client import list_sources as _pw_sources
     from pvplatform.audio.pwpipe_client import list_destinations as _pw_dests
+    from pvalsa import AlsaBridge as _AlsaBridge
+
+
+if IS_LINUX:
+    def _alsa_devices(stream) -> List[Tuple[str, str]]:
+        """解析 `arecord -l` / `aplay -l`，返回 [(显示名, plughw 名), ...]。
+
+        构造 "plughw:C,D" 作为可打开的 ALSA PCM 名（plughw 插件负责把
+        44.1k/立体声/S16 硬件转换成 F32 单声道 48000）。
+        """
+        import subprocess as _sp
+        cmd = ["arecord", "-l"] if stream == "capture" else ["aplay", "-l"]
+        out = []
+        try:
+            r = _sp.run(cmd, capture_output=True, text=True, timeout=5)
+            text = (r.stdout or "") + (r.stderr or "")
+        except Exception:
+            return out
+        # 行格式: "card 1: sofhdadsp [sof-hda-dsp], device 0: HDA Analog (*) []"
+        import re as _re
+        for line in text.splitlines():
+            m = _re.match(r"\s*card (\d+):\s*(.+?)\[.*?\],\s*device (\d+):\s*([^\[]+)", line)
+            if not m:
+                continue
+            card, cardname, dev, devname = m.group(1), m.group(2).strip(), m.group(3), m.group(4).strip()
+            disp = f"{cardname} — {devname} (card {card}, dev {dev})"
+            pcm = f"plughw:{card},{dev}"
+            if (disp, pcm) not in out:
+                out.append((disp, pcm))
+        return out
+
+    def _alsa_sources() -> List[str]:
+        return [n for n, _ in _alsa_devices("capture")]
+
+    def _alsa_dests() -> List[str]:
+        return [n for n, _ in _alsa_devices("playback")]
+
+    def _pulse_source_ports() -> List[Tuple[str, str]]:
+        """有 PipeWire 时枚举物理麦克风，生成 ('显示', 'pulse:<node.name>')。
+
+        ALSA 输入**必须**用 `pulse:<source>` 显式指定物理麦克风：`pcm.pulse` 读
+        pipewire-pulse 的**默认 source**，而 `purevox_mic`（虚拟麦克风真源）会抢占
+        默认 source 导致回读 PureVox 自己输出（实测 pcm.pulse 读到回读正弦）。
+        用宽松枚举（含被 pwpipe 判为幻影的板载麦，如本机 Mic2），排除 PureVox
+        自身源（purevox_mic / *.monitor）避免回授。物理 plughw 仍由 _alsa_devices 列。
+        """
+        import subprocess as _sp
+        import json as _json
+        ports: List[Tuple[str, str]] = []
+        try:
+            out = _sp.run(["pw-dump"], capture_output=True, text=True, timeout=5).stdout
+            objs = _json.loads(out)
+        except Exception:
+            return ports
+        for o in objs:
+            if o.get("type") != "PipeWire:Interface:Node":
+                continue
+            p = (o.get("info", {}) or {}).get("props", {}) or {}
+            if p.get("media.class") != "Audio/Source":
+                continue
+            name = p.get("node.name", "")
+            if not name or name.startswith("PureVox-"):
+                continue
+            if name == "purevox_mic" or ".monitor" in name or name.startswith("purevox"):
+                continue
+            desc = p.get("node.description") or name
+            ports.append((f"物理麦克风 · {desc}", f"pulse:{name}"))
+        return ports
+
+    def _alsa_source_ports() -> List[Tuple[str, str]]:
+        """ALSA 输入设备 [(显示名, PCM 名), ...]（供 UI 下拉 userData）。
+
+        有 PipeWire 时前置物理麦克风（`pulse:<source>`，显式指定源，避免
+        `pcm.pulse` 默认 source 被 `purevox_mic` 抢占回读自己）；无 PipeWire 的
+        纯 ALSA 系统回退到 `plughw:C,D` 直连物理设备。
+        """
+        out = _pulse_source_ports()
+        out += _alsa_devices("capture")
+        return out
+
+    def _alsa_dest_ports() -> List[Tuple[str, str]]:
+        """ALSA 输出设备 [(显示名, PCM 名), ...]（供 UI 下拉 userData）。
+
+        ALSA 是混合实现：输出到虚拟麦克风走 PipeWire 原生流（PwBridge 显式写
+        `purevox_out`，对外 `purevox_mic` 可用），此处值用 `purevox_out` 标记；
+        `pcm.pulse` 与 `plughw:C,D` 为物理 ALSA 输出。虚拟麦克风就绪时前置该项，
+        未就绪（未创建）则回退到 pcm.pulse 物理输出。
+        """
+        out = []
+        try:
+            from pvplatform.system._posix import virtual_mic_ready
+            if virtual_mic_ready():
+                out.append(("PureVox 虚拟麦克风", "purevox_out"))
+        except Exception:
+            pass
+        out += [("pcm.pulse（物理输出）", "pulse")]
+        out += _alsa_devices("playback")
+        return out
 
 
 def get_local_lan_ip() -> str:
@@ -308,6 +406,11 @@ class AudioThread(threading.Thread):
         self._use_pw = False
         self._pw_bridge: Optional[_PwBridge] = None
         self._pw_ports: Tuple[str, str, str] = ("", "", "")  # (input, output, monitor)
+        # Linux：原生 ALSA 备选后端（与 PipeWire 二选一，默认 PipeWire）
+        self._use_alsa = False
+        self._alsa_bridge: Optional[_AlsaBridge] = None
+        self._alsa_ports: Tuple[str, str, str] = ("", "", "")  # (input, output, monitor) plughw 名
+        self._alsa_vmic_pw: Optional[_PwBridge] = None  # 混合：输出到虚拟麦克风的 PwBridge
         self._channels: int = 1                     # 设备通道数，在 _create_stream 中确定
         self._output_buffer = None  # L3:网络输出缓冲 (aimic.RingBuffer 或 None)
         self._output_stream: Optional[Any] = None
@@ -350,6 +453,15 @@ class AudioThread(threading.Thread):
         self._use_pw = bool(input_name or output_name) and IS_LINUX
         self._pw_ports = (input_name or "", output_name or "", monitor_name or "")
 
+    def set_alsa_ports(self, input_name: str, output_name: str,
+                       monitor_name: str = "") -> None:
+        """设置 Linux ALSA 输入/输出/监听 plughw 名（备选后端）。
+
+        须在 run() 之前调用；start_audio_stream 会据此选择原生 ALSA 后端。
+        """
+        self._use_alsa = bool(input_name or output_name) and IS_LINUX
+        self._alsa_ports = (input_name or "", output_name or "", monitor_name or "")
+
     def set_aec_far_sink(self, sink_name: str) -> bool:
         """运行时切换 AEC far 端扬声器 sink（Linux PipeWire，capture.sink 重挂）。
 
@@ -391,6 +503,15 @@ class AudioThread(threading.Thread):
             return True
         if enabled:
             try:
+                if IS_LINUX and self._use_alsa and self._alsa_bridge is not None:
+                    # Linux ALSA：far 端从 AlsaBridge 的 far capture 流读（plughw 名）
+                    far_sink = self._aec_far_sink or ""
+                    if far_sink and not self._alsa_bridge.set_far(far_sink, True):
+                        _module_log(f"[AEC] ALSA far 端开启失败: {self._alsa_bridge.last_error()}")
+                        return False
+                    self._aec_enabled = True
+                    self.processor.set_aec_enabled(True)
+                    return True
                 if IS_LINUX and self._use_pw:
                     # Linux：AEC far 走原生 PipeWire（capture.sink 监听扬声器输出）
                     # far 端方向优先用手动选择（_aec_far_sink），否则跟监听端口。
@@ -426,6 +547,8 @@ class AudioThread(threading.Thread):
         else:
             self._aec_enabled = False
             self.processor.set_aec_enabled(False)
+            if self._use_alsa and self._alsa_bridge is not None:
+                self._alsa_bridge.set_far("", False)
             if self._speaker_capture:
                 self._speaker_capture.stop()
                 self._speaker_capture = None
@@ -510,6 +633,45 @@ class AudioThread(threading.Thread):
             _module_log(f"[PipeWire] 输入: {in_name or '(未选)'}  输出: {out_name or '(未选)'}"
                         + (f"  监听: {mon_name}" if mon_name else ""))
             _module_log("[PipeWire] F32 单声道 48000Hz 协商（PipeWire 负责重采样/声道转换）")
+            return
+
+        if IS_LINUX and self._use_alsa:
+            # Linux 原生 ALSA 备选：混合实现。
+            # 输入走 ALSA（pcm.pulse 读默认 source 或 plughw 直连）；输出到虚拟麦克风
+            # 走 PipeWire 原生流（PwBridge 显式写 purevox_out，对外 purevox_mic 可用），
+            # 物理监听走 AlsaBridge 的 out_pcm/mon_pcm。
+            self._last_output_frame = [0.0] * HOP_LENGTH
+            self._output_buffer = aimic.RingBuffer(SAMPLE_RATE)
+            self._output_stream = None
+            self._monitor_stream = None
+            in_name, out_name, mon_name = self._alsa_ports
+            from pvplatform.system._posix import VIRTUAL_MIC_SINK
+            vmic_out = (out_name == VIRTUAL_MIC_SINK)
+            alsa_out = "" if vmic_out else out_name  # 输出到 vmic 时 AlsaBridge 不做物理 out
+            bridge = _AlsaBridge()
+            if not bridge.open(in_name, alsa_out, mon_name):
+                err = bridge.last_error()
+                bridge.close()
+                raise OSError(f"ALSA 连接失败: {err}")
+            sr = bridge.sample_rate()
+            if sr and sr != SAMPLE_RATE:
+                bridge.close()
+                raise OSError(f"ALSA 协商采样率为 {sr}Hz（应为 {SAMPLE_RATE}Hz）")
+            self._alsa_bridge = bridge
+            self._alsa_vmic_pw = None
+            if vmic_out:
+                pw = _PwBridge()
+                if not pw.open("", VIRTUAL_MIC_SINK):
+                    err = pw.last_error()
+                    pw.close()
+                    bridge.close()
+                    raise OSError(f"虚拟麦克风连接失败（请先创建虚拟声卡）: {err}")
+                self._alsa_vmic_pw = pw
+                _module_log(f"[ALSA] 混合输出：PipeWire 原生流 → {VIRTUAL_MIC_SINK}"
+                            + (f"  物理监听: {mon_name}" if mon_name else ""))
+            _module_log(f"[ALSA] 输入: {in_name}  输出: {out_name}"
+                        + (f"  监听: {mon_name}" if mon_name else ""))
+            _module_log("[ALSA] F32 单声道 48000Hz 协商（plughw 负责重采样/声道转换）")
             return
 
         if IS_LINUX:
@@ -860,7 +1022,7 @@ class AudioThread(threading.Thread):
 
         if is_network:
             self._network_loop()
-        elif IS_LINUX and self._use_pw:
+        elif IS_LINUX and (self._use_pw or self._use_alsa):
             self._pw_loop()
         else:
             self._health_check_loop()
@@ -1007,15 +1169,14 @@ class AudioThread(threading.Thread):
     # ── Linux 原生 PipeWire 输入/输出循环 ──
 
     def _pw_loop(self):
-        """PipeWire 模式（本地输入）：input 采集 → 降噪 → output 播放。
+        """PipeWire / ALSA 模式（本地输入）：input 采集 → 降噪 → output 播放。
 
-        进程回调（PipeWire 数据线程）只做无锁环形缓冲搬运；本循环在
-        Python 线程读取→降噪→写入，2s 环形缓冲吸收调度抖动。
-        桥接已在 _create_stream 打开并连接。
+        进程回调/ALSA I/O 线程只做无锁环形缓冲搬运；本循环在 Python 线程
+        读取→降噪→写入，2s 环形缓冲吸收调度抖动。桥接已在 _create_stream 打开。
         """
-        bridge = self._pw_bridge
+        bridge = self._pw_bridge if self._use_pw else self._alsa_bridge
         if bridge is None:
-            self._start_error = "PipeWire 桥接未就绪"
+            self._start_error = "PipeWire/ALSA 桥接未就绪"
             return
         acc: List[float] = []
         fc = 0
@@ -1034,7 +1195,13 @@ class AudioThread(threading.Thread):
                 while len(acc) >= HOP_LENGTH:
                     chunk = acc[:HOP_LENGTH]
                     del acc[:HOP_LENGTH]
-                    if self._aec_enabled and self._speaker_capture:
+                    if self._aec_enabled and self._use_alsa and self._alsa_bridge:
+                        # ALSA：far 端从 AlsaBridge far 环读（已 48k 单声道）
+                        far_data = self._alsa_bridge.read_far(HOP_LENGTH)
+                        if far_data is None:
+                            far_data = [0.0] * HOP_LENGTH
+                        out = self.processor.process_with_far(chunk, far_data)
+                    elif self._aec_enabled and self._speaker_capture:
                         far_need = int(HOP_LENGTH * self._speaker_capture.dev_sr / SAMPLE_RATE)
                         far_data = self._speaker_capture.read(far_need)
                         if far_data is not None:
@@ -1049,7 +1216,14 @@ class AudioThread(threading.Thread):
                             self._recording_hook(list(out))
                         except Exception:
                             pass
-                    bridge.write(list(out))
+                    if self._use_alsa and self._alsa_bridge is not None:
+                        # ALSA 混合：虚拟麦克风走 PwBridge（对外 purevox_mic），
+                        # 物理输出/监听走 AlsaBridge
+                        if self._alsa_vmic_pw is not None:
+                            self._alsa_vmic_pw.write(list(out))
+                        self._alsa_bridge.write(list(out))
+                    else:
+                        bridge.write(list(out))
                     # VU 电平显示降噪输出（out）的峰值
                     self._vu_peak = max(abs(x) for x in out) if out else 0.0
                     if self._viz_enabled:
@@ -1057,7 +1231,8 @@ class AudioThread(threading.Thread):
                     fc += 1
 
                 if fc % 1000 == 0:
-                    _module_log(f"[PipeWire] 处理 {fc} 帧 (rms={_rms_of(data):.4f})")
+                    tag = "PipeWire" if self._use_pw else "ALSA"
+                    _module_log(f"[{tag}] 处理 {fc} 帧 (rms={_rms_of(data):.4f})")
         finally:
             _module_log("[PipeWire] 循环退出")
 
@@ -1165,6 +1340,20 @@ class AudioThread(threading.Thread):
                 pass
             self._pw_bridge = None
 
+        # ALSA 桥接：关闭流
+        if self._alsa_vmic_pw is not None:
+            try:
+                self._alsa_vmic_pw.close()
+            except Exception:
+                pass
+            self._alsa_vmic_pw = None
+        if self._alsa_bridge is not None:
+            try:
+                self._alsa_bridge.close()
+            except Exception:
+                pass
+            self._alsa_bridge = None
+
         if self._p:
             try:
                 self._p.terminate()
@@ -1207,7 +1396,10 @@ class AudioThread(threading.Thread):
                 return True
 
     def set_monitor_port(self, node: str, enabled: bool) -> bool:
-        """PipeWire 模式动态开关监听流（与输出同一路降噪音频）。"""
+        """PipeWire/ALSA 模式动态开关监听流（与输出同一路降噪音频）。"""
+        if IS_LINUX and self._use_alsa and self._alsa_bridge is not None:
+            self._alsa_bridge.set_monitor(node, enabled)
+            return True
         if not (IS_LINUX and self._use_pw):
             return False
         if self._pw_bridge is None:
@@ -1525,7 +1717,8 @@ def start_audio_stream(input_id: Optional[int], output_id: int,
                        network_source = None,
                        api_type: int = 13,
                        ready_msg: str = "",
-                       pw_ports: Tuple[str, str, str] = ()) -> AudioThread:
+                       pw_ports: Tuple[str, str, str] = (),
+                       alsa_ports: Tuple[str, str, str] = ()) -> AudioThread:
     """启动音频流并返回线程实例。
 
     参数:
@@ -1538,6 +1731,8 @@ def start_audio_stream(input_id: Optional[int], output_id: int,
         ready_msg: 音频流就绪后由 AudioThread 记录的日志消息。
         pw_ports: Linux PipeWire 模式的 (input_name, output_name, monitor_name)
             节点名三元组；非空时输入/输出/监听全走原生 PipeWire。
+        alsa_ports: Linux ALSA 模式的 (input, output, monitor) plughw 名三元组；
+            非空且 pw_ports 为空时走原生 ALSA 备选后端。
     """
     if hop_length is None:
         hop_length = HOP_LENGTH
@@ -1546,6 +1741,9 @@ def start_audio_stream(input_id: Optional[int], output_id: int,
                          api_type=api_type, ready_msg=ready_msg)
     if pw_ports and (pw_ports[0] or pw_ports[1]):
         thread.set_pw_ports(pw_ports[0], pw_ports[1], pw_ports[2])
+    elif alsa_ports and (alsa_ports[0] or alsa_ports[1]):
+        a = list(alsa_ports) + ["", "", ""]
+        thread.set_alsa_ports(a[0], a[1], a[2])
     thread.start()
     return thread
 
@@ -1563,6 +1761,7 @@ API_TYPE_MME = _device_api.API_MME
 API_TYPE_NETWORK = _device_api.API_NETWORK
 API_TYPE_PULSE = _device_api.API_PULSE
 API_TYPE_ALSA = _device_api.API_ALSA
+API_TYPE_PIPEWIRE = _device_api.API_PIPEWIRE
 
 
 def get_api_name_by_type(api_type: int) -> str:
@@ -1593,10 +1792,8 @@ def _get_host_api_indices(p: Any, api_type: int) -> List[int]:
 def get_device_names(api_type: int = None) -> Tuple[List[str], List[str]]:
     """获取设备名称列表（已去重）。api_type 为 None 时用平台默认。
 
-    Linux：原生 PipeWire 节点枚举——输入 = Audio/Source 节点（物理麦克风 +
-    PureVox 虚拟麦克风 purevox_out.monitor），输出 = Audio/Sink 节点（扬声器 +
-    purevox_out）。返回 node.name（稳定，可直接作 pw_stream 目标）。
-
+    Linux：原生 PipeWire 节点枚举（api_type==API_PIPEWIRE），或原生 ALSA
+    `arecord -l`/`aplay -l` 枚举（api_type==API_ALSA）。
     Windows/macOS：只枚举所选 host API（`_get_host_api_indices` 分级匹配，
     如 WASAPI / MME）下的设备，避免混入其它 host API 的重复/无关端点，
     设备按方向区分。
@@ -1604,6 +1801,8 @@ def get_device_names(api_type: int = None) -> Tuple[List[str], List[str]]:
     if api_type is None:
         api_type = default_api_type()
     if IS_LINUX:
+        if api_type == API_TYPE_ALSA:
+            return _alsa_sources(), _alsa_dests()
         return _pw_sources(), _pw_dests()
     p = pyaudio.PyAudio()
     try:

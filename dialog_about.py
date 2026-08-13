@@ -358,6 +358,43 @@ AGC、VAD，31 段均衡器在菜单「设置 → 均衡器」打开。</p>
 
 CHANGELOG_TEXT = """# 更新日志
 
+## 2026-08-13 — Linux 新增本地接口 ALSA（原生备选）
+
+- **音频接口下拉框改为「本地接口 PipeWire（默认）」+「本地接口 ALSA」+「网络(API)」三项**：
+  Linux 本地输入/输出默认仍为原生 PipeWire，新增原生 ALSA 备选后端（`alsa_client.c` →
+  `libpvalsa.so`，ctypes 绑定 `pvalsa.py`），供无 PipeWire 的极简/纯 ALSA 系统或
+  需要绕过 PipeWire 的场景使用
+- **ALSA 桥 AlsaBridge**：仿 PwBridge，单个 I/O 线程用 poll() 驱动 capture/playback/
+  monitor/far 四个 PCM，数据路径只碰无锁 SPSC 环形缓冲；F32 单声道 48000Hz 经
+  `plughw:C,D` 插件层转换（speex/samplerate 重采样 + 声道/格式转换），模型永远拿 48k
+  单声道。`setup.py` Linux 构建新增 `_build_pvalsa_linux()`（pkg-config alsa）
+- **监听与 AEC**：监听 = 降噪音频多输出一份到选定 playback 设备（mon PCM）；AEC far =
+  从用户选定的 capture 设备读扬声器输出（far PCM，须选可捕获输出的设备名）
+- **设备枚举**：`get_device_names` 在 api_type==ALSA 时用 `arecord -l` / `aplay -l`
+  解析出 `plughw:C,D` 名（下拉显示名、userData 存 plughw 名），PipeWire 仍走 pw-dump
+- **配置键复用**：ALSA 走现有 `input_device_alsa` 等占位键；Linux 默认 api_type 由
+  Pulse(15) 改为 PipeWire(98)，老配置自动回退到新默认
+- **虚拟麦克风统一中转（一个设备兼顾两种接口）**：`purevox_out` 是唯一虚拟麦克风
+  中转，PipeWire 与 ALSA 两路降噪输出都汇入它，不引入 snd-aloop、不建第二套虚拟
+  麦克风。**ALSA 接口是混合实现**：输入走 ALSA，输出到虚拟麦克风**必须用 PipeWire
+  原生流（PwBridge）显式写 `purevox_out`**——实测 `pcm.pulse`/默认 sink 中转虽然
+  `purevox_out.monitor` 有信号，但 `purevox_mic`（remap-source 真源，供 OBS 等只列
+  真源软件）静音；只有 PipeWire 原生 `pw_stream` 写 `purevox_out` 才能驱动
+  `purevox_mic` 取数。UI 语义与 PipeWire 模式看齐（输入/输出/监听三个下拉）。
+  虚拟声卡面板按当前接口显示引导文案
+- **ALSA 输入必须用 `pulse:<物理麦克风>` 显式指定（关键）**：`pcm.pulse` 读默认
+  source，但 `purevox_mic` 抢占默认 source 且 `pactl set-default-source` 改不回
+  （exit=0 无效），导致 pcm.pulse 输入**回读 PureVox 自己输出**（实测读到回读正弦
+  rms=0.27）。ALSA 输入下拉改用 `pulse:<node.name>`（pw-dump 枚举物理麦克风，排除
+  `purevox_mic`/`*.monitor`）显式指定源绕开默认；无 PipeWire 的纯 ALSA 系统用
+  `plughw:C,D` 直连。本机板载麦 Mic2 实测 `pulse:Mic2` 可打开但拾音极弱
+- **设备枚举**：ALSA 模式输入/输出下拉前置物理麦克风（`pulse:<source>`）与虚拟麦克风
+  （`purevox_out`），并列出 `plughw:C,D` 物理设备；注意大量 HDMI 为**未连接假设备**
+  （本机仅 Headphones 输出 + Mic2 输入可用），真正可用端点通常只有物理耳机/板载麦
+- **修复 ALSA 停止卡死**：AlsaBridge 关闭时对 capture 流（in/far）用 `snd_pcm_drain`
+  会**无限阻塞**（实测 pcm.pulse 采集 stop 时 UI 卡死无退出）；改用 `snd_pcm_drop`
+  （立即丢弃），playback（out/mon）保留 drain 安全等待
+
 ## 2026-08-13 — Windows 新增本地接口 MME + 设备配置按接口隔离
 
 - **音频接口下拉框改为「本地接口 WASAPI（默认）」+「本地接口 MME」+「网络(API)」三项**：

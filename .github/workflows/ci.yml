@@ -24,18 +24,18 @@ jobs:
             # packages/cpython submodule; without ssl headers that interpreter's
             # pip has no networking, so bootstrap_python38.sh fails.
             # file: appimagetool requires the `file` command at packaging time.
-            sysdeps: "build-essential make pkg-config libpipewire-0.3-dev libssl-dev python3 python3-pip python3-setuptools imagemagick wget git zlib1g-dev file"
+            sysdeps: "build-essential make pkg-config libpipewire-0.3-dev libasound2-dev libssl-dev python3 python3-pip python3-setuptools imagemagick wget git zlib1g-dev file"
             pkg_deb: true
             pkg_appimage: true
           - distro: fedora
             container: fedora:latest
-            sysdeps: "gcc make pkgconf-pkg-config pipewire-devel python3 python3-pip python3-setuptools rpm-build"
+            sysdeps: "gcc make pkgconf-pkg-config pipewire-devel alsa-lib-devel python3 python3-pip python3-setuptools rpm-build"
             pkg_rpm: true
           # Python 3.8 baseline (embedded runtime is Py3.8, Win7 minimum): verify the
           # pure C libs build and ctypes-load on that floor.
           - distro: python3.8
             container: python:3.8-bullseye
-            sysdeps: "build-essential pkg-config libpipewire-0.3-dev"
+            sysdeps: "build-essential pkg-config libpipewire-0.3-dev libasound2-dev"
             baseline: true
     container:
       image: ${{ matrix.container }}
@@ -69,18 +69,18 @@ jobs:
             echo "stamp=$(date +'%Y-%m-%d-%H%M')" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Build pure C shared libraries (libaimic.so + libpvpipe.so)
+      - name: Build pure C shared libraries (libaimic.so + libpvpipe.so + libpvalsa.so)
         run: |
           PY="python3"; [ "${{ matrix.distro }}" = "python3.8" ] && PY="python"
           LD_LIBRARY_PATH="$PWD/packages/onnxruntime-linux-x64-1.11.1/lib" \
             $PY setup.py build_ext --inplace --force
-          test -f libaimic.so && test -f libpvpipe.so
+          test -f libaimic.so && test -f libpvpipe.so && test -f libpvalsa.so
 
       - name: Import smoke test (ctypes loads the pure C libs)
         run: |
           PY="python3"; [ "${{ matrix.distro }}" = "python3.8" ] && PY="python"
           LD_LIBRARY_PATH="$PWD/packages/onnxruntime-linux-x64-1.11.1/lib" \
-            $PY -c "import aimic, pvpipe; print('aimic OK'); print('pvpipe OK')"
+            $PY -c "import aimic, pvpipe, pvalsa; print('aimic OK'); print('pvpipe OK'); print('pvalsa OK')"
 
       - name: Assert Python 3.8 baseline (python3.8 only)
         if: matrix.baseline

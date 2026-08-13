@@ -19,7 +19,8 @@
 #   python setup.py build_ext --inplace --force
 # 产出  libaimic.so   （aimic.c + pffft + libsamplerate，链接捆绑 onnxruntime 1.11.1）
 #       libpvpipe.so  （pipewire_client.c，链接系统 libpipewire-0.3）
-# Python 侧由 aimic.py / pvpipe.py 用 ctypes 加载。
+#       libpvalsa.so  （alsa_client.c，链接系统 libasound）
+# Python 侧由 aimic.py / pvpipe.py / pvalsa.py 用 ctypes 加载。
 #
 # onnxruntime 头/库目录环境变量覆盖（CI/pip 场景）：
 #   ORT_INCLUDE_DIR / ORT_LIB_DIR（默认 packages/onnxruntime-linux-x64-1.11.1）
@@ -71,6 +72,7 @@ class BuildExt(_build_ext):
         elif IS_LINUX:
             self._build_aimic_linux()
             self._build_pvpipe_linux()
+            self._build_pvalsa_linux()
         else:
             raise SystemExit(
                 "PureVox setup.py build_ext 仅支持 Linux(gcc)/Windows(mingw)，"
@@ -138,6 +140,23 @@ class BuildExt(_build_ext):
         ] + libs + [
             "-shared",
             "-o", _abs("libpvpipe.so"),
+        ]
+        self._run(cmd)
+
+    def _build_pvalsa_linux(self):
+        cc = os.environ.get("CC", "gcc")
+        cflags = subprocess.run(["pkg-config", "--cflags", "alsa"],
+                                capture_output=True, text=True).stdout.strip().split()
+        libs = subprocess.run(["pkg-config", "--libs", "alsa"],
+                              capture_output=True, text=True).stdout.strip().split()
+        cmd = [
+            cc, "-O2", "-fPIC",
+        ] + cflags + [
+            _abs("alsa_client.c"),
+        ] + libs + [
+            "-lpthread",
+            "-shared",
+            "-o", _abs("libpvalsa.so"),
         ]
         self._run(cmd)
 

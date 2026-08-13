@@ -24,10 +24,11 @@ STAGE="${TMPDIR:-/tmp}/purevox_rpm_build"
 SPEC="$STAGE/purevox.spec"
 ROOT="$STAGE/root"
 
-echo "==> build pure C shared libraries (libaimic.so + libpvpipe.so)"
+echo "==> build pure C shared libraries (libaimic.so + libpvpipe.so + libpvalsa.so)"
 python3 setup.py build_ext --inplace --force >/dev/null
 [ -f "libaimic.so" ] || { echo "missing libaimic.so"; exit 1; }
 [ -f "libpvpipe.so" ] || { echo "missing libpvpipe.so"; exit 1; }
+[ -f "libpvalsa.so" ] || { echo "missing libpvalsa.so"; exit 1; }
 
 echo "==> prepare staging $STAGE"
 rm -rf "$STAGE"
@@ -40,13 +41,14 @@ for f in \
     audio_processor.py config_manager.py dialog_about.py dialog_eq.py logger.py \
     model_config.py run_pyside6.py spectrum_histogram.py theme_colors.py \
     dialog_tse_reference.py ui_pyside6.py user_paths.py wav_io.py \
-    aimic.py pvpipe.py \
+    aimic.py pvpipe.py pvalsa.py \
     aec9_ep0544.onnx tse15_stream_ep_0673.onnx v9_fft2048_band256_epoch_261.onnx \
     audio_icon_off.ico audio_icon_on.ico; do
     cp "$f" "$ROOT/opt/purevox/"
 done
 cp "libaimic.so" "$ROOT/opt/purevox/"
 cp "libpvpipe.so" "$ROOT/opt/purevox/"
+cp "libpvalsa.so" "$ROOT/opt/purevox/"
 
 echo "==> bundle onnxruntime 1.11.1 (aimic links libonnxruntime.so.1.11.1)"
 cp packages/onnxruntime-linux-x64-1.11.1/lib/libonnxruntime.so* "$ROOT/opt/purevox/"

@@ -20,11 +20,21 @@ Windows / Linux 桌面应用 + Android 客户端：实时 AI 音频降噪 / 目�
 1. **一个功能只有一条规范实现路径**。禁止"功能 ABC 三种都能用"的设计——多套平行实现等于高维护成本。新增功能有多个可行做法时，只保留一种并写进文档，其余不进入代码。
 2. **先扩展，再新建**。开新方法 / 新类 / 新文件之前，先搞清楚已有方法能否扩展：优先 改已有函数/类 → 加参数/加配置 → 复用既有抽象；确认确实无法扩展才允许新建，并在更新日志（`dialog_about.py` 的 `CHANGELOG_TEXT`）说明为何不能扩展。
 3. **被替代的实现不保留平行代码**。如 Linux 的 PortAudio/GStreamer/JACK、旧虚拟麦克风架构等已弃用方案，直接删除，不留"备选"。
+   - **例外：配置键占位不删**。`config_manager.py` / `device_api.py` 里按接口后缀写全的
+     设备键（如 `input_device_wasapi` / `input_device_alsa` / …，共 10 接口 × 4 键）属于
+     **跨平台共享的占位配置**，即使当前平台实际只用其中一个本地接口（Linux 只原生 PipeWire、
+     Windows 只 WASAPI+MME、macOS 只 Core Audio），其余键也**保留不删**——它们不影响运行、
+     是强配置结构的一部分，独立于本条的"被替代实现删除"规则；若日后清理，视作待办（TODO）
+     而非本次改动目标。
 4. **改动前先读对应模块，尊重既有设计意图**；删除功能需在更新日志（`dialog_about.py` 的 `CHANGELOG_TEXT`）记录。
 
 **本项目的单一实现路径（强制执行）**：
 
-- Linux 音频采集/输出**只用原生 PipeWire**（`pvpipe`）
+- Linux 音频采集/输出**默认用原生 PipeWire**（`pvpipe`），可选**原生 ALSA**（`pvalsa`，
+  `alsa_client.c` → `libpvalsa.so`）作为备选本地接口（UI「本地接口 ALSA」）。默认仍为 PipeWire。
+- **ALSA 接口是混合实现（输入走 ALSA，输出写虚拟麦克风走 PipeWire 原生流）**——UI 语义
+  与 PipeWire 模式完全看齐（输入/输出/监听三个下拉结构一致）。原因与机制见
+  「Linux 音频架构 → ALSA 混合模式」。
 - 虚拟麦克风（Linux）= 单一生产者 + 双出口，全部健康，详见下方「Linux 音频架构」：
   ① 单声道 null-sink `purevox_out`（唯一写入口）；② 内置 monitor
   `purevox_out.monitor`（宽口径源）+ 非 monitor 真源 `purevox_mic`
@@ -222,8 +232,21 @@ AEC far-end：独立输入流 `PureVox-far`（`stream.capture.sink=tap 扬声器
   - 生命周期全幂等（检测-重置，有则不动）：`virtual_mic_ready()`（探测 sink 存在）→
     `ensure_virtual_mic()`（建 sink + 真源，先 `_kill_stray_loopbacks` 清旧架构残留
     pw-loopback）→ `remove_virtual_mic()`（卸载模块 + destroy 节点）。
+  - **单中转设备兼顾两种本地接口（2026-08-13）**：`purevox_out` 是唯一虚拟麦克风中转，
+    同时接收 PipeWire 与 ALSA 两路的降噪输出，两路都汇入同一个纯vox_out，不引入
+    snd-aloop、不建第二套虚拟麦克风。
+    - **PipeWire 接口**：降噪输出流 `PureVox-output`（pw_stream）直接写入 `purevox_out`。
+    - **ALSA 接口（混合）**：降噪输出经 **PwBridge（PipeWire 原生流）**显式写 `purevox_out`
+      ——**绝不能靠 `pcm.pulse` 走默认 sink 中转**（见下方踩坑，实测 purevox_mic 静音）。
+  - **ALSA 混合模式（2026-08-13 实测结论）**：ALSA 接口 ≠ 全 ALSA。在有 PipeWire 的系统上，
+    - 输入走 ALSA，PCM 名**必须用 `pulse:<物理麦克风 source>` 显式指定**（如
+      `pulse:alsa_input...Mic2__source`），不能靠 `pcm.pulse` 读默认 source（会被
+      `purevox_mic` 抢占回读自己）；无 PipeWire 的纯 ALSA 系统用 `plughw:C,D` 直连；
+    - 输出到虚拟麦克风**必须用 PipeWire 原生流（PwBridge）写 `purevox_out`**，UI 语义与
+      PipeWire 模式完全看齐（输入/输出/监听三个下拉）；
+    - 监听（可选）= ALSA 第二路到物理；AEC far（可选）= ALSA 读物理扬声器。
   - **启动不再自动创建**（手动模型）：菜单「虚拟声卡」→ `dialog_virtual_mic_linux.py`
-    状态面板（指示灯 + 双出口说明 + 「创建/清理」按钮）；ui 只做分发，
+    状态面板（指示灯 + 双出口说明 + 「创建/清理」按钮，按当前接口显示提示）；ui 只做分发，
     与 Windows `dialog_vbcable_check.py` 同一原则。
 - **禁用/踩坑**（违反任一即弄坏系统托盘/协议，见 `_posix.py` 头注释）：
   - `pw-loopback`：旧虚拟麦克风架构，已弃用，仅防御性 `pkill` 清残留。
@@ -236,6 +259,31 @@ AEC far-end：独立输入流 `PureVox-far`（`stream.capture.sink=tap 扬声器
   - **重启 pipewire-pulse "修托盘"**：plasma-pa 的 libpulse context 变 kaput、托盘
     清空，KDE 不自动重连。
   - remap-source 会强制覆盖 node.description（显示 "Remapped ... source"），set-param 改不掉。
+- **ALSA 链路实测踩坑（2026-08-13，本机有 PipeWire）**：
+  - **ALSA 直连物理设备被 PipeWire 独占**：sof-hda-dsp 声卡（输入 Mic2/DMIC、输出 Headphones）
+    被 PipeWire 独占，ALSA 直连 `plughw:C,D` 打不开（EBUSY）。真正可用的端点往往只有
+    物理耳机/板载麦（本机 Headphones 输出 + Mic2 输入），大量 HDMI（NVidia card、sofhdadsp
+    HDMI1/2/3）为**未连接假设备**（NVidia Active Profile=off、`pactl list cards` 的 endpoint
+    标 `not available`），枚举时要按可用性过滤，别拿假设备当有效输出。
+  - **`pcm.pulse` 中转驱动不了 `purevox_mic`（关键）**：ALSA 降噪输出经 `pcm.pulse` 走默认
+    sink 写 `purevox_out`，`purevox_out.monitor` 有信号，但 `purevox_mic`（remap-source 真源）
+    **静音**（实测 peak=0）。而 **PwBridge（PipeWire 原生流 `pw_stream`）写 `purevox_out`，
+    `purevox_mic` 正常取数**（实测 peak=13107）。结论：**`purevox_mic` 只能被 PipeWire 原生
+    `pw_stream` 写入 `purevox_out` 驱动**；`pcm.pulse`/ALSA 中转的流 monitor 能看到但转发
+    不到 remap-source。故 ALSA 接口输出到虚拟麦克风**必须走 PwBridge 原生流**，不能靠
+    `pcm.pulse` 或默认 sink 中转（此前"默认 sink + 面板引导"方案废弃）。
+  - **ALSA 输入必须用 `pulse:<source>` 显式指定物理麦克风（关键）**：`pcm.pulse` 读
+    pipewire-pulse 的**默认 source**，而 `purevox_mic` 创建后会抢占默认 source 且
+    `pactl set-default-source` 改不回（实测 exit=0 但无效），导致 pcm.pulse 输入**回读
+    PureVox 自己输出**（实测读到回读正弦 rms=0.27）。ALSA 输入下拉须枚举物理麦克风
+    （pw-dump 的 Audio/Source，排除 `purevox_mic`/`*.monitor`），PCM 名用
+    `pulse:<node.name>`（如 `pulse:alsa_input...Mic2__source`），显式指定源绕开默认。
+    本机板载麦 Mic2 实测 `pulse:Mic2` 可打开但拾音极弱（可能幻影/低增益），无可用物理
+    麦的机器 ALSA 输入采集受限，但对外虚拟麦克风不受影响。
+  - **capture 流关闭必须用 `snd_pcm_drop`（2026-08-13 实测）**：`als_close` 对 in/far
+    （capture）用 `snd_pcm_drain` 会**无限阻塞**（实测 pcm.pulse 采集 stop 时 UI 卡死，
+    `pthread_join` 已返回、卡在 drain）；capture 用 `snd_pcm_drop`（立即丢弃），playback
+    out/mon 保留 `snd_pcm_drain`（安全等待剩余播放完）。
 - **pw_stream 线程约束**：所有 pw_stream 操作必须经 `_run_on_loop` 在 PipeWire 主循环线程
   执行（`pw_loop_invoke` + 条件变量同步；block 参数不可靠会竞态）。
 - **进程回调（数据线程）禁止加锁/分配**——pvpipe 用无锁 SPSC 环形缓冲（输入环满丢最旧、

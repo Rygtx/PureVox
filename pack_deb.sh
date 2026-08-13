@@ -32,10 +32,11 @@ STAGE="${TMPDIR:-/tmp}/purevox_deb_build"
 ROOT="$STAGE/root"
 CONTROL="$ROOT/DEBIAN/control"
 
-echo "==> 构建纯 C 共享库 (libaimic.so + libpvpipe.so)"
+echo "==> 构建纯 C 共享库 (libaimic.so + libpvpipe.so + libpvalsa.so)"
 python3 setup.py build_ext --inplace --force >/dev/null
 [ -f "libaimic.so" ] || { echo "缺少 libaimic.so"; exit 1; }
 [ -f "libpvpipe.so" ] || { echo "缺少 libpvpipe.so"; exit 1; }
+[ -f "libpvalsa.so" ] || { echo "缺少 libpvalsa.so"; exit 1; }
 
 echo "==> 准备打包目录 $STAGE"
 rm -rf "$STAGE"
@@ -51,13 +52,14 @@ for f in \
     model_config.py run_pyside6.py spectrum_histogram.py theme_colors.py \
     dialog_tse_reference.py dialog_virtual_mic_linux.py ui_pyside6.py \
     user_paths.py wav_io.py \
-    aimic.py pvpipe.py \
+    aimic.py pvpipe.py pvalsa.py \
     aec9_ep0544.onnx tse15_stream_ep_0673.onnx v9_fft2048_band256_epoch_261.onnx \
     audio_icon_off.ico audio_icon_on.ico; do
     cp "$f" "$ROOT/opt/purevox/"
 done
 cp "libaimic.so" "$ROOT/opt/purevox/"
 cp "libpvpipe.so" "$ROOT/opt/purevox/"
+cp "libpvalsa.so" "$ROOT/opt/purevox/"
 
 echo "==> 拷贝捆绑的 onnxruntime 1.11.1 动态库（aimic 链接 libonnxruntime.so.1.11.1）"
 cp packages/onnxruntime-linux-x64-1.11.1/lib/libonnxruntime.so* "$ROOT/opt/purevox/"
@@ -127,7 +129,7 @@ Section: sound
 Priority: optional
 Architecture: $ARCH
 Maintainer: a2heng <752848283@qq.com>
-Depends: python-3 (>= 3.13), pyside6, zeroconf, aiohttp, cryptography, opus, pipewire
+Depends: python-3 (>= 3.13), pyside6, zeroconf, aiohttp, cryptography, opus, pipewire, libasound2
 Recommends: opuslib
 Description: PureVox — Real-time AI microphone noise reduction
  Real-time AI audio denoising / target speech extraction / echo cancellation
