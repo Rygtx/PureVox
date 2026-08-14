@@ -2592,7 +2592,7 @@ class MainApp:
             btn = QPushButton(f"S{i + 1}")
             btn.setFixedHeight(24)
             btn.setFixedWidth(80)
-            btn.clicked.connect(lambda _, slot=i: mp._on_eq_slot(slot))
+            btn.clicked.connect(lambda *a, slot=i: mp._on_eq_slot(slot))
             mp._eq_mbtns[i] = btn
             eq_btn_row.addWidget(btn)
         eq_btn_row.addStretch()
@@ -2608,7 +2608,7 @@ class MainApp:
             btn.setFixedHeight(24)
             btn.setFixedWidth(80)
             btn.setStyleSheet(_PS)
-            btn.clicked.connect(lambda _, n=name, g=gains: mp._on_eq_preset(n, g))
+            btn.clicked.connect(lambda *a, n=name, g=gains: mp._on_eq_preset(n, g))
             eq_preset_row.addWidget(btn)
         eq_preset_row.addStretch()
         eq_btns_layout.addLayout(eq_preset_row)

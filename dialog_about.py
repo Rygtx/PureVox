@@ -361,6 +361,19 @@ AGC、VAD，31 段均衡器在菜单「设置 → 均衡器」打开。</p>
 
 CHANGELOG_TEXT = """# 更新日志
 
+## 2026-08-14 — 修复 EQ 预设/插槽按钮点击无反应（PySide6 6.1.3 传参 bug）
+
+- **现象**：均衡器面板的预设按钮与插槽按钮点击无任何效果，启动日志反复出现
+  `TypeError: <lambda>() missing 1 required positional argument: '_'`
+- **根因**：PySide6 6.1.3 的 `clicked` 信号对「带默认参数的 lambda」
+  （`lambda _, slot=i:`）传参有 bug——按 lambda 参数个数（0 个额外）传参，导致
+  位置参数 `_` 缺失，回调抛 TypeError 不执行。此前 `lambda _:`（无默认参数）
+  恰好能接住信号发出的 1 个参数，故单参数 lambda 正常，仅 EQ 这两处带默认
+  参数的 lambda 出问题，线上未暴露
+- **修复**：EQ 两处连接改用可变参数吸收信号参数
+  `lambda *a, slot=i:` / `lambda *a, n=name, g=gains:`，消除位置参数不匹配
+- 最小复现已确认：修复前点击报 TypeError，修复后正常
+
 ## 2026-08-14 — deb 捆绑内嵌 Python + PySide6 瘦身，跨发行版兼容
 
 - **deb 捆绑内嵌 Python 3.8**：`pack_deb.sh` 现把 `packages/python38`
