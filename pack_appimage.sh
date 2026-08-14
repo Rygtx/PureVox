@@ -60,6 +60,9 @@ EOF
 echo "==> bundle embedded Python 3.8"
 cp -a packages/python38 "$APPDIR/usr/python38"
 
+echo "==> slim PySide6 (same closure as deb, shared script)"
+bash scripts/slim_pyside6.sh "$APPDIR/usr/python38/lib/python3.8/site-packages/PySide6"
+
 echo "==> desktop entry (AppImage needs it at AppDir root + usr/share/applications)"
 mkdir -p "$APPDIR/usr/share/applications"
 cat > "$APPDIR/usr/share/applications/$APP_NAME.desktop" <<'EOF'

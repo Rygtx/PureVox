@@ -361,6 +361,37 @@ AGC、VAD，31 段均衡器在菜单「设置 → 均衡器」打开。</p>
 
 CHANGELOG_TEXT = """# 更新日志
 
+## 2026-08-14 — deb 捆绑内嵌 Python + PySide6 瘦身，跨发行版兼容
+
+- **deb 捆绑内嵌 Python 3.8**：`pack_deb.sh` 现把 `packages/python38`
+  （含 PySide6 6.1.3 与 zeroconf/aiohttp/cryptography/opuslib 全部依赖）整个
+  拷进 `/opt/purevox/python38`，启动脚本改用内嵌 python（`PYTHONHOME` +
+  `LD_LIBRARY_PATH`），与系统 Python 及发行版 python 包名（AOSC 的
+  `pyside6`/Debian 的 `python3-pyside6` 命名各异，且 Debian 无 PySide6 apt
+  包）彻底隔离，与 AppImage 同一实现路径。`Depends` 现只留原生 C 运行库
+  `pipewire`、`libasound2`，不再声明任何 Python 依赖，跨发行版可安装即用
+- **libcrypt.so.2 兼容软链**：内嵌 python 3.8.20 由 AOSC GCC 15 编译、链接
+  `libcrypt.so.2`，较新发行版（如 Debian 13）只有 `libcrypt.so.1`
+  （libxcrypt，ABI 兼容），打包时补软链使其可加载
+- **PySide6 瘦身（560M→115M，deb 153M→83M）**：应用只用 QtWidgets/QtCore/
+  QtGui，砍掉 `Qt/qml`(337M)、examples、3D/Charts/Sql/Svg/Quick 等模块与
+  非必要 plugins，只留依赖闭包。依赖闭包实测确认：`libpyside6.abi3.so` 硬
+  依赖 `libQt6Qml`（与 Windows 同约束勿删）；`libqxcb` 需 `libQt6OpenGL`，
+  缺失会解析到系统 Qt 版本冲突。瘦身逻辑提取为 `scripts/slim_pyside6.sh`，
+  `pack_deb.sh` / `pack_appimage.sh` 共用（单一实现路径）
+
+## 2026-08-14 — deb 打包依赖增强跨发行版兼容（Debian）
+
+- **Python 依赖移出硬 Depends，改入非阻塞 Recommends**：此前 deb 的
+  `Depends` 按 AOSC 包名写死 `python-3 (>= 3.13)`、`pyside6`、`zeroconf`、
+  `aiohttp`、`cryptography`、`opus`、`opuslib`，在包名不同的 Debian 上安装
+  即报 "but it is not installable" 直接失败。现仅把原生 C 运行库
+  （`pipewire`、`libasound2`）留在 Depends；Python 依赖全部改到 Recommends，
+  并用「AOSC 名 | Debian 名」备选（如 `pyside6 | python3-pyside6`），
+  哪个发行版能解析哪个就尽力装上，解析不到也只是跳过、不再阻塞安装
+- 说明：App 运行仍需要这些 Python 包，安装后缺失时请用系统包管理器或
+  `pip install --user pyside6 zeroconf aiohttp cryptography opuslib` 补装
+
 ## 2026-08-13 — 修正 Linux 设备枚举认知：按声卡枚举，数字/模拟双麦克风皆真实
 
 - **修正设备枚举认知：数字/模拟双麦克风皆真实**：数字麦（Digital Microphone/Mic1）
