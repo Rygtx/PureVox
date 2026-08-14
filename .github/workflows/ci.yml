@@ -23,8 +23,12 @@ jobs:
             # libssl-dev: the AppImage job compiles the embedded CPython from the
             # packages/cpython submodule; without ssl headers that interpreter's
             # pip has no networking, so bootstrap_python38.sh fails.
+            # libffi-dev: the embedded CPython needs libffi to build the `_ctypes`
+            # module (aimic.py/pvpipe.py ctypes bindings depend on it). Without it
+            # the compiled interpreter has no _ctypes and the GUI crashes on import
+            # ctypes (ModuleNotFoundError: No module named '_ctypes').
             # file: appimagetool requires the `file` command at packaging time.
-            sysdeps: "build-essential make pkg-config libpipewire-0.3-dev libasound2-dev libssl-dev python3 python3-pip python3-setuptools imagemagick wget git zlib1g-dev file"
+            sysdeps: "build-essential make pkg-config libpipewire-0.3-dev libasound2-dev libssl-dev libffi-dev python3 python3-pip python3-setuptools imagemagick wget git zlib1g-dev file"
             pkg_deb: true
             pkg_appimage: true
           - distro: fedora
