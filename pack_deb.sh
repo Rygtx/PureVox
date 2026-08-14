@@ -73,6 +73,12 @@ echo "==> 拷贝捆绑的 onnxruntime 1.11.1 动态库（aimic 链接 libonnxrun
 cp packages/onnxruntime-linux-x64-1.11.1/lib/libonnxruntime.so* "$ROOT/opt/purevox/"
 
 echo "==> 捆绑内嵌 Python 3.8（packages/python38，含 PySide6 等全部 Python 依赖）"
+# 与 pack_appimage.sh 一致：若内嵌 python 未编译则先引导（幂等）。CI 的
+# ubuntu job 需先拉 packages/cpython 子模块（workflow 已处理）且装有 libssl-dev，
+# 否则 bootstrap 编译出的解释器无 ssl、pip 无网络。
+if [ ! -x "packages/python38/bin/python3" ]; then
+    ./bootstrap_python38.sh
+fi
 cp -a packages/python38 "$ROOT/opt/purevox/python38"
 # 内嵌 python 3.8.20 由 AOSC GCC 15 编译，链接 libcrypt.so.2；较新发行版
 # （如 Debian 13）只有 libcrypt.so.1（libxcrypt，ABI 兼容），补软链使其可加载。
