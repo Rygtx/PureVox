@@ -33,6 +33,12 @@ echo cancellation, for both the local microphone and remote network streaming.
 > API-Set DLLs that onnxruntime imports (prebuilt x64 forwarding stubs, kept in
 > `packages/onnxruntime-win-x64-1.11.1/lib/`) and the MSVC runtime into the bundle, so the EXE
 > runs on Win7 out of the box (do not regress; see AGENTS.md for the measured findings).
+>
+> > **⚠️ Win7 support has ended**: `v2026.08.14.1643` is the **last version supporting
+> > Windows 7**. Later versions will no longer guarantee Win7 compatibility. To keep
+> > using it on Win7, download the Windows release asset from
+> > [this tag](https://github.com/a2heng/PureVox/releases/tag/v2026.08.14.1643)
+> > (`PureVox-Windows-x64-2026-08-14-1643-release.zip`) and disable updates.
 
 ## Quick start
 

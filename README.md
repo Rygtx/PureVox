@@ -31,6 +31,11 @@
 > Windows 10+）；`build_win.ps1` 打包时会从仓库固化的 x64 转发 stub 补入 onnxruntime
 > 依赖的 Win10 专属 API-Set DLL（`packages/onnxruntime-win-x64-1.11.1/lib/`），并携带
 > MSVC 运行库，使产物在 Win7 开箱即用（勿回退，实测见 AGENTS.md）。
+>
+> > **⚠️ Win7 支持已终结**：`v2026.08.14.1643` 是**最后支持 Windows 7 的版本**。
+> > 后续版本将不再保证 Win7 可用，如需继续在 Win7 上使用，请下载
+> > [此 tag 的 Windows release 产物](https://github.com/a2heng/PureVox/releases/tag/v2026.08.14.1643)
+> > （`PureVox-Windows-x64-2026-08-14-1643-release.zip`）并停用更新。
 
 ## 快速开始
 
