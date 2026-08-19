@@ -1,7 +1,7 @@
 #!/bin/bash
 # PureVox - AppImage packaging script (universal Linux)
 # Output: dist/PureVox-Linux-x64-<yyyy-MM-dd-HHmm>-release.AppImage
-# Bundles the embedded Python 3.8 (packages/python38) + app + bundled onnxruntime.
+# Bundles the embedded Python 3.13 (packages/python313) + app + bundled onnxruntime.
 # Requires: gcc, pkg-config, libpipewire-0.3-devel, python3 (build), wget (appimagetool)
 set -e
 cd "$(dirname "$0")"
@@ -20,9 +20,9 @@ STAGE="${TMPDIR:-/tmp}/purevox_appimage"
 APPDIR="$STAGE/AppDir"
 APP_NAME="purevox"
 
-echo "==> ensure embedded Python 3.8 (packages/python38)"
-if [ ! -x "packages/python38/bin/python3" ]; then
-    ./bootstrap_python38.sh
+echo "==> ensure embedded Python 3.13 (packages/python313)"
+if [ ! -x "packages/python313/bin/python3" ]; then
+    ./bootstrap_python313.sh
 fi
 
 echo "==> build pure C shared libraries"
@@ -44,7 +44,7 @@ for f in \
     cp "$f" "$APPDIR/usr/lib/purevox/"
 done
 cp libaimic.so libpvpipe.so libpvalsa.so "$APPDIR/usr/lib/purevox/"
-cp packages/onnxruntime-linux-x64-1.11.1/lib/libonnxruntime.so* "$APPDIR/usr/lib/purevox/"
+cp packages/onnxruntime-linux-x64-1.22.0/lib/libonnxruntime.so* "$APPDIR/usr/lib/purevox/"
 cp -r html "$APPDIR/usr/lib/purevox/"
 mkdir -p "$APPDIR/usr/lib/purevox/server"
 cp server/*.py "$APPDIR/usr/lib/purevox/server/"
@@ -57,11 +57,11 @@ cat > "$APPDIR/usr/lib/purevox/_build_version.py" <<EOF
 BUILD_DATE = "$DATE"
 EOF
 
-echo "==> bundle embedded Python 3.8"
-cp -a packages/python38 "$APPDIR/usr/python38"
+echo "==> bundle embedded Python 3.13"
+cp -a packages/python313 "$APPDIR/usr/python313"
 
 echo "==> slim PySide6 (same closure as deb, shared script)"
-bash scripts/slim_pyside6.sh "$APPDIR/usr/python38/lib/python3.8/site-packages/PySide6"
+bash scripts/slim_pyside6.sh "$APPDIR/usr/python313/lib/python3.13/site-packages/PySide6"
 
 echo "==> desktop entry (AppImage needs it at AppDir root + usr/share/applications)"
 mkdir -p "$APPDIR/usr/share/applications"
@@ -94,11 +94,11 @@ echo "==> AppRun launcher"
 cat > "$APPDIR/AppRun" <<'EOF'
 #!/bin/sh
 HERE="$(dirname "$(readlink -f "$0")")"
-export PYTHONHOME="$HERE/usr/python38"
+export PYTHONHOME="$HERE/usr/python313"
 export LD_LIBRARY_PATH="$HERE/usr/lib/purevox${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
-export PATH="$HERE/usr/python38/bin:$PATH"
+export PATH="$HERE/usr/python313/bin:$PATH"
 cd "$HERE/usr/lib/purevox" || exit 1
-exec "$HERE/usr/python38/bin/python3" run_pyside6.py "$@"
+exec "$HERE/usr/python313/bin/python3" run_pyside6.py "$@"
 EOF
 chmod +x "$APPDIR/AppRun"
 

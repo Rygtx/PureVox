@@ -187,7 +187,7 @@ static int cpu_supports_avx(void) {
 /* printed NPU fallback note once per process, not once per model */
 static int g_npu_warned = 0;
 
-/* TODO(NPU): the bundled onnxruntime 1.11.1 is a pure-CPU build, so the NPU
+/* TODO(NPU): the bundled onnxruntime 1.22.0 is a pure-CPU build, so the NPU
  * (DirectML / CoreML / OpenVINO) branch below is dead code kept on purpose as
  * the reference path for adding an NPU execution provider later -- when that
  * happens, build a runtime with the EP compiled in and re-test this branch.
@@ -283,7 +283,7 @@ static int onnx_model_open(OnnxModel* m, const char* name, const char* path,
         m->input_shapes[i] = (int64_t*)calloc(nd ? nd : 1, sizeof(int64_t));
         if (nd > 0) m->api->GetDimensions(tinfo, m->input_shapes[i], nd);
         /* CastTypeInfoToTensorInfo result is owned by the type info; do NOT
-         * ReleaseTensorTypeAndShapeInfo separately (1.11.1 double-free crash) */
+         * ReleaseTensorTypeAndShapeInfo separately (1.22.0 keeps same ownership) */
         m->api->ReleaseTypeInfo(typeinfo);
     }
     for (size_t i = 0; i < no; ++i) {

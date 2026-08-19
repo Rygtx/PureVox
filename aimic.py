@@ -22,7 +22,7 @@
 #   AudioProcessor / TseProcessor / AecProcessor / Resampler / RingBuffer
 #   + compute_spectrum / spectrum_warmup / SRC_SINC_FASTEST / SPECTRUM_NUM_BANDS
 #
-# 加载策略：Linux 下先按发行包路径预加载捆绑的 libonnxruntime.so（1.11.1），
+# 加载策略：Linux 下先按发行包路径预加载捆绑的 libonnxruntime.so（1.22.0），
 # 再加载 libaimic.so（同目录优先，其次 LD_LIBRARY_PATH）。
 
 import ctypes as _ct
@@ -60,9 +60,9 @@ def _preload_onnxruntime():
     else:
         prefix, pattern = "libonnxruntime", "libonnxruntime.dylib"
     if IS_WIN:
-        dirs = (os.path.join(_HERE, "packages", "onnxruntime-win-x64-1.11.1", "lib"), _HERE)
+        dirs = (os.path.join(_HERE, "packages", "onnxruntime-win-x64-1.22.0", "lib"), _HERE)
     elif IS_LINUX:
-        dirs = (os.path.join(_HERE, "packages", "onnxruntime-linux-x64-1.11.1", "lib"), _HERE)
+        dirs = (os.path.join(_HERE, "packages", "onnxruntime-linux-x64-1.22.0", "lib"), _HERE)
     else:
         dirs = (_HERE,)
     for d in dirs:

@@ -2,7 +2,7 @@
 
 Windows / Linux 桌面应用 + Android 客户端：实时 AI 音频降噪 / 目标说话人提取 / 回声消除，支持本地麦克风和远程网络推流。
 
-**栈**: Python 3.8+（最低；Win7 需 3.8）+ PySide6 + 纯 C 共享库（gcc/mingw 编译，ctypes 绑定）+ ONNX Runtime（==1.11.1，模型 opset 13/14/15，均 ≤16）
+**栈**: Python 3.13+ + PySide6 + 纯 C 共享库（gcc/mingw 编译，ctypes 绑定）+ ONNX Runtime（==1.22.0，模型 opset 13/14/15，均 ≤18）
 **桌面入口**: `python run_pyside6.py`
 **Android 入口**: `android/` — Kotlin + OkHttp + Opus JNI
 
@@ -49,61 +49,30 @@ Windows / Linux 桌面应用 + Android 客户端：实时 AI 音频降噪 / 目�
 
 ## 运行 / 构建
 
-**内嵌 Python 3.8（推荐，独立于系统环境）**：本项目可自带独立 Python 3.8，
-与系统 Python（如 3.14）完全隔离。Windows 走 NuGet 下载预编译包；Linux 无预编译
-3.8 可下，源码以 **git 子模块** `packages/cpython`（CPython@v3.8.20）锁定，
-由引导脚本 out-of-tree 一次性编译。产物统一放 `packages/`。
+**内嵌 Python 3.13（推荐，独立于系统环境）**：本项目可自带独立 Python 3.13，
+与系统 Python 完全隔离。Windows 走 NuGet 下载预编译包；Linux 源码以 **git 子模块**
+`packages/cpython`（CPython@v3.13.7）锁定，由引导脚本 out-of-tree 一次性编译。
+产物统一放 `packages/`。
 
 - 克隆后先 `git submodule update --init --depth 1 packages/cpython` 拉子模块
-- `./bootstrap_python38.sh`（Linux，幂等）→ 生成自包含 `packages/python38/` + 装依赖
-- `./bootstrap_python38.ps1`（Windows）→ 生成 `packages\python38w\`（NuGet 完整版，含头文件/链接库）
-- 内嵌解释器与系统 Python 互相独立；`packages/python38*`、`.py38-src/` 不进版本库（gitignore）
+- `./bootstrap_python313.sh`（Linux，幂等）→ 生成自包含 `packages/python313/` + 装依赖
+- `./bootstrap_python313.ps1`（Windows）→ 生成 `packages\python313w\`（NuGet 完整版，含头文件/链接库）
+- 内嵌解释器与系统 Python 互相独立；`packages/python313*`、`.py313-src/` 不进版本库（gitignore）
 
 ### Windows (PowerShell)
 
 ```powershell
 chcp 65001
-# 方式一（内嵌 3.8，推荐）：
-powershell -ExecutionPolicy Bypass -File bootstrap_python38.ps1
+# 方式一（内嵌 3.13，推荐）：
+powershell -ExecutionPolicy Bypass -File bootstrap_python313.ps1
 # 方式二（系统 Python）：pip install -r requirements.txt -r requirements-win.txt
 python run_pyside6.py
-powershell -ExecutionPolicy Bypass -File build_win.ps1   # 打包产物目录 dist/PureVox/（自动用 packages\python38w\python.exe）
+powershell -ExecutionPolicy Bypass -File build_win.ps1   # 打包产物目录 dist/PureVox/（自动用 packages\python313w\python.exe）
 # 注：Windows 侧 aimic.dll 用 mingw gcc 编译（setup.py 走 CC 或 PATH 上的 gcc，
-# 链接捆绑的 onnxruntime-win-x64-1.11.1）
+# 链接捆绑的 onnxruntime-win-x64-1.22.0）
 ```
 
-### Windows 7 兼容性（实测结论，勿回退）
-
-纯 PySide6 6.1.3 包无法直接跑 Win7——Qt 6.2+ 官方仅 Win10+，6.6.x import 即报
-`DLL load failed ... 找不到指定的程序`；**PySide6==6.1.3 是最后一个支持 Win7 的版本**
-（requirements.txt 已锁死并注释原因）。另外两个 Win7 缺失项必须在打包时补：
-
-- **API-Set 转发 DLL**：捆绑的 onnxruntime.dll 还导入 `api-ms-win-core-libraryloader-l1-2-0.dll`
-  和 `api-ms-win-core-processtopology-obsolete-l1-1-0.dll`（Win8+ 的 API-Set 由内核虚拟解析，
-  Win7 与其构建机 System32 均无物理文件）。仓库在
-  `packages/onnxruntime-win-x64-1.11.1/lib/` 固化两个 **x64 转发 stub**（导出符号转发到
-  KERNEL32；生成材料见其下 `apiset/*.def`，用 mingw `x86_64-w64-mingw32-gcc -shared`
-  复现，例如 `x86_64-w64-mingw32-gcc -shared stub.c apiset/libloader.def -o
-  api-ms-win-core-libraryloader-l1-2-0.dll`）。`build_win.ps1` 打包时从仓库拷这两个
-  stub 进 `_internal`，勿改回"从构建机 System32 拷"。
-- **MSVC 运行库**：onnxruntime 依赖 MSVCP140/VCRUNTIME140 等，`build_win.ps1` 会把构建机
-  System32 的 VC runtime 拷进包，避免 Win7 需单独装 VC++ redist。
-- **打包瘦身勿删 `Qt6Qml.dll`/`Qt6Quick.dll`**：PySide6 核心库 `pyside6.abi3.dll`（所有
-  Qt*.pyd 都链接它）**硬依赖 `Qt6Qml.dll`**，`build_win.ps1` 第 4 步若删除它，EXE 在 Win7
-  启动即报 `DLL load failed while importing QtWidgets: 找不到指定的模块`（2026-08-09 实机
-  pefile 分析确认；与 pyinstaller/hooks-contrib 版本无关）。瘦身只允许删 import 闭包外的
-  `Qt6Pdf.dll`/`Qt6DataVisualization.dll`。
-
-注意：四件套 wheel 名含 `abi3`；在线安装 PySide6==6.1.3 时会自动带对版本。
-
-**Qt 6.5+ API 禁忌（Win7 实测 2026-08-09）**：`QStyleHints::colorScheme()` 与
-`Qt.ColorScheme` 是 Qt 6.5+ 才有，Win7 锁定的 PySide6 6.1.3 上没有——启动即抛
-`AttributeError: 'QStyleHints' object has no attribute 'colorScheme'`。深色判定一律用
-**调色板亮度**（`app.palette().window().color().lightness() < 128`，Qt 6.1 即可用），
-已固化在 `theme_colors.is_dark_current()`（2014 版），UI 主题同步 `_sync_theme_ui`
-也走它。新增代码禁写 `styleHints().colorScheme()`。
-
-**`.ps1` 脚本必须纯 ASCII（英文）**：`build_win.ps1` / `bootstrap_python38.ps1`
+**`.ps1` 脚本必须纯 ASCII（英文）**：`build_win.ps1` / `bootstrap_python313.ps1`
 不含中文/非 ASCII/BOM。Windows PowerShell 5.1 对无 BOM 的 UTF-8 脚本按 ANSI
 (cp1252/GBK) 误读导致语法错误（`chcp 65001` 只在本机掩盖）；脚本须引用中文
 文件名时用通配符（`*.html`）匹配，不写字面量。
@@ -114,16 +83,16 @@ powershell -ExecutionPolicy Bypass -File build_win.ps1   # 打包产物目录 di
 
 ```bash
 sudo oma install -y gcc pkgconf pipewire libpipewire-0.3-devel
-# 内嵌 3.8（推荐）：
-./bootstrap_python38.sh
-./py38 setup.py build_ext --inplace --force   # 产出 libaimic.so + libpvpipe.so
-./py38 run_pyside6.py
+# 内嵌 3.13（推荐）：
+./bootstrap_python313.sh
+./py313 setup.py build_ext --inplace --force   # 产出 libaimic.so + libpvpipe.so
+./py313 run_pyside6.py
 bash pack_deb.sh                              # deb → dist/PureVox-Linux-x64-<date>-release.deb
 bash pack_rpm.sh                              # rpm → dist/PureVox-Linux-x64-<date>-release.rpm
 bash pack_appimage.sh                         # AppImage → dist/PureVox-Linux-x64-<date>-release.AppImage
 ```
 
-deb 布局：`/opt/purevox/` 放全部源码+libaimic.so/libpvpipe.so+模型+html+捆绑的 `libonnxruntime.so*`（1.11.1）；
+deb 布局：`/opt/purevox/` 放全部源码+libaimic.so/libpvpipe.so+模型+html+捆绑的 `libonnxruntime.so*`（1.22.0）；
 `/usr/bin/purevox` 启动脚本（先导出 `LD_LIBRARY_PATH=/opt/purevox` 再 exec）。
 `/usr/share/applications/purevox.desktop` + hicolor 图标。Depends 按 AOSC 包名（无 onnxruntime，
 PT 已捆绑）。`server/opus.dll`
@@ -148,11 +117,11 @@ cd android
 - **触发方式：push tag 触发 CI 构建 + 自动发 release 两件事**，分支 push 不触发（保持日常快速提交零成本）；需验证分支时可 `workflow_dispatch` 手动跑（仅触发三构建 job，不触发 release）。
 - **tag 命名规则**：`v<yyyy.MM.dd.HHmm>`（如 `v2026.08.10.1517`）。tag 名同时定义产物体内版本（`v` 去掉即 `yyyy.MM.dd.HHmm`），所有 job 的产物时间戳/版本都从 `${GITHUB_REF_NAME}` 推导，避免各 job 并发时刻漂移。回复发版即 `git tag v<yyyy.MM.dd.HHmm> && git push origin <tag>`。
 - `linux` job：容器矩阵只留 3 项，产出通用安装包——
-  - `ubuntu-22.04`：gcc 编纯 C 库 + import 冒烟 + `pack_deb.sh` 出 deb + `pack_appimage.sh` 出 AppImage（best-effort，捆绑内嵌 python38）
+  - `ubuntu-22.04`：gcc 编纯 C 库 + import 冒烟 + `pack_deb.sh` 出 deb + `pack_appimage.sh` 出 AppImage（best-effort，捆绑内嵌 python313）
   - `fedora`：编库 + 冒烟 + `pack_rpm.sh` 出 rpm
-  - `python3.8`：官方 `python:3.8-bullseye`，验证纯 C 库在最低 Python 3.8 可编译、可 ctypes 装载
-  - onnxruntime 用仓库内捆绑的预编译 1.11.1 SDK，**不 pip 装 onnxruntime**
-- `windows` job：windows-latest + Python 3.8 + msys2/mingw gcc 编 `aimic.dll` + 语法/导入冒烟；`build_win.ps1`（PyInstaller one-folder）出 `dist/PureVox/`，CI 上传该目录（`actions/upload-artifact` 会自动压缩为 zip，命名 `PureVox-Windows-x64-<yyyy-MM-dd-HHmm>-release`）
+  - `python3.13`：官方 `python:3.13-bullseye`，验证纯 C 库在 Python 3.13 可编译、可 ctypes 装载
+  - onnxruntime 用仓库内捆绑的预编译 1.22.0 SDK，**不 pip 装 onnxruntime**
+- `windows` job：windows-latest + Python 3.13 + msys2/mingw gcc 编 `aimic.dll` + 语法/导入冒烟；`build_win.ps1`（PyInstaller one-folder）出 `dist/PureVox/`，CI 上传该目录（`actions/upload-artifact` 会自动压缩为 zip，命名 `PureVox-Windows-x64-<yyyy-MM-dd-HHmm>-release`）
 - `android` job：ubuntu-latest 编 debug APK（JDK17 + SDK 34 + NDK r27）；下载 opus 源码到 `android/opus-src/`，产物改名 `PureVox-Android-arm64-<yyyy-MM-dd-HHmm>-debug.apk`
 - `release` job：`needs` 三构建 job + `if: startsWith(github.ref,'refs/tags/')`，tag push 时下载全部产物，Windows 目录重打成 zip（`zip -9`），`gh release create` 把 deb / rpm / AppImage / Windows zip / APK 全部 attach
 - **产物命名统一**：`PureVox-<平台>-<架构>-<yyyy-MM-dd-HHmm>-<release|debug>.<ext>`（Windows 上传目录由 CI 自动压缩 / Linux deb / rpm / AppImage 一律 release，Android 为 debug）。文件名时间戳 `yyyy-MM-dd-HHmm`；产物体内版本字段 = `yyyy.MM.dd.HHmm`（如 `2026.08.10.1517`，deb control / rpm / setup.py 一致，**由 tag 名 `v<yyyy.MM.dd.HHmm>` 推导**，避免并发 job 各自 `date` 导致产物版本不一）。
@@ -163,13 +132,13 @@ cd android
     独立 `.py` 文件，属正常），运行时 import 正常、窗口标题带日期。勿再加 `--add-data="_build_version.py;."`
     ——PYZ 里没有它、且会被 PyInstaller 以模块方式收集，加 add-data 只会让文件重复打包。验证方法：
     启动 `dist\PureVox\PureVox.exe` 后抓窗口标题（Win32 `EnumWindows` + `GetWindowText` 按 PID 过滤）。
-- **onnxruntime 预编译 SDK（双平台统一 1.11.1）**：Windows 用捆绑 `packages/onnxruntime-win-x64-1.11.1`；Linux/macOS 默认捆绑 `packages/onnxruntime-linux-x64-1.11.1`（`include/`+`lib/`）。setup.py 仍支持 `ORT_INCLUDE_DIR` / `ORT_LIB_DIR` 环境变量覆盖（CI/pip 场景，wheel 内 .so 带版本号后缀，需先建 `libonnxruntime.so` 软链接再 `-lonnxruntime`，运行时 `LD_LIBRARY_PATH` 指向 capi 目录）
+- **onnxruntime 预编译 SDK（双平台统一 1.22.0）**：Windows 用捆绑 `packages/onnxruntime-win-x64-1.22.0`；Linux/macOS 默认捆绑 `packages/onnxruntime-linux-x64-1.22.0`（`include/`+`lib/`）。setup.py 仍支持 `ORT_INCLUDE_DIR` / `ORT_LIB_DIR` 环境变量覆盖（CI/pip 场景，wheel 内 .so 带版本号后缀，需先建 `libonnxruntime.so` 软链接再 `-lonnxruntime`，运行时 `LD_LIBRARY_PATH` 指向 capi 目录）
 - **Linux job 按发行版分开是刻意设计，勿合并成一个 job**（2026-08-10 决策）：deb 在
   Ubuntu、rpm 在 Fedora 产出，是因为 rpm 打包须依赖 `rpmbuild` 与真实 Fedora 包名解析
   （`pipewire-devel` 等），移到 Ubuntu 上构建可靠性下降；分开还有并行收益与故障隔离
   （一个发行版坏不掉其他产物）。AppImage 在 ubuntu job 内（best-effort，
-  `continue-on-error: true`），捆绑内嵌 python38——该 job 需先装 `libssl-dev`
-  （否则子模块编译出的 CPython 无 ssl 模块，pip 无网络，`bootstrap_python38.sh` 失败）
+   `continue-on-error: true`），捆绑内嵌 python313——该 job 需先装 `libssl-dev`
+  （否则子模块编译出的 CPython 无 ssl 模块，pip 无网络，`bootstrap_python313.sh` 失败）
   与 `file`（appimagetool 打包必需），并确保 `PyAudio` 不在 Linux 依赖里
   （已移到 `requirements-win.txt`，否则编译缺 `portaudio.h` 让 AppImage 静默失败）。
 - **CI 踩坑（实测细节补充，避免重踩）**：
@@ -367,11 +336,11 @@ AEC far-end：独立输入流 `PureVox-far`（`stream.capture.sink=tap 扬声器
    CPU（CPU 支持 AVX 报 `AIMIC_BACKEND_AVX`，否则报 `AIMIC_BACKEND_SSE`）。
    实际生效情况由 `audio_processor_backend_effective/reason` 返回（原因码
    `AIMIC_BACKEND_REASON_*`），UI 启动日志据此打印「推理后端: …」。捆绑的
-   onnxruntime 1.11.1 为纯 CPU 构建（SSE 限制配置项已移除、CPU EP 不读会话配置，
-   实测确认）。「推理后端: AVX/SSE」是**纯报告**：仅反映 `cpu_supports_avx()`
-   的 CPUID 探测结果，与 MLAS 运行时内核选择一致（详见 3b），不参与任何行为
-   决策——真正的内核选择由 MLAS 在运行时按 CPUID 完成，与本库无关。NPU 分支
-   是**有意保留的死代码示例**（捆绑 onnxruntime 1.11.1 纯 CPU 构建，DirectML/
+    onnxruntime 1.22.0 为纯 CPU 构建（SSE 限制配置项已移除、CPU EP 不读会话配置，
+    实测确认）。「推理后端: AVX/SSE」是**纯报告**：仅反映 `cpu_supports_avx()`
+    的 CPUID 探测结果，与 MLAS 运行时内核选择一致（详见 3b），不参与任何行为
+    决策——真正的内核选择由 MLAS 在运行时按 CPUID 完成，与本库无关。NPU 分支
+    是**有意保留的死代码示例**（捆绑 onnxruntime 1.22.0 纯 CPU 构建，DirectML/
    CoreML/OpenVINO EP 不可用，`SessionOptionsAppendExecutionProvider_*` 必失败），
    以后要加 NPU 就复用这条路径（编译含 EP 的运行时再试），见 `aimic.c`
    `onnx_apply_backend` 的 TODO(NPU) 注释。

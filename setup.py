@@ -17,13 +17,13 @@
 #
 # 纯 gcc 构建（无 C++、无 pybind11）：
 #   python setup.py build_ext --inplace --force
-# 产出  libaimic.so   （aimic.c + pffft + libsamplerate，链接捆绑 onnxruntime 1.11.1）
+# 产出  libaimic.so   （aimic.c + pffft + libsamplerate，链接捆绑 onnxruntime 1.22.0）
 #       libpvpipe.so  （pipewire_client.c，链接系统 libpipewire-0.3）
 #       libpvalsa.so  （alsa_client.c，链接系统 libasound）
 # Python 侧由 aimic.py / pvpipe.py / pvalsa.py 用 ctypes 加载。
 #
 # onnxruntime 头/库目录环境变量覆盖（CI/pip 场景）：
-#   ORT_INCLUDE_DIR / ORT_LIB_DIR（默认 packages/onnxruntime-linux-x64-1.11.1）
+#   ORT_INCLUDE_DIR / ORT_LIB_DIR（默认 packages/onnxruntime-linux-x64-1.22.0）
 
 import datetime
 import os
@@ -95,7 +95,7 @@ class BuildExt(_build_ext):
         onnxruntime.dll 由 aimic.py 运行期预加载（_preload_onnxruntime）。
         """
         cc = os.environ.get("CC", "gcc")
-        ort_inc, ort_lib = self._aimic_ort_paths("onnxruntime-win-x64-1.11.1")
+        ort_inc, ort_lib = self._aimic_ort_paths("onnxruntime-win-x64-1.22.0")
         cmd = [
             cc, "-O2", "-shared", "-static-libgcc", "-std=gnu11",
             "-DHAVE_CONFIG_H",
@@ -113,7 +113,7 @@ class BuildExt(_build_ext):
 
     def _build_aimic_linux(self):
         cc = os.environ.get("CC", "gcc")
-        ort_inc, ort_lib = self._aimic_ort_paths("onnxruntime-linux-x64-1.11.1")
+        ort_inc, ort_lib = self._aimic_ort_paths("onnxruntime-linux-x64-1.22.0")
         cmd = [
             cc, "-O2", "-fPIC", "-std=gnu11", "-DHAVE_CONFIG_H",
             "-I" + _abs("packages", "pffft"),

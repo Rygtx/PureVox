@@ -294,8 +294,8 @@ _LINUX_BODY = """
 <ol>
 <li>安装包：按发布页下载 deb（Debian/Ubuntu 系）、rpm（Fedora 系）或 AppImage，
    安装后从桌面/应用菜单启动，或命令行执行 <code>purevox</code>；</li>
-<li>源码运行：<code>./bootstrap_python38.sh</code> 准备内嵌 Python 3.8 后，
-   <code>./py38 run_pyside6.py</code> 启动。</li>
+<li>源码运行：<code>./bootstrap_python313.sh</code> 准备内嵌 Python 3.13 后，
+   <code>./py313 run_pyside6.py</code> 启动。</li>
 </ol>
 
 <h2>第 1 步：选择设备</h2>
@@ -360,6 +360,12 @@ AGC、VAD，31 段均衡器在菜单「设置 → 均衡器」打开。</p>
 # ── 更新日志（中文，唯一维护位置：发版时在顶部追加）──
 
 CHANGELOG_TEXT = """# 更新日志
+
+## 2026-08-15 — 升级至 Python 3.13 + ONNX Runtime 1.22
+
+- **Python 3.8 → 3.13**：内嵌 Python 迁移至 3.13.7（`bootstrap_python313.sh/.ps1` + `py313` 启动器，`packages/python313*` / `.py313-src`），`--with-ensurepip` 编译，Win7 支持终止（最后 Win7 版为 v2026.08.14.1643）
+- **ONNX Runtime 1.11.1 → 1.22.0**：Linux/Windows 捆绑包同步升级至 1.22.0（`packages/onnxruntime-*-1.22.0`），`setup.py` / `aimic.py` / 打包脚本路径同步更新，CI 容器 `python:3.13-bullseye` 验证
+- **PySide6 解锁**：`PySide6==6.1.3` 锁死移除，改为 `PySide6>=6.8`（Python 3.13 需新版 Qt），cryptography 锁 42.0.8（Win7/py<3.9）同步移除
 
 ## 2026-08-14 — 修复 EQ 预设/插槽按钮点击无反应（PySide6 6.1.3 传参 bug）
 

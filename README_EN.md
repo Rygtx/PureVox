@@ -23,31 +23,18 @@ echo cancellation, for both the local microphone and remote network streaming.
 
 | Platform | Requirements |
 |---|---|
-| Windows | Windows 7/10/11, Python 3.8+ (see note below for Win7) |
-| Linux | Python 3.8+, PipeWire (native libpipewire audio; virtual mic is a null-sink) |
+| Windows | Windows 10/11, Python 3.13+ |
+| Linux | Python 3.13+, PipeWire (native libpipewire audio; virtual mic is a null-sink) |
 
-> **Windows 7**: Python 3.8 is the last Python supporting Win7; this project's source and its
-> dependencies stay Python 3.8 compatible (model opsets 13/14/15, all ≤16; onnxruntime pinned
-> to 1.11.1). The GUI stack is **pinned to `PySide6==6.1.3`** — the last PySide6 that runs on
-> Win7 (Qt 6.2+ officially targets Windows 10+ only). `build_win.ps1` copies the Win10-only
-> API-Set DLLs that onnxruntime imports (prebuilt x64 forwarding stubs, kept in
-> `packages/onnxruntime-win-x64-1.11.1/lib/`) and the MSVC runtime into the bundle, so the EXE
-> runs on Win7 out of the box (do not regress; see AGENTS.md for the measured findings).
->
-> > **⚠️ Win7 support has ended**: `v2026.08.14.1643` is the **last version supporting
-> > Windows 7**. Later versions will no longer guarantee Win7 compatibility. To keep
-> > using it on Win7, download the Windows release asset from
-> > [this tag](https://github.com/a2heng/PureVox/releases/tag/v2026.08.14.1643)
-> > (`PureVox-Windows-x64-2026-08-14-1643-release.zip`) and disable updates.
+> **⚠️ Windows 7 no longer supported**: Python 3.13 drops Win7; `v2026.08.14.1643` is the last Win7-compatible tag — download its [Windows asset](https://github.com/a2heng/PureVox/releases/tag/v2026.08.14.1643) and stay on that tag.
 
 ## Quick start
 
-### Embedded Python 3.8 (recommended, independent of the system)
+### Embedded Python 3.13 (recommended, independent of the system)
 
-The project can bundle its own Python 3.8, fully isolated from the system Python
-(e.g. 3.14). **Windows** downloads a prebuilt package (NuGet); **Linux** has no
-prebuilt 3.8 downloadable, so the CPython source is vendored as a **git submodule**
-`packages/cpython` (CPython@v3.8.20, shallow) and built once by the bootstrap
+The project can bundle its own Python 3.13, fully isolated from the system Python.
+**Windows** downloads a prebuilt package (NuGet); **Linux** CPython source is vendored as a **git submodule**
+`packages/cpython` (CPython@v3.13.7, shallow) and built once by the bootstrap
 (out-of-tree, without dirtying the submodule). Everything lives under `packages/`.
 
 ```bash
@@ -55,16 +42,16 @@ prebuilt 3.8 downloadable, so the CPython source is vendored as a **git submodul
 git submodule update --init --depth 1 packages/cpython
 
 # Linux (just run the bootstrap; it compiles)
-./bootstrap_python38.sh                     # -> packages/python38 (self-contained) + deps
-./py38 run_pyside6.py                       # run
-./py38 setup.py build_ext --inplace --force # build libaimic.so + libpvpipe.so (pure C, gcc)
+./bootstrap_python313.sh                     # -> packages/python313 (self-contained) + deps
+./py313 run_pyside6.py                       # run
+./py313 setup.py build_ext --inplace --force # build libaimic.so + libpvpipe.so (pure C, gcc)
 
 # Windows (PowerShell, NuGet prebuilt download)
-powershell -ExecutionPolicy Bypass -File bootstrap_python38.ps1   # -> packages\python38w
-# build_win.ps1 then automatically uses packages\python38w\python.exe
+powershell -ExecutionPolicy Bypass -File bootstrap_python313.ps1   # -> packages\python313w
+# build_win.ps1 then automatically uses packages\python313w\python.exe
 ```
 
-Alternatively, use a system Python 3.8+:
+Alternatively, use a system Python 3.13+:
 
 ```bash
 # On Windows append `-r requirements-win.txt`
@@ -79,10 +66,10 @@ python run_pyside6.py
 # System deps (e.g. AOSC)
 sudo oma install -y gcc pkgconf pipewire libpipewire-0.3-devel
 
-# Recommended: embedded 3.8 (see above)
-./bootstrap_python38.sh
-./py38 setup.py build_ext --inplace --force   # build pure C shared libs (libaimic.so + libpvpipe.so)
-./py38 run_pyside6.py
+# Recommended: embedded 3.13 (see above)
+./bootstrap_python313.sh
+./py313 setup.py build_ext --inplace --force   # build pure C shared libs (libaimic.so + libpvpipe.so)
+./py313 run_pyside6.py
 
 # Or run directly with system python3:
 pip install --user -r requirements.txt
@@ -178,9 +165,9 @@ html/                     # browser streaming front-end (AudioWorklet + Opus WAS
 android/                  # Android client (Kotlin + OkHttp + Opus JNI)
 pack_deb.sh               # Linux deb packaging
 pack_rpm.sh               # Linux rpm packaging (Fedora/RHEL)
-pack_appimage.sh          # Linux AppImage packaging (bundles embedded Python 3.8)
+pack_appimage.sh          # Linux AppImage packaging (bundles embedded Python 3.13)
 build_win.ps1             # Windows packaging (aimic.dll + PyInstaller bundle dir)
-bootstrap_python38.sh / .ps1  # embedded Python 3.8 bootstrap (Linux builds from submodule, Windows fetches NuGet)
+bootstrap_python313.sh / .ps1  # embedded Python 3.13 bootstrap (Linux builds from submodule, Windows fetches NuGet)
 setup.py                  # pure C shared library build (gcc, produces libaimic.so + libpvpipe.so / aimic.dll)
 ```
 

@@ -57,7 +57,7 @@ class SpeakerCaptureWin:
     AEC_FAR_SR = 48000  # AEC model requires far-end (speaker loopback) at 48kHz
 
     def __init__(self, on_device_changed: Optional[Callable[[int], None]] = None):
-        self._buffer = RingBuffer(HOP_LENGTH * 2)  # 2帧缓冲
+        self._buffer = RingBuffer(HOP_LENGTH * 16)  # ~340ms 缓冲，吸收 loopback 延迟抖动
         self._active = False
         self._lock = threading.Lock()
         self._capture_thread: Optional[threading.Thread] = None
@@ -181,7 +181,7 @@ class SpeakerCaptureWin:
             self._dev_sr = int(wfx.nSamplesPerSec)
             self._dev_name = dev_name
             _module_log(f"[AEC] 扬声器采集: {dev_name} ({self._dev_sr}Hz, ch={wfx.nChannels})")
-            self._buffer = RingBuffer(HOP_LENGTH * 2)
+            self._buffer = RingBuffer(HOP_LENGTH * 16)
 
             # 6. Initialize with AUDCLNT_STREAMFLAGS_LOOPBACK
             REFERENCE_TIME = 100000  # 10ms buffer
@@ -578,4 +578,4 @@ class SpeakerCaptureWin:
 
     def flush(self) -> None:
         """清空缓冲区。"""
-        self._buffer = RingBuffer(HOP_LENGTH * 2)
+        self._buffer = RingBuffer(HOP_LENGTH * 16)

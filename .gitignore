@@ -14,12 +14,12 @@
 /dist
 /config.json
 
-# 内嵌 Python 3.8（bootstrap_python38.sh/.ps1 生成，独立于系统环境，放 packages/ 下）
-/packages/python38/
+# 内嵌 Python 3.13（bootstrap_python313.sh/.ps1 生成，独立于系统环境，放 packages/ 下）
+/packages/python313/
 # Windows：NuGet 下载的预编译包
-/packages/python38w/
+/packages/python313w/
 # Linux 构建缓存（out-of-tree 编译树）
-/.py38-src/
+/.py313-src/
 
 # Compiled binaries
 *.exp
@@ -29,9 +29,9 @@
 *.so
 *.dylib
 *.dll
-# 捆绑的预编译 onnxruntime 1.11.1 SDK（Windows DLL / Linux .so）是构建、打包与运行时必需的，保留提交
-!packages/onnxruntime-win-x64-1.11.1/lib/*.dll
-!packages/onnxruntime-linux-x64-1.11.1/lib/*.so*
+# 捆绑的预编译 onnxruntime 1.22.0 SDK（Windows DLL / Linux .so）是构建、打包与运行时必需的，保留提交
+!packages/onnxruntime-win-x64-1.22.0/lib/*.dll
+!packages/onnxruntime-linux-x64-1.22.0/lib/*.so*
 
 # Third-party runtime components (not part of the source tree; see README)
 tools/VBCABLE_Driver_Pack45.zip

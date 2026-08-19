@@ -50,8 +50,8 @@ cp "libaimic.so" "$ROOT/opt/purevox/"
 cp "libpvpipe.so" "$ROOT/opt/purevox/"
 cp "libpvalsa.so" "$ROOT/opt/purevox/"
 
-echo "==> bundle onnxruntime 1.11.1 (aimic links libonnxruntime.so.1.11.1)"
-cp packages/onnxruntime-linux-x64-1.11.1/lib/libonnxruntime.so* "$ROOT/opt/purevox/"
+echo "==> bundle onnxruntime 1.22.0 (aimic links libonnxruntime.so.1.22.0)"
+cp packages/onnxruntime-linux-x64-1.22.0/lib/libonnxruntime.so* "$ROOT/opt/purevox/"
 
 echo "==> copy html/ server/ pvplatform/"
 cp -r html "$ROOT/opt/purevox/"

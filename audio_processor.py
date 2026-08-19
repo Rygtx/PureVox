@@ -444,6 +444,8 @@ class AudioThread(threading.Thread):
         self._aec_enabled: bool = False
         self._speaker_capture: Optional[SpeakerCapture] = None
         self._aec_far_sink: str = ""  # AEC far 端手动选择的扬声器 sink（node.name）
+        self._aec_warmup_frames: int = 0  # AEC 启动预填充计数器，>0 时喂静音积累远端缓冲
+        self._aec_far_gain: float = 0.5623  # -5dB 固定衰减，防止远端回声过强
 
     def set_pw_ports(self, input_name: str, output_name: str,
                      monitor_name: str = "") -> None:
@@ -535,6 +537,7 @@ class AudioThread(threading.Thread):
                 self.processor.set_aec_far_sample_rate(dev_sr)
                 self.processor.set_aec_enabled(True)
                 self._aec_enabled = True
+                self._aec_warmup_frames = 8  # ~170ms 预填充，让远端缓冲积累
                 return True
             except Exception as e:
                 import traceback
@@ -817,6 +820,12 @@ class AudioThread(threading.Thread):
                         far_need = int(HOP_LENGTH * self._speaker_capture.dev_sr / SAMPLE_RATE)
                         far_data = self._speaker_capture.read(far_need)
                         if far_data is not None:
+                            far_data = [x * self._aec_far_gain for x in far_data]
+                        if self._aec_warmup_frames > 0:
+                            self._aec_warmup_frames -= 1
+                            far_silence = [0.0] * far_need
+                            out = self.processor.process_with_far(chunk, far_silence)
+                        elif far_data is not None:
                             out = self.processor.process_with_far(chunk, far_data)
                         else:
                             far_silence = [0.0] * far_need
@@ -1199,13 +1208,24 @@ class AudioThread(threading.Thread):
                     if self._aec_enabled and self._use_alsa and self._alsa_bridge:
                         # ALSA：far 端从 AlsaBridge far 环读（已 48k 单声道）
                         far_data = self._alsa_bridge.read_far(HOP_LENGTH)
-                        if far_data is None:
-                            far_data = [0.0] * HOP_LENGTH
-                        out = self.processor.process_with_far(chunk, far_data)
+                        if far_data is not None:
+                            far_data = [x * self._aec_far_gain for x in far_data]
+                        if self._aec_warmup_frames > 0:
+                            self._aec_warmup_frames -= 1
+                            out = self.processor.process_with_far(chunk, [0.0] * HOP_LENGTH)
+                        else:
+                            if far_data is None:
+                                far_data = [0.0] * HOP_LENGTH
+                            out = self.processor.process_with_far(chunk, far_data)
                     elif self._aec_enabled and self._speaker_capture:
                         far_need = int(HOP_LENGTH * self._speaker_capture.dev_sr / SAMPLE_RATE)
                         far_data = self._speaker_capture.read(far_need)
                         if far_data is not None:
+                            far_data = [x * self._aec_far_gain for x in far_data]
+                        if self._aec_warmup_frames > 0:
+                            self._aec_warmup_frames -= 1
+                            out = self.processor.process_with_far(chunk, [0.0] * far_need)
+                        elif far_data is not None:
                             out = self.processor.process_with_far(chunk, far_data)
                         else:
                             out = self.processor.process_with_far(chunk, [0.0] * far_need)
