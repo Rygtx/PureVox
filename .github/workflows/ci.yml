@@ -76,6 +76,7 @@ jobs:
       - name: Build pure C shared libraries (libaimic.so + libpvpipe.so + libpvalsa.so)
         run: |
           PY="python3"; [ "${{ matrix.distro }}" = "python3.13" ] && PY="python"
+          $PY -m pip install --quiet setuptools wheel 2>/dev/null || pip install --quiet setuptools wheel || true
           LD_LIBRARY_PATH="$PWD/packages/onnxruntime-linux-x64-1.22.0/lib" \
             $PY setup.py build_ext --inplace --force
           test -f libaimic.so && test -f libpvpipe.so && test -f libpvalsa.so
