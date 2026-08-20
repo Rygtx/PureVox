@@ -4,18 +4,18 @@
 #
 # 布局（与既有版本一致）:
 #   /opt/purevox/          全部源码+.so+模型+html+pvplatform
-#   /opt/purevox/python313  内嵌 Python 3.13（packages/python313 全量拷贝，
+#   /opt/purevox/python312  内嵌 Python 3.12（packages/python312 全量拷贝，
 #                          PySide6 + zeroconf/aiohttp/cryptography/opuslib
 #                          全部 pip 装好，与系统 Python 完全隔离）
-#   /usr/bin/purevox       启动脚本 → 用内嵌 python313 跑 run_pyside6.py
+#   /usr/bin/purevox       启动脚本 → 用内嵌 python312 跑 run_pyside6.py
 #   /usr/share/applications/purevox.desktop
 #   /usr/share/icons/hicolor/256x256/apps/purevox.png
 #
 # Depends: pipewire, libasound2（原生 C 运行库，名称跨发行版较一致）；
 #          onnxruntime 捆绑预编译 1.22.0
-# Python 依赖全部捆绑进 python313（与 AppImage 同一实现路径），不依赖系统
+# Python 依赖全部捆绑进 python312（与 AppImage 同一实现路径），不依赖系统
 # python 及发行版 python 包名，故 Depends 只留原生 C 运行库，不再写任何 Python 依赖。
-# 内嵌 python 由 GCC 15 编译（3.13.7），在新发行版（如 Debian 13）
+# 内嵌 python 由 GCC 15 编译（3.12.11），在新发行版（如 Debian 13）
 # 需补 libcrypt.so.2 软链指向系统 libcrypt.so.1（libxcrypt ABI 兼容）才能加载。
 
 set -euo pipefail
@@ -70,25 +70,25 @@ cp "libpvalsa.so" "$ROOT/opt/purevox/"
 echo "==> 拷贝捆绑的 onnxruntime 1.22.0 动态库（aimic 链接 libonnxruntime.so.1.22.0）"
 cp packages/onnxruntime-linux-x64-1.22.0/lib/libonnxruntime.so* "$ROOT/opt/purevox/"
 
-echo "==> 捆绑内嵌 Python 3.13（packages/python313，含 PySide6 等全部 Python 依赖）"
+echo "==> 捆绑内嵌 Python 3.12（packages/python312，含 PySide6 等全部 Python 依赖）"
 # 与 pack_appimage.sh 一致：若内嵌 python 未编译则先引导（幂等）。CI 的
 # ubuntu job 需先拉 packages/cpython 子模块（workflow 已处理）且装有 libssl-dev，
 # 否则 bootstrap 编译出的解释器无 ssl、pip 无网络。
-if [ ! -x "packages/python313/bin/python3" ]; then
-    ./bootstrap_python313.sh
+if [ ! -x "packages/python312/bin/python3" ]; then
+    ./bootstrap_python312.sh
 fi
-cp -a packages/python313 "$ROOT/opt/purevox/python313"
-# 内嵌 python 3.13.7 由 GCC 15 编译，链接 libcrypt.so.2；较新发行版
+cp -a packages/python312 "$ROOT/opt/purevox/python312"
+# 内嵌 python 3.12.11 由 GCC 15 编译，链接 libcrypt.so.2；较新发行版
 # （如 Debian 13）只有 libcrypt.so.1（libxcrypt，ABI 兼容），补软链使其可加载。
 # 若构建机上本就存在 libcrypt.so.2 则跳过。
-if [ ! -e "$ROOT/opt/purevox/python313/lib/libcrypt.so.2" ] && \
+if [ ! -e "$ROOT/opt/purevox/python312/lib/libcrypt.so.2" ] && \
    [ -e /usr/lib/x86_64-linux-gnu/libcrypt.so.1.1.0 ]; then
     ln -s /usr/lib/x86_64-linux-gnu/libcrypt.so.1.1.0 \
-        "$ROOT/opt/purevox/python313/lib/libcrypt.so.2"
+        "$ROOT/opt/purevox/python312/lib/libcrypt.so.2"
 fi
 
 echo "==> 瘦身 PySide6（应用只用 QtWidgets/QtCore/QtGui，砍掉 qml/3D/Charts 等冗余，560M→~112M）"
-bash scripts/slim_pyside6.sh "$ROOT/opt/purevox/python313/lib/python3.13/site-packages/PySide6"
+bash scripts/slim_pyside6.sh "$ROOT/opt/purevox/python312/lib/python3.12/site-packages/PySide6"
 
 echo "==> 拷贝 html/"
 cp -r html "$ROOT/opt/purevox/"
@@ -111,14 +111,14 @@ echo "==> /usr/bin/purevox 启动脚本"
 cat > "$ROOT/usr/bin/purevox" <<'EOF'
 #!/bin/sh
 # PureVox — AI 麦克风降噪
-# 使用捆绑的内嵌 Python 3.13（/opt/purevox/python313，PySide6 等全部依赖已随包携带），
+# 使用捆绑的内嵌 Python 3.12（/opt/purevox/python312，PySide6 等全部依赖已随包携带），
 # 与系统 Python/发行版包名完全隔离。aimic.so 链捆绑的预编译 onnxruntime 提前注入
 # LD_LIBRARY_PATH；内嵌 python 的 lib 目录同理（含 libcrypt.so.2 软链）。
-export LD_LIBRARY_PATH="/opt/purevox:/opt/purevox/python313/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
-export PYTHONHOME="/opt/purevox/python313"
-export PATH="/opt/purevox/python313/bin:$PATH"
+export LD_LIBRARY_PATH="/opt/purevox:/opt/purevox/python312/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+export PYTHONHOME="/opt/purevox/python312"
+export PATH="/opt/purevox/python312/bin:$PATH"
 cd /opt/purevox || exit 1
-exec /opt/purevox/python313/bin/python3.13 /opt/purevox/run_pyside6.py "$@"
+exec /opt/purevox/python312/bin/python3.12 /opt/purevox/run_pyside6.py "$@"
 EOF
 chmod +x "$ROOT/usr/bin/purevox"
 
@@ -166,7 +166,7 @@ Description: PureVox — Real-time AI microphone noise reduction
  PureVox 实时 AI 麦克风降噪/目标提取/回声消除。
  .
  Python 运行时与全部 Python 依赖（PySide6 / zeroconf / aiohttp /
- cryptography / opuslib）已捆绑于包内 /opt/purevox/python313，与系统 Python
+ cryptography / opuslib）已捆绑于包内 /opt/purevox/python312，与系统 Python
  完全隔离，不依赖发行版 python 包名，跨发行版可安装即用。
  .
  Linux 音频基于原生 PipeWire（libpipewire），格式协商 F32 单声道 48000Hz，

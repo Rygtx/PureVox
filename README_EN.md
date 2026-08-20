@@ -23,18 +23,18 @@ echo cancellation, for both the local microphone and remote network streaming.
 
 | Platform | Requirements |
 |---|---|
-| Windows | Windows 10/11, Python 3.13+ |
-| Linux | Python 3.13+, PipeWire (native libpipewire audio; virtual mic is a null-sink) |
+| Windows | Windows 10/11, Python 3.12+ |
+| Linux | Python 3.12+, PipeWire (native libpipewire audio; virtual mic is a null-sink) |
 
 > **⚠️ Windows 7 no longer supported**: Python 3.13 drops Win7; `v2026.08.14.1643` is the last Win7-compatible tag — download its [Windows asset](https://github.com/a2heng/PureVox/releases/tag/v2026.08.14.1643) and stay on that tag.
 
 ## Quick start
 
-### Embedded Python 3.13 (recommended, independent of the system)
+### Embedded Python 3.12 (recommended, independent of the system)
 
-The project can bundle its own Python 3.13, fully isolated from the system Python.
+The project can bundle its own Python 3.12, fully isolated from the system Python.
 **Windows** downloads a prebuilt package (NuGet); **Linux** CPython source is vendored as a **git submodule**
-`packages/cpython` (CPython@v3.13.7, shallow) and built once by the bootstrap
+`packages/cpython` (CPython@v3.12.11, shallow) and built once by the bootstrap
 (out-of-tree, without dirtying the submodule). Everything lives under `packages/`.
 
 ```bash
@@ -42,16 +42,16 @@ The project can bundle its own Python 3.13, fully isolated from the system Pytho
 git submodule update --init --depth 1 packages/cpython
 
 # Linux (just run the bootstrap; it compiles)
-./bootstrap_python313.sh                     # -> packages/python313 (self-contained) + deps
-./py313 run_pyside6.py                       # run
-./py313 setup.py build_ext --inplace --force # build libaimic.so + libpvpipe.so (pure C, gcc)
+./bootstrap_python312.sh                     # -> packages/python312 (self-contained) + deps
+./py312 run_pyside6.py                       # run
+./py312 setup.py build_ext --inplace --force # build libaimic.so + libpvpipe.so (pure C, gcc)
 
 # Windows (PowerShell, NuGet prebuilt download)
-powershell -ExecutionPolicy Bypass -File bootstrap_python313.ps1   # -> packages\python313w
-# build_win.ps1 then automatically uses packages\python313w\python.exe
+powershell -ExecutionPolicy Bypass -File bootstrap_python312.ps1   # -> packages\python312w
+# build_win.ps1 then automatically uses packages\python312w\python.exe
 ```
 
-Alternatively, use a system Python 3.13+:
+Alternatively, use a system Python 3.12+:
 
 ```bash
 # On Windows append `-r requirements-win.txt`
@@ -66,10 +66,10 @@ python run_pyside6.py
 # System deps (e.g. AOSC)
 sudo oma install -y gcc pkgconf pipewire libpipewire-0.3-devel
 
-# Recommended: embedded 3.13 (see above)
-./bootstrap_python313.sh
-./py313 setup.py build_ext --inplace --force   # build pure C shared libs (libaimic.so + libpvpipe.so)
-./py313 run_pyside6.py
+# Recommended: embedded 3.12 (see above)
+./bootstrap_python312.sh
+./py312 setup.py build_ext --inplace --force   # build pure C shared libs (libaimic.so + libpvpipe.so)
+./py312 run_pyside6.py
 
 # Or run directly with system python3:
 pip install --user -r requirements.txt
@@ -111,7 +111,7 @@ to a zip automatically.
 ```bash
 bash pack_deb.sh        # produces dist/PureVox-Linux-x64-<yyyy-MM-dd-HHmm>-release.deb (source + .so + models + html)
 bash pack_rpm.sh        # produces dist/PureVox-Linux-x64-<yyyy-MM-dd-HHmm>-release.rpm (Fedora/RHEL)
-bash pack_appimage.sh   # produces dist/PureVox-Linux-x64-<yyyy-MM-dd-HHmm>-release.AppImage (bundles embedded Python 3.8)
+bash pack_appimage.sh   # produces dist/PureVox-Linux-x64-<yyyy-MM-dd-HHmm>-release.AppImage (bundles embedded Python 3.12)
 ```
 
 | Artifact | Name pattern |
@@ -165,9 +165,9 @@ html/                     # browser streaming front-end (AudioWorklet + Opus WAS
 android/                  # Android client (Kotlin + OkHttp + Opus JNI)
 pack_deb.sh               # Linux deb packaging
 pack_rpm.sh               # Linux rpm packaging (Fedora/RHEL)
-pack_appimage.sh          # Linux AppImage packaging (bundles embedded Python 3.13)
+pack_appimage.sh          # Linux AppImage packaging (bundles embedded Python 3.12)
 build_win.ps1             # Windows packaging (aimic.dll + PyInstaller bundle dir)
-bootstrap_python313.sh / .ps1  # embedded Python 3.13 bootstrap (Linux builds from submodule, Windows fetches NuGet)
+bootstrap_python312.sh / .ps1  # embedded Python 3.13 bootstrap (Linux builds from submodule, Windows fetches NuGet)
 setup.py                  # pure C shared library build (gcc, produces libaimic.so + libpvpipe.so / aimic.dll)
 ```
 

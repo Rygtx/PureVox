@@ -1,19 +1,19 @@
-# PureVox - bundled Python 3.13 bootstrap script (Windows)
-# Downloads the full prebuilt Python 3.13 from NuGet (includes dev headers/libs to build
-# aimic.pyd and PyInstaller bundling) into packages\python313w\, independent of any
+# PureVox - bundled Python 3.12 bootstrap script (Windows)
+# Downloads the full prebuilt Python 3.12 from NuGet (includes dev headers/libs to build
+# aimic.pyd and PyInstaller bundling) into packages\python312w\, independent of any
 # system Python.
 # Idempotent: skips download if already present; only installs pip deps.
 #
-# Usage: powershell -ExecutionPolicy Bypass -File bootstrap_python313.ps1
+# Usage: powershell -ExecutionPolicy Bypass -File bootstrap_python312.ps1
 $ErrorActionPreference = "Stop"
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $dest = Join-Path $root "packages"
-$pyDir = Join-Path $dest "python313w"
+$pyDir = Join-Path $dest "python312w"
 $srcPy = Join-Path $pyDir "tools\python.exe"
 $py = Join-Path $pyDir "python.exe"
-$pyVer = "3.13.7"   # Python 3.13 NuGet package
+$pyVer = "3.12.11"   # Python 3.12 NuGet package
 
 # 1. Download and unpack full Python 3.13 (NuGet, no admin needed; the real root is
 #    tools\, flattened to pyDir\ after unpacking)
@@ -38,5 +38,5 @@ if ($LASTEXITCODE -ne 0) { throw "ensurepip failed" }
 & $py -m pip install --upgrade pip setuptools wheel
 & $py -m pip install -r (Join-Path $root "requirements.txt") -r (Join-Path $root "requirements-win.txt")
 
-Write-Host "PureVox bundled Python 3.13 ready: $py"
-Write-Host "Use build_win.ps1 to package (it will pick up packages\python313w\python.exe)"
+Write-Host "PureVox bundled Python 3.12 ready: $py"
+Write-Host "Use build_win.ps1 to package (it will pick up packages\python312w\python.exe)"

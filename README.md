@@ -22,18 +22,18 @@
 
 | 平台 | 要求 |
 |---|---|
-| Windows | Windows 10/11，Python 3.13+ |
-| Linux | Python 3.13+，PipeWire（音频走原生 libpipewire，虚拟麦克风为 null-sink） |
+| Windows | Windows 10/11，Python 3.12+ |
+| Linux | Python 3.12+，PipeWire（音频走原生 libpipewire，虚拟麦克风为 null-sink） |
 
 > **⚠️ Windows 7 支持已终止**：自 Python 3.13 起不再支持 Win7；`v2026.08.14.1643` 是最后支持 Win7 的版本，需继续在 Win7 使用请下载 [此 tag 的 Windows 产物](https://github.com/a2heng/PureVox/releases/tag/v2026.08.14.1643) 并停用更新。
 
 ## 快速开始
 
-### 内嵌 Python 3.13（推荐，独立于系统环境）
+### 内嵌 Python 3.12（推荐，独立于系统环境）
 
-项目可自带一份独立的 Python 3.13，与系统 Python 完全隔离，不会互相影响。
+项目可自带一份独立的 Python 3.12，与系统 Python 完全隔离，不会互相影响。
 **Windows** 直接下载预编译包（NuGet）；**Linux** 源码以 **git 子模块**
-`packages/cpython`（CPython@v3.13.7，浅克隆）锁定，由引导脚本一次性编译
+`packages/cpython`（CPython@v3.12.11，浅克隆）锁定，由引导脚本一次性编译
 （out-of-tree，不污染子模块）。产物都放在 `packages/` 下。
 
 ```bash
@@ -41,16 +41,16 @@
 git submodule update --init --depth 1 packages/cpython
 
 # Linux（运行引导脚本即可，自动编译）
-./bootstrap_python313.sh          # -> packages/python313（自包含），并安装依赖
-./py313 run_pyside6.py            # 启动
-./py313 setup.py build_ext --inplace --force   # 编译 libaimic.so + libpvpipe.so（纯 C，gcc）
+./bootstrap_python312.sh          # -> packages/python312（自包含），并安装依赖
+./py312 run_pyside6.py            # 启动
+./py312 setup.py build_ext --inplace --force   # 编译 libaimic.so + libpvpipe.so（纯 C，gcc）
 
 # Windows（PowerShell，NuGet 下载预编译）
-powershell -ExecutionPolicy Bypass -File bootstrap_python313.ps1   # -> packages\python313w
-# 之后 build_win.ps1 打包会自动使用 packages\python313w\python.exe，独立于系统 Python
+powershell -ExecutionPolicy Bypass -File bootstrap_python312.ps1   # -> packages\python312w
+# 之后 build_win.ps1 打包会自动使用 packages\python312w\python.exe，独立于系统 Python
 ```
 
-若不想用内嵌解释器，也可直接使用系统 Python 3.13+：
+若不想用内嵌解释器，也可直接使用系统 Python 3.12+：
 
 ```bash
 # Windows 需追加 -r requirements-win.txt
@@ -65,10 +65,10 @@ python run_pyside6.py
 # 系统级依赖（例：AOSC）
 sudo oma install -y gcc pkgconf pipewire libpipewire-0.3-devel
 
-# 内嵌 3.13 方式（推荐，见上）：
-./bootstrap_python313.sh
-./py313 setup.py build_ext --inplace --force   # 编译纯 C 共享库（libaimic.so + libpvpipe.so）
-./py313 run_pyside6.py
+# 内嵌 3.12 方式（推荐，见上）：
+./bootstrap_python312.sh
+./py312 setup.py build_ext --inplace --force   # 编译纯 C 共享库（libaimic.so + libpvpipe.so）
+./py312 run_pyside6.py
 
 # 或用系统 python3 直接运行：
 pip install --user -r requirements.txt
@@ -109,7 +109,7 @@ Windows CI 会执行同样流程，上传 `dist/PureVox/` 目录（`actions/uplo
 ```bash
 bash pack_deb.sh        # 产出 dist/PureVox-Linux-x64-<yyyy-MM-dd-HHmm>-release.deb，内含源码+.so+模型+html
 bash pack_rpm.sh        # 产出 dist/PureVox-Linux-x64-<yyyy-MM-dd-HHmm>-release.rpm（Fedora/RHEL）
-bash pack_appimage.sh   # 产出 dist/PureVox-Linux-x64-<yyyy-MM-dd-HHmm>-release.AppImage（捆绑内嵌 Python3.13）
+bash pack_appimage.sh   # 产出 dist/PureVox-Linux-x64-<yyyy-MM-dd-HHmm>-release.AppImage（捆绑内嵌 Python3.12）
 ```
 
 | 产物 | 命名规则 |
@@ -167,9 +167,9 @@ html/                     # 浏览器推流前端（AudioWorklet + Opus WASM）
 android/                  # Android 客户端（Kotlin + OkHttp + Opus JNI）
 pack_deb.sh               # Linux deb 打包
 pack_rpm.sh               # Linux rpm 打包（Fedora/RHEL）
-pack_appimage.sh          # Linux AppImage 打包（捆绑内嵌 Python 3.13）
+pack_appimage.sh          # Linux AppImage 打包（捆绑内嵌 Python 3.12）
 build_win.ps1             # Windows 打包（aimic.dll + PyInstaller 产物目录）
-bootstrap_python313.sh / .ps1  # 内嵌 Python 3.13 引导（Linux 编译自子模块，Windows 拉 NuGet）
+bootstrap_python312.sh / .ps1  # 内嵌 Python 3.12 引导（Linux 编译自子模块，Windows 拉 NuGet）
 setup.py                  # 纯 C 共享库构建（gcc，产出 libaimic.so + libpvpipe.so / aimic.dll）
 ```
 

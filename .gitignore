@@ -14,12 +14,12 @@
 /dist
 /config.json
 
-# 内嵌 Python 3.13（bootstrap_python313.sh/.ps1 生成，独立于系统环境，放 packages/ 下）
-/packages/python313/
+# 内嵌 Python 3.12（bootstrap_python312.sh/.ps1 生成，独立于系统环境，放 packages/ 下）
+/packages/python312/
 # Windows：NuGet 下载的预编译包
-/packages/python313w/
+/packages/python312w/
 # Linux 构建缓存（out-of-tree 编译树）
-/.py313-src/
+/.py312-src/
 
 # Compiled binaries
 *.exp

@@ -17,12 +17,12 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # Universal packages: deb (Ubuntu) + AppImage; fedora -> rpm; python3.13 baseline.
+          # Universal packages: deb (Ubuntu) + AppImage; fedora -> rpm; python3.12 baseline.
           - distro: ubuntu-22.04
             container: ubuntu:22.04
             # libssl-dev: the AppImage job compiles the embedded CPython from the
             # packages/cpython submodule; without ssl headers that interpreter's
-            # pip has no networking, so bootstrap_python313.sh fails.
+            # pip has no networking, so bootstrap_python312.sh fails.
             # libffi-dev: the embedded CPython needs libffi to build the `_ctypes`
             # module (aimic.py/pvpipe.py ctypes bindings depend on it). Without it
             # the compiled interpreter has no _ctypes and the GUI crashes on import
@@ -35,10 +35,10 @@ jobs:
             container: fedora:latest
             sysdeps: "gcc make pkgconf-pkg-config pipewire-devel alsa-lib-devel python3 python3-pip python3-setuptools rpm-build"
             pkg_rpm: true
-          # Python 3.13 baseline (embedded runtime is Py3.13): verify the
-          # pure C libs build and ctypes-load on that floor.
-          - distro: python3.13
-            container: python:3.13-bullseye
+          # Python 3.12 baseline: verify the pure C libs build and
+          # ctypes-load on that floor (CI matrix uses 3.12; bundled runtime is 3.12).
+          - distro: python3.12
+            container: python:3.12-bullseye
             sysdeps: "build-essential pkg-config libpipewire-0.3-dev libasound2-dev"
             baseline: true
     container:
@@ -75,7 +75,7 @@ jobs:
 
       - name: Build pure C shared libraries (libaimic.so + libpvpipe.so + libpvalsa.so)
         run: |
-          PY="python3"; [ "${{ matrix.distro }}" = "python3.13" ] && PY="python"
+          PY="python3"; [ "${{ matrix.distro }}" = "python3.12" ] && PY="python"
           $PY -m pip install --quiet setuptools wheel 2>/dev/null || pip install --quiet setuptools wheel || true
           LD_LIBRARY_PATH="$PWD/packages/onnxruntime-linux-x64-1.22.0/lib" \
             $PY setup.py build_ext --inplace --force
@@ -83,15 +83,15 @@ jobs:
 
       - name: Import smoke test (ctypes loads the pure C libs)
         run: |
-          PY="python3"; [ "${{ matrix.distro }}" = "python3.13" ] && PY="python"
+          PY="python3"; [ "${{ matrix.distro }}" = "python3.12" ] && PY="python"
           LD_LIBRARY_PATH="$PWD/packages/onnxruntime-linux-x64-1.22.0/lib" \
             $PY -c "import aimic, pvpipe, pvalsa; print('aimic OK'); print('pvpipe OK'); print('pvalsa OK')"
 
-      - name: Assert Python 3.13 baseline (python3.13 only)
+      - name: Assert Python 3.12 baseline (python3.12 only)
         if: matrix.baseline
         run: |
           LD_LIBRARY_PATH="$PWD/packages/onnxruntime-linux-x64-1.22.0/lib" \
-            python -c "import sys, aimic; assert sys.version_info[:2] == (3, 13); print('aimic OK on Python', sys.version.split()[0])"
+            python -c "import sys, aimic; assert sys.version_info[:2] == (3, 12); print('aimic OK on Python', sys.version.split()[0])"
 
       - name: Package deb (Ubuntu)
         if: matrix.pkg_deb
@@ -125,7 +125,7 @@ jobs:
           path: dist/PureVox-Linux-x64-*.rpm
           if-no-files-found: error
 
-      - name: Package AppImage (best-effort, bundles embedded python313)
+      - name: Package AppImage (best-effort, bundles embedded python312)
         if: matrix.pkg_appimage
         continue-on-error: true
         run: |
@@ -158,10 +158,10 @@ jobs:
           }
           "stamp=$stamp" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
 
-      - name: Set up Python 3.13
+      - name: Set up Python 3.12
         uses: actions/setup-python@v6
         with:
-          python-version: "3.13"
+          python-version: "3.12"
           cache: pip
           cache-dependency-path: |
             requirements.txt

@@ -294,8 +294,8 @@ _LINUX_BODY = """
 <ol>
 <li>安装包：按发布页下载 deb（Debian/Ubuntu 系）、rpm（Fedora 系）或 AppImage，
    安装后从桌面/应用菜单启动，或命令行执行 <code>purevox</code>；</li>
-<li>源码运行：<code>./bootstrap_python313.sh</code> 准备内嵌 Python 3.13 后，
-   <code>./py313 run_pyside6.py</code> 启动。</li>
+<li>源码运行：<code>./bootstrap_python312.sh</code> 准备内嵌 Python 3.12 后，
+    <code>./py312 run_pyside6.py</code> 启动。</li>
 </ol>
 
 <h2>第 1 步：选择设备</h2>
@@ -360,6 +360,11 @@ AGC、VAD，31 段均衡器在菜单「设置 → 均衡器」打开。</p>
 # ── 更新日志（中文，唯一维护位置：发版时在顶部追加）──
 
 CHANGELOG_TEXT = """# 更新日志
+
+## 2026-08-20 — 切换到 Python 3.12（PyAudio 暂无 3.13 wheel，自包含）
+
+- **Python 3.13 → 3.12（自包含）**：内嵌 Python 由 3.13.7 切换到 3.12.11（`bootstrap_python312.sh/.ps1` + `py312` 启动器、`packages/python312*` / `.py312-src`、`packages/cpython@v3.12.11`），CI 基线同步 `python:3.12-bullseye` / `setup-python 3.12`，`pack_deb.sh` / `pack_appimage.sh` / `build_win.ps1` 路径同步为 `python312`，原因：目前 Python 3.13 暂无 PyAudio 预编译 wheel，切到 3.12 保证 `pip install PyAudio` 有 wheel 可用
+- **影响范围**：CI 与内置运行时统一为 3.12，无内置回退分支
 
 ## 2026-08-15 — 升级至 Python 3.13 + ONNX Runtime 1.22
 

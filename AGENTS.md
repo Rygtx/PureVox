@@ -2,7 +2,7 @@
 
 Windows / Linux 桌面应用 + Android 客户端：实时 AI 音频降噪 / 目标说话人提取 / 回声消除，支持本地麦克风和远程网络推流。
 
-**栈**: Python 3.13+ + PySide6 + 纯 C 共享库（gcc/mingw 编译，ctypes 绑定）+ ONNX Runtime（==1.22.0，模型 opset 13/14/15，均 ≤18）
+**栈**: Python 3.12+ + PySide6 + 纯 C 共享库（gcc/mingw 编译，ctypes 绑定）+ ONNX Runtime（==1.22.0，模型 opset 13/14/15，均 ≤18）
 **桌面入口**: `python run_pyside6.py`
 **Android 入口**: `android/` — Kotlin + OkHttp + Opus JNI
 
@@ -49,30 +49,30 @@ Windows / Linux 桌面应用 + Android 客户端：实时 AI 音频降噪 / 目�
 
 ## 运行 / 构建
 
-**内嵌 Python 3.13（推荐，独立于系统环境）**：本项目可自带独立 Python 3.13，
+**内嵌 Python 3.12（推荐，独立于系统环境）**：本项目可自带独立 Python 3.12，
 与系统 Python 完全隔离。Windows 走 NuGet 下载预编译包；Linux 源码以 **git 子模块**
-`packages/cpython`（CPython@v3.13.7）锁定，由引导脚本 out-of-tree 一次性编译。
+`packages/cpython`（CPython@v3.12.11）锁定，由引导脚本 out-of-tree 一次性编译。
 产物统一放 `packages/`。
 
 - 克隆后先 `git submodule update --init --depth 1 packages/cpython` 拉子模块
-- `./bootstrap_python313.sh`（Linux，幂等）→ 生成自包含 `packages/python313/` + 装依赖
-- `./bootstrap_python313.ps1`（Windows）→ 生成 `packages\python313w\`（NuGet 完整版，含头文件/链接库）
-- 内嵌解释器与系统 Python 互相独立；`packages/python313*`、`.py313-src/` 不进版本库（gitignore）
+- `./bootstrap_python312.sh`（Linux，幂等）→ 生成自包含 `packages/python312/` + 装依赖
+- `./bootstrap_python312.ps1`（Windows）→ 生成 `packages\python312w\`（NuGet 完整版，含头文件/链接库）
+- 内嵌解释器与系统 Python 互相独立；`packages/python312*`、`.py312-src/` 不进版本库（gitignore）
 
 ### Windows (PowerShell)
 
 ```powershell
 chcp 65001
-# 方式一（内嵌 3.13，推荐）：
-powershell -ExecutionPolicy Bypass -File bootstrap_python313.ps1
+# 方式一（内嵌 3.12，推荐）：
+powershell -ExecutionPolicy Bypass -File bootstrap_python312.ps1
 # 方式二（系统 Python）：pip install -r requirements.txt -r requirements-win.txt
 python run_pyside6.py
-powershell -ExecutionPolicy Bypass -File build_win.ps1   # 打包产物目录 dist/PureVox/（自动用 packages\python313w\python.exe）
+powershell -ExecutionPolicy Bypass -File build_win.ps1   # 打包产物目录 dist/PureVox/（自动用 packages\python312w\python.exe）
 # 注：Windows 侧 aimic.dll 用 mingw gcc 编译（setup.py 走 CC 或 PATH 上的 gcc，
 # 链接捆绑的 onnxruntime-win-x64-1.22.0）
 ```
 
-**`.ps1` 脚本必须纯 ASCII（英文）**：`build_win.ps1` / `bootstrap_python313.ps1`
+**`.ps1` 脚本必须纯 ASCII（英文）**：`build_win.ps1` / `bootstrap_python312.ps1`
 不含中文/非 ASCII/BOM。Windows PowerShell 5.1 对无 BOM 的 UTF-8 脚本按 ANSI
 (cp1252/GBK) 误读导致语法错误（`chcp 65001` 只在本机掩盖）；脚本须引用中文
 文件名时用通配符（`*.html`）匹配，不写字面量。
@@ -83,10 +83,10 @@ powershell -ExecutionPolicy Bypass -File build_win.ps1   # 打包产物目录 di
 
 ```bash
 sudo oma install -y gcc pkgconf pipewire libpipewire-0.3-devel
-# 内嵌 3.13（推荐）：
-./bootstrap_python313.sh
-./py313 setup.py build_ext --inplace --force   # 产出 libaimic.so + libpvpipe.so
-./py313 run_pyside6.py
+# 内嵌 3.12（推荐）：
+./bootstrap_python312.sh
+./py312 setup.py build_ext --inplace --force   # 产出 libaimic.so + libpvpipe.so
+./py312 run_pyside6.py
 bash pack_deb.sh                              # deb → dist/PureVox-Linux-x64-<date>-release.deb
 bash pack_rpm.sh                              # rpm → dist/PureVox-Linux-x64-<date>-release.rpm
 bash pack_appimage.sh                         # AppImage → dist/PureVox-Linux-x64-<date>-release.AppImage
@@ -117,11 +117,11 @@ cd android
 - **触发方式：push tag 触发 CI 构建 + 自动发 release 两件事**，分支 push 不触发（保持日常快速提交零成本）；需验证分支时可 `workflow_dispatch` 手动跑（仅触发三构建 job，不触发 release）。
 - **tag 命名规则**：`v<yyyy.MM.dd.HHmm>`（如 `v2026.08.10.1517`）。tag 名同时定义产物体内版本（`v` 去掉即 `yyyy.MM.dd.HHmm`），所有 job 的产物时间戳/版本都从 `${GITHUB_REF_NAME}` 推导，避免各 job 并发时刻漂移。回复发版即 `git tag v<yyyy.MM.dd.HHmm> && git push origin <tag>`。
 - `linux` job：容器矩阵只留 3 项，产出通用安装包——
-  - `ubuntu-22.04`：gcc 编纯 C 库 + import 冒烟 + `pack_deb.sh` 出 deb + `pack_appimage.sh` 出 AppImage（best-effort，捆绑内嵌 python313）
+  - `ubuntu-22.04`：gcc 编纯 C 库 + import 冒烟 + `pack_deb.sh` 出 deb + `pack_appimage.sh` 出 AppImage（best-effort，捆绑内嵌 python312）
   - `fedora`：编库 + 冒烟 + `pack_rpm.sh` 出 rpm
-  - `python3.13`：官方 `python:3.13-bullseye`，验证纯 C 库在 Python 3.13 可编译、可 ctypes 装载
+  - `python3.12`：官方 `python:3.12-bullseye`，验证纯 C 库在 Python 3.12 可编译、可 ctypes 装载
   - onnxruntime 用仓库内捆绑的预编译 1.22.0 SDK，**不 pip 装 onnxruntime**
-- `windows` job：windows-latest + Python 3.13 + msys2/mingw gcc 编 `aimic.dll` + 语法/导入冒烟；`build_win.ps1`（PyInstaller one-folder）出 `dist/PureVox/`，CI 上传该目录（`actions/upload-artifact` 会自动压缩为 zip，命名 `PureVox-Windows-x64-<yyyy-MM-dd-HHmm>-release`）
+- `windows` job：windows-latest + Python 3.12 + msys2/mingw gcc 编 `aimic.dll` + 语法/导入冒烟；`build_win.ps1`（PyInstaller one-folder）出 `dist/PureVox/`，CI 上传该目录（`actions/upload-artifact` 会自动压缩为 zip，命名 `PureVox-Windows-x64-<yyyy-MM-dd-HHmm>-release`）
 - `android` job：ubuntu-latest 编 debug APK（JDK17 + SDK 34 + NDK r27）；下载 opus 源码到 `android/opus-src/`，产物改名 `PureVox-Android-arm64-<yyyy-MM-dd-HHmm>-debug.apk`
 - `release` job：`needs` 三构建 job + `if: startsWith(github.ref,'refs/tags/')`，tag push 时下载全部产物，Windows 目录重打成 zip（`zip -9`），`gh release create` 把 deb / rpm / AppImage / Windows zip / APK 全部 attach
 - **产物命名统一**：`PureVox-<平台>-<架构>-<yyyy-MM-dd-HHmm>-<release|debug>.<ext>`（Windows 上传目录由 CI 自动压缩 / Linux deb / rpm / AppImage 一律 release，Android 为 debug）。文件名时间戳 `yyyy-MM-dd-HHmm`；产物体内版本字段 = `yyyy.MM.dd.HHmm`（如 `2026.08.10.1517`，deb control / rpm / setup.py 一致，**由 tag 名 `v<yyyy.MM.dd.HHmm>` 推导**，避免并发 job 各自 `date` 导致产物版本不一）。
@@ -137,8 +137,8 @@ cd android
   Ubuntu、rpm 在 Fedora 产出，是因为 rpm 打包须依赖 `rpmbuild` 与真实 Fedora 包名解析
   （`pipewire-devel` 等），移到 Ubuntu 上构建可靠性下降；分开还有并行收益与故障隔离
   （一个发行版坏不掉其他产物）。AppImage 在 ubuntu job 内（best-effort，
-   `continue-on-error: true`），捆绑内嵌 python313——该 job 需先装 `libssl-dev`
-  （否则子模块编译出的 CPython 无 ssl 模块，pip 无网络，`bootstrap_python313.sh` 失败）
+   `continue-on-error: true`），捆绑内嵌 python312——该 job 需先装 `libssl-dev`
+  （否则子模块编译出的 CPython 无 ssl 模块，pip 无网络，`bootstrap_python312.sh` 失败）
   与 `file`（appimagetool 打包必需），并确保 `PyAudio` 不在 Linux 依赖里
   （已移到 `requirements-win.txt`，否则编译缺 `portaudio.h` 让 AppImage 静默失败）。
 - **CI 踩坑（实测细节补充，避免重踩）**：

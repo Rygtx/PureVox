@@ -1,4 +1,4 @@
-# Python 3.13+（已迁移自 3.8，Win7 支持终止）
+# Python 3.12+（已迁移自 3.8，Win7 支持终止；3.13 暂无 PyAudio wheel，CI 与内置均切到 3.12）
 # 跨平台运行依赖（Windows / Linux / macOS 通用）
 importlib_metadata
 packaging
