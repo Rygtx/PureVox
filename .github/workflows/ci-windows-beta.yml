@@ -1,0 +1,88 @@
+name: Windows Beta CI
+
+on:
+  push:
+    tags:
+      - "beta*"
+      - "v*beta*"
+      - "w*"
+  workflow_dispatch:
+
+jobs:
+  windows:
+    name: Windows Beta (aimic.dll + bundle)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Set build timestamp (tag -> tag version; else now)
+        id: ts
+        shell: pwsh
+        run: |
+          $ref = $env:GITHUB_REF_NAME
+          if ($ref -and $ref.StartsWith("v")) { $ref = $ref.Substring(1) }
+          # beta tag may contain suffix like -beta, keep it but normalize dots
+          if ($env:GITHUB_REF_NAME) {
+            $stamp = $ref -replace '\.', '-'
+          } else {
+            $stamp = Get-Date -Format 'yyyy-MM-dd-HHmm'
+          }
+          "stamp=$stamp" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-win.txt
+
+      - name: Set up mingw-w64 gcc
+        id: msys2
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          install: >-
+            mingw-w64-x86_64-gcc
+
+      - name: Install Python deps
+        shell: pwsh
+        run: |
+          python -m pip install -q -r requirements.txt -r requirements-win.txt
+
+      - name: Compile all Python sources (catch syntax errors before packaging)
+        shell: pwsh
+        run: |
+          python -m compileall -q aimic.py pvpipe.py audio_processor.py config_manager.py model_config.py ui_pyside6.py run_pyside6.py pvplatform server 2>$null
+          Write-Host "compileall OK"
+
+      - name: Download opus.dll (gitignored, needed by server/)
+        shell: pwsh
+        run: |
+          curl.exe -fsSL -L "https://github.com/DSharpPlus/DSharpPlus/raw/master/docs/natives/vnext_natives_win32_x64.zip" -o "$env:TEMP\opus.zip"
+          Expand-Archive -Path "$env:TEMP\opus.zip" -DestinationPath "$env:TEMP\opus" -Force
+          Copy-Item "$env:TEMP\opus\libopus.dll" "server\opus.dll" -Force
+          if (-not (Test-Path "server\opus.dll")) { throw "opus.dll not found" }
+
+      - name: Build Windows bundle (build aimic.dll + PyInstaller, timestamped)
+        shell: pwsh
+        env:
+          CC: ${{ steps.msys2.outputs.msys2-location }}\mingw64\bin\gcc.exe
+        run: |
+          $env:PATH = "${{ steps.msys2.outputs.msys2-location }}\mingw64\bin;$env:PATH"
+          pwsh -NoProfile -ExecutionPolicy Bypass -File build_win.ps1
+
+      - name: Smoke import aimic (ctypes loads the built aimic.dll)
+        shell: pwsh
+        run: |
+          $env:PATH = "${{ steps.msys2.outputs.msys2-location }}\mingw64\bin;$env:PATH"
+          if (-not (Test-Path "aimic.dll")) { throw "aimic.dll not built by build_win.ps1" }
+          python -c "import aimic; print('aimic OK on Python', __import__('sys').version.split()[0])"
+
+      - name: Upload Windows bundle
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: PureVox-Windows-x64-${{ steps.ts.outputs.stamp }}-beta
+          path: dist/PureVox
+          if-no-files-found: error
