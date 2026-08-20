@@ -62,7 +62,7 @@ jobs:
         run: |
           python -c "import lite_denoise_only.config, lite_denoise_only.audio, lite_denoise_only.engine, lite_denoise_only.ui; print('lite import OK')"
 
-      - name: Build Lite exe (PyInstaller onedir, no gcc)
+      - name: Build Lite exe (PyInstaller onefile compressed, no gcc)
         shell: pwsh
         run: |
           # 生成像素 P ico 供 PyInstaller
@@ -71,24 +71,16 @@ jobs:
           # 写入 _build_version
           $ver = "${{ steps.ts.outputs.ver }}"
           "BUILD_DATE = `"$ver`"" | Out-File -FilePath "_build_version.py" -Encoding utf8
-          pyinstaller --noconfirm --windowed --name PureVoxLite --icon lite_icon.ico --collect-all onnxruntime --add-data "v9_fft2048_band256_epoch_261.onnx;." --add-data "lite_denoise_only/fonts;lite_denoise_only/fonts" --add-data "_build_version.py;." lite_denoise_only/main.py
-          if (-not (Test-Path "dist/PureVoxLite/PureVoxLite.exe")) { throw "PureVoxLite.exe not built" }
-          Get-ChildItem dist/PureVoxLite | Format-Table Name,Length
-          Compress-Archive -Path dist/PureVoxLite -DestinationPath PureVoxLite-Windows-x64-${{ steps.ts.outputs.stamp }}.zip -Force
-          Get-ChildItem PureVoxLite-*.zip | Format-Table Name,Length
+          pyinstaller --noconfirm --onefile --windowed --name PureVoxLite --icon lite_icon.ico --collect-all onnxruntime --add-data "v9_fft2048_band256_epoch_261.onnx;." --add-data "lite_denoise_only/fonts;lite_denoise_only/fonts" --add-data "_build_version.py;." --strip lite_denoise_only/main.py
+          if (-not (Test-Path "dist/PureVoxLite.exe")) { throw "PureVoxLite.exe not built" }
+          Get-ChildItem dist/PureVoxLite.exe | Format-Table Name,Length
+          # 单文件已压缩，无需额外打包
 
-      - name: Upload Lite bundle (folder)
+      - name: Upload Lite exe (single file)
         uses: actions/upload-artifact@v7.0.1
         with:
           name: PureVoxLite-Windows-x64-${{ steps.ts.outputs.stamp }}
-          path: dist/PureVoxLite
-          if-no-files-found: error
-
-      - name: Upload Lite zip
-        uses: actions/upload-artifact@v7.0.1
-        with:
-          name: PureVoxLite-Windows-x64-${{ steps.ts.outputs.stamp }}-zip
-          path: PureVoxLite-*.zip
+          path: dist/PureVoxLite.exe
           if-no-files-found: error
 
   release-lite:
@@ -103,26 +95,12 @@ jobs:
         uses: actions/download-artifact@v7.0.0
         with:
           path: artifacts
-      - name: Pack Lite zip for release
+      - name: List Lite exe
         run: |
-          cd artifacts
-          shopt -s nullglob
-          for d in PureVoxLite-Windows-x64-*-zip/; do
-            # already zip, just move
-            mv "$d"/*.zip ./ 2>/dev/null || true
-          done
-          # fallback: if folder artifact only, zip it
-          for d in PureVoxLite-Windows-x64-*/; do
-            if [ -d "$d" ]; then
-              base=$(basename "$d")
-              zip -q -9 -r "${base}.zip" "$d"
-            fi
-          done
-          ls -lh *.zip
+          find artifacts -type f -name "*.exe" | xargs ls -lh
       - name: Create GitHub release for Lite
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          cd artifacts
-          files=$(find . -maxdepth 1 -name "*.zip" | tr '\n' ' ')
-          gh release create -R "${GITHUB_REPOSITORY}" "${GITHUB_REF_NAME}" --title "PureVox Lite ${GITHUB_REF_NAME}" --notes "Lite 纯 Python 版（无 gcc，Tk 像素风）自动发布：${GITHUB_REF_NAME}" $files || gh release upload "${GITHUB_REF_NAME}" $files --clobber
+          files=$(find artifacts -type f -name "*.exe" | tr '\n' ' ')
+          gh release create -R "${GITHUB_REPOSITORY}" "${GITHUB_REF_NAME}" --title "PureVox Lite ${GITHUB_REF_NAME}" --notes "Lite 纯 Python 版（无 gcc，Tk 像素风，单文件压缩）自动发布：${GITHUB_REF_NAME}" $files || gh release upload "${GITHUB_REF_NAME}" $files --clobber
