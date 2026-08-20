@@ -3,7 +3,8 @@ name: Lite CI
 on:
   push:
     tags:
-      - "v*"
+      - "lite-v*"
+      - "lite*"
   workflow_dispatch:
 
 jobs:
@@ -13,13 +14,17 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      - name: Set build timestamp (tag v* -> tag version; else now)
+      - name: Set build timestamp (lite-v* -> lite version; else now)
         id: ts
         shell: pwsh
         run: |
           $ref = $env:GITHUB_REF_NAME
-          if ($ref -and $ref.StartsWith("v")) { $ref = $ref.Substring(1) }
-          if ($env:GITHUB_REF_NAME) {
+          if ($ref) {
+            if ($ref.StartsWith("lite-v")) { $ref = $ref.Substring(6) }
+            elseif ($ref.StartsWith("lite")) { $ref = $ref.Substring(4) -replace "^[-_]*","" }
+            elseif ($ref.StartsWith("v")) { $ref = $ref.Substring(1) }
+          }
+          if ($ref) {
             $stamp = $ref -replace '\.', '-'
           } else {
             $stamp = Get-Date -Format 'yyyy-MM-dd-HHmm'
