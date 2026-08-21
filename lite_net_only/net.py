@@ -237,6 +237,7 @@ class NetOpusDecoder:
     def __init__(self):
         self._dec = None
         self._av = None
+        self._rs = None
         try:
             import av
             self._av = av
@@ -244,6 +245,8 @@ class NetOpusDecoder:
                 self._dec = av.CodecContext.create("libopus", "r")
             except Exception:
                 self._dec = av.CodecContext.create("opus", "r")
+            # 统一重采样到 f32/单声道/48k：不依赖解码器输出的声道布局与格式
+            self._rs = av.AudioResampler(format="fltp", layout="mono", rate=SAMPLE_RATE)
         except Exception:
             self._dec = None
 
@@ -254,10 +257,14 @@ class NetOpusDecoder:
         try:
             pkt = self._av.Packet(opus_bytes)
             frames = self._dec.decode(pkt)
+            # 解码器输出可能是 s16 整型（直接 astype 成 float 会幅值爆炸=纯削波噪声），
+            # 一律经重采样器统一到 f32/单声道/48k；resample 只收单帧
+            if self._rs is not None and frames:
+                frames = [of for fr in frames for of in self._rs.resample(fr)]
         except Exception:
             return None
         chunks = []
-        for fr in frames:
+        for fr in frames or []:
             try:
                 arr = fr.to_ndarray()  # fltp: (ch, n) float32
             except Exception:
@@ -276,7 +283,8 @@ class NetOpusDecoder:
 # 满丢新（同主线网络模式输出环），欠载由消费端静音补齐并重新预填充
 # ---------------------------------------------------------------------------
 class JitterRing:
-    def __init__(self, capacity=SAMPLE_RATE * 2, prefill=FRAME_SIZE * 2):
+    def __init__(self, capacity=SAMPLE_RATE * 2, prefill=FRAME_SIZE * 5):
+        # 预填充 100ms：TCP 到达是突发的，预填充太小会频繁欠载（爆音/断续）
         import numpy as np
         self._np = np
         self.capacity = capacity
@@ -335,11 +343,21 @@ class NetServer:
         self.process_fn = process_fn
         self.hop = 1024
         self.on_state = on_state  # on_state(clients, note)
-        self.clients = 0
+        # 活跃连接表：ws -> 最后一次收到音频的单调时间。
+        # 客户端断网/重载页面会残留半开连接（等 ping 超时才关闭），
+        # 按「10 秒内有消息」计数才与真实使用人数一致
+        self._conns = {}
+        self._last_clients = 0
         self._loop = None
         self._server = None
         self._thread = None
         self._stop_evt = threading.Event()
+
+    @property
+    def clients(self):
+        import time as _t
+        now = _t.monotonic()
+        return sum(1 for ts in list(self._conns.values()) if now - ts < 10.0)
 
     def start(self):
         ok, err = ensure_tls_cert()
@@ -429,7 +447,8 @@ class NetServer:
             return None  # 其余路径仍允许 WS 握手（兼容旧客户端直连根路径）
 
         async def handler(ws):
-            self.clients += 1
+            import time as _t
+            self._conns[ws] = _t.monotonic()
             self._notify("")
             dec = NetOpusDecoder()
             import numpy as np
@@ -442,6 +461,7 @@ class NetServer:
                         continue
                     if msg.get("type") != "audio":
                         continue
+                    self._conns[ws] = _t.monotonic()
                     seq = msg.get("seq", 0)
                     pcm = dec.decode_f32_mono(base64.b64decode(msg.get("data", "")))
                     if pcm is not None and len(pcm):
@@ -462,7 +482,7 @@ class NetServer:
             except Exception:
                 pass
             finally:
-                self.clients -= 1
+                self._conns.pop(ws, None)
                 self._notify("")
 
         self._server = await websockets.serve(
@@ -470,8 +490,21 @@ class NetServer:
             process_request=process_request,
             max_size=1 << 20, ping_interval=20, ping_timeout=20)
         self._notify("")
+        # 周期清理僵尸连接并刷新客户端计数（半开连接等 ping 超时才关闭）
         while not self._stop_evt.is_set():
-            await asyncio.sleep(0.5)
+            await asyncio.sleep(1.0)
+            import time as _t
+            now = _t.monotonic()
+            stale = [w for w, ts in self._conns.items() if now - ts > 12.0]
+            for w in stale:
+                self._conns.pop(w, None)
+                try:
+                    await w.close(code=1001)
+                except Exception:
+                    pass
+            if len(self._conns) != self._last_clients:
+                self._last_clients = len(self._conns)
+                self._notify("")
 
     def _notify(self, note):
         if self.on_state:
