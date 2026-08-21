@@ -630,9 +630,16 @@ class LiteUI:
         row_gains.pack(fill=tk.X, pady=S["pad_md"])
         gains_left = tk.Frame(row_gains, bg=BG)
         gains_left.pack(side=tk.LEFT, fill=tk.X, expand=True)
-        self.lbl_qr = tk.Label(row_gains, bg=ENTRY_BG, bd=1, relief=tk.FLAT,
-                               highlightbackground=BORDER)
-        self.lbl_qr.pack(side=tk.RIGHT, padx=(S["pad_sm"], 0))
+        # 二维码卡片（横「日」）：左色块竖排「二维码」+ 右侧码图
+        qr_card = tk.Frame(row_gains, bg=BORDER, bd=1, relief=tk.FLAT,
+                           highlightbackground=BORDER, highlightthickness=1)
+        qr_card.pack(side=tk.RIGHT, padx=(S["pad_sm"], 0))
+        qr_side = tk.Frame(qr_card, bg=BTN_BG)
+        qr_side.pack(side=tk.LEFT, fill=tk.Y)
+        tk.Label(qr_side, text="二\n维\n码", bg=BTN_BG, fg=TITLE_BG,
+                 justify="center", font=self.fonts["bold"]).pack(padx=S["pad_sm"], pady=S["pad_sm"])
+        self.lbl_qr = tk.Label(qr_card, bg=ENTRY_BG, bd=0)
+        self.lbl_qr.pack(side=tk.LEFT)
         self.lbl_qr.bind("<Button-1>", lambda e: self.refresh_qr())
 
         row3 = tk.Frame(gains_left, bg=BG)
