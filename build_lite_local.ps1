@@ -55,7 +55,7 @@ Set-Content _build_version.py "BUILD_DATE = `"$ver`"" -Encoding UTF8
     --hidden-import=pyaudio `
     --exclude-module PIL._avif `
     --add-data "v9_fft2048_band256_epoch_261.onnx;." `
-    --add-data "lite_denoise_only/fonts;lite_denoise_only/fonts" `
+    --add-data "lite_denoise_only/fonts;fonts" `
     --add-data "_build_version.py;." `
     lite_denoise_only/main.py
 if ($LASTEXITCODE -ne 0) { throw "PyInstaller failed" }
