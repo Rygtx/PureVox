@@ -74,6 +74,11 @@ jobs:
     permissions:
       contents: write
     steps:
+      - name: Checkout full history (commit log for release notes)
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
       - name: Download Lite artifacts
         uses: actions/download-artifact@v7.0.0
         with:
@@ -94,9 +99,27 @@ jobs:
             zip -9 -q -r "${GITHUB_WORKSPACE}/${app}-Windows-x64-${GITHUB_REF_NAME#lite-v}.zip" "$app"
             unzip -l "${app}-Windows-x64-*.zip" | head -n 6
           done
+      - name: Build release notes (commit log since previous tag)
+        run: |
+          # 自动化日志：上一个 tag 到当前 tag 的全部提交
+          prev=$(git describe --tags --abbrev=0 "${GITHUB_REF_NAME}^" 2>/dev/null || true)
+          {
+            echo "Lite 纯 Python 版（无 gcc，Tk 像素风，onedir 解压即用）。PureVoxLite=降噪麦克风；PureVoxNetLite=网络推流播放。自动发布：${GITHUB_REF_NAME}"
+            echo ""
+            echo "**提交记录**"
+            if [ -n "$prev" ]; then
+              git log --pretty="format:- %h %s" "$prev..${GITHUB_REF_NAME}"
+            else
+              git log --pretty="format:- %h %s" -15
+            fi
+          } > notes.md
+
       - name: Create GitHub release for Lite
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           assets=$(ls PureVoxLite-Windows-x64-*.zip PureVoxNetLite-Windows-x64-*.zip)
-          gh release create -R "${GITHUB_REPOSITORY}" "${GITHUB_REF_NAME}" --title "PureVox Lite ${GITHUB_REF_NAME}" --notes "Lite 纯 Python 版（无 gcc，Tk 像素风，onedir 解压即用）。PureVoxLite=降噪麦克风；PureVoxNetLite=网络推流播放。自动发布：${GITHUB_REF_NAME}" $assets || gh release upload "${GITHUB_REF_NAME}" $assets --clobber
+          gh release create -R "${GITHUB_REPOSITORY}" "${GITHUB_REF_NAME}" \
+            --title "PureVox Lite ${GITHUB_REF_NAME}" \
+            --notes-file "${GITHUB_WORKSPACE}/notes.md" \
+            $assets || gh release upload "${GITHUB_REF_NAME}" $assets --clobber

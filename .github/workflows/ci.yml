@@ -287,6 +287,11 @@ jobs:
     permissions:
       contents: write
     steps:
+      - name: Checkout full history (commit log for release notes)
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
       - name: Download all build artifacts
         uses: actions/download-artifact@v7.0.0
         with:
@@ -302,6 +307,21 @@ jobs:
             rm -rf "$d"
           done
 
+      - name: Build release notes (commit log since previous tag)
+        run: |
+          # 自动化日志：上一个 tag 到当前 tag 的全部提交
+          prev=$(git describe --tags --abbrev=0 "${GITHUB_REF_NAME}^" 2>/dev/null || true)
+          {
+            echo "自动发布：tag ${GITHUB_REF_NAME} 对应的 CI 构建产物（deb / rpm / AppImage / Windows / Android APK）。"
+            echo ""
+            echo "**提交记录**"
+            if [ -n "$prev" ]; then
+              git log --pretty="format:- %h %s" "$prev..${GITHUB_REF_NAME}"
+            else
+              git log --pretty="format:- %h %s" -15
+            fi
+          } > notes.md
+
       - name: Create GitHub release with artifacts
         env:
           GH_TOKEN: ${{ github.token }}
@@ -310,5 +330,5 @@ jobs:
           files=$(find . -type f | sort | tr '\n' ' ')
           gh release create -R "${GITHUB_REPOSITORY}" "${GITHUB_REF_NAME}" \
             --title "PureVox ${GITHUB_REF_NAME}" \
-            --notes "自动发布：tag ${GITHUB_REF_NAME} 对应的 CI 构建产物（deb / rpm / AppImage / Windows / Android APK）。" \
+            --notes-file "${GITHUB_WORKSPACE}/notes.md" \
             $files
