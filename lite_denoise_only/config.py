@@ -15,6 +15,8 @@ DEFAULTS = {
     "post_gain_db": 0,
     "autostart": False,
     "zoom": 100,
+    # True = 按屏幕分辨率自动定挡（忽略 zoom）；手动选过百分比后为 False
+    "auto_zoom": True,
 }
 
 def _load_json_compat(path):

@@ -44,37 +44,9 @@ jobs:
             requirements.txt
             requirements-win.txt
 
-      - name: Install Python deps (lite, no gcc)
+      - name: Build Lite exe (build_lite_local.ps1, single recipe local+CI)
         shell: pwsh
-        run: |
-          python -m pip install -q onnxruntime==1.22.0 numpy pillow pyinstaller
-          try { python -m pip install -q pyaudio } catch { Write-Host "pyaudio optional, skip on CI" }
-          Write-Host "deps OK"
-
-      - name: Compile lite sources (catch syntax errors)
-        shell: pwsh
-        run: |
-          python -m compileall -q lite_denoise_only
-          Write-Host "compileall lite OK"
-
-      - name: Smoke import lite (no gcc, pure python)
-        shell: pwsh
-        run: |
-          python -c "import lite_denoise_only.config, lite_denoise_only.audio, lite_denoise_only.engine, lite_denoise_only.ui; print('lite import OK')"
-
-      - name: Build Lite exe (PyInstaller onefile compressed, no gcc)
-        shell: pwsh
-        run: |
-          # 生成像素 P ico 供 PyInstaller
-          python -c "from PIL import Image, ImageDraw, ImageFont; import os; img=Image.new('RGBA',(256,256),(0,0,0,0)); d=ImageDraw.Draw(img); fp=os.path.join('lite_denoise_only','fonts','ark-pixel-12px-monospaced-zh_cn.ttf'); pf=ImageFont.truetype(fp,180) if os.path.isfile(fp) else ImageFont.load_default(); bbox=d.textbbox((0,0),'P',font=pf,stroke_width=8); tw=bbox[2]-bbox[0]; th=bbox[3]-bbox[1]; d.text(((256-tw)//2,(256-th)//2-5),'P',fill='#6D4C41',font=pf,stroke_width=8,stroke_fill='#FFB74D'); img.save('lite_icon.ico', sizes=[(256,256),(128,128),(64,64),(32,32),(16,16)])"
-          if (Test-Path "lite_icon.ico") { Write-Host "icon generated" } else { Write-Host "icon fallback" }
-          # 写入 _build_version
-          $ver = "${{ steps.ts.outputs.ver }}"
-          "BUILD_DATE = `"$ver`"" | Out-File -FilePath "_build_version.py" -Encoding utf8
-          pyinstaller --noconfirm --onefile --windowed --name PureVoxLite --icon lite_icon.ico --collect-all onnxruntime --add-data "v9_fft2048_band256_epoch_261.onnx;." --add-data "lite_denoise_only/fonts;lite_denoise_only/fonts" --add-data "_build_version.py;." --strip lite_denoise_only/main.py
-          if (-not (Test-Path "dist/PureVoxLite.exe")) { throw "PureVoxLite.exe not built" }
-          Get-ChildItem dist/PureVoxLite.exe | Format-Table Name,Length
-          # 单文件已压缩，无需额外打包
+        run: powershell -ExecutionPolicy Bypass -File build_lite_local.ps1
 
       - name: Upload Lite exe (single file)
         uses: actions/upload-artifact@v7.0.1

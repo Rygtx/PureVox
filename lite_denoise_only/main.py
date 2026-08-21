@@ -180,8 +180,6 @@ def main():
                 print(emsg)
             # 不退出，允许改设备
 
-    # 托盘/主窗口引用占位（供回调闭包捕获，避免 locals 误判）
-    tray_win = None
     ui = None
     # UI 回调（主窗口与托盘双向同步，比例档位）
     def on_gain(which, val):
@@ -193,12 +191,6 @@ def main():
         save(cfg)
         if stream:
             stream.set_gains(cfg["pre_gain_db"], cfg["post_gain_db"])
-        # 同步托盘显示（BeautifiedTray）
-        try:
-            if tray_win:
-                tray_win.sync_from_cfg()
-        except Exception:
-            pass
         try:
             if ui:
                 # 同步主窗口数字框
@@ -264,20 +256,6 @@ def main():
     # 系统托盘（右键在系统底部显示，像素图标，含缩放切换与完整功能）
     tray = None
     has_tray = False
-    # 统一缩放入口：委托给 LiteUI.set_zoom（内部已持久化 cfg），此处再同步一次 save 确保一致
-    def _set_zoom(percent):
-        try:
-            percent = int(percent)
-            # LiteUI.set_zoom 负责 scaling + geometry + 持久化
-            ui.set_zoom(percent)
-            # 双重保障：同步 cfg 并显式保存（ui.set_zoom 已保存过）
-            cfg["zoom"] = ui._zoom
-            try:
-                save(cfg)
-            except Exception:
-                pass
-        except Exception as e:
-            print("zoom fail", e)
 
     # 优先尝试 pystray 系统托盘
     try:
@@ -368,13 +346,39 @@ def main():
                     pass
                 os._exit(0)
 
-            zoom_menu = pystray.Menu(
-                pystray.MenuItem("100%", lambda icon, item: _set_zoom(100), checked=lambda item: getattr(ui, "_zoom", 100) == 100),
-                pystray.MenuItem("125%", lambda icon, item: _set_zoom(125), checked=lambda item: getattr(ui, "_zoom", 100) == 125),
-                pystray.MenuItem("150%", lambda icon, item: _set_zoom(150), checked=lambda item: getattr(ui, "_zoom", 100) == 150),
-                pystray.MenuItem("175%", lambda icon, item: _set_zoom(175), checked=lambda item: getattr(ui, "_zoom", 100) == 175),
-                pystray.MenuItem("200%", lambda icon, item: _set_zoom(200), checked=lambda item: getattr(ui, "_zoom", 100) == 200),
-            )
+            # 挡位与 ui.RES_GEARS 输出对齐；「自动」按屏幕分辨率定挡。
+            # 约束1：pystray 回调在独立线程，Tk 调用必须 after(0) 投递回主线程。
+            # 约束2：_assert_action 按 getfullargspec 校验，action 超过 2 个参数即拒收
+            #（默认参数也不行），故用闭包工厂绑定百分比，不用 lambda 默认参数。
+            def _tk(fn):
+                def _run():
+                    try:
+                        ui.root.after(0, fn)
+                    except Exception:
+                        fn()
+                return _run
+
+            def _auto_checked(item):
+                return bool(cfg.get("auto_zoom", True))
+
+            zoom_items = [pystray.MenuItem(
+                "自动（按分辨率）",
+                lambda icon, item: _tk(ui.set_auto_zoom)(),
+                checked=_auto_checked,
+            )]
+
+            def _pct_item(p):
+                def _checked(item):
+                    return (not cfg.get("auto_zoom", True)) and getattr(ui, "_zoom", 100) == p
+                return pystray.MenuItem(
+                    f"{p}%",
+                    lambda icon, item: _tk(lambda: ui.set_zoom(p))(),
+                    checked=_checked,
+                )
+
+            for _p in (85, 95, 100, 110, 125, 145, 175):
+                zoom_items.append(_pct_item(_p))
+            zoom_menu = pystray.Menu(*zoom_items)
             menu = pystray.Menu(
                 pystray.MenuItem("显示主界面", _show, default=True),
                 pystray.Menu.SEPARATOR,
@@ -398,34 +402,16 @@ def main():
             has_tray = False
             tray = None
 
-    # 托盘兜底：pystray 不可用时用纯 Tk 的 BeautifiedTray（无外部依赖，保证“托盘还是没有”不再出现）
     if not has_tray:
-        try:
-            from tray import BeautifiedTray
-            # BeautifiedTray 自身是置顶小窗，置于右下角，提供增益快捷与显示/退出
-            tray_win = BeautifiedTray(ui.root, cfg, on_gain, _show_window, lambda: (ui.root.destroy(), os._exit(0)))
-            # 此时关闭主窗口应隐藏到托盘小窗，而不是直接退出
-            def on_close_hide():
-                _hide_window()
-                try:
-                    tray_win.deiconify()
-                    tray_win.lift()
-                except Exception:
-                    pass
-            ui.root.protocol("WM_DELETE_WINDOW", on_close_hide)
-            has_tray = True
-        except Exception as e:
-            print(f"beautified tray fail: {e}")
-            tray_win = None
-            def on_close_exit():
-                try:
-                    if stream:
-                        stream.stop()
-                except Exception:
-                    pass
-                ui.root.destroy()
-                sys.exit(0)
-            ui.root.protocol("WM_DELETE_WINDOW", on_close_exit)
+        def on_close_exit():
+            try:
+                if stream:
+                    stream.stop()
+            except Exception:
+                pass
+            ui.root.destroy()
+            sys.exit(0)
+        ui.root.protocol("WM_DELETE_WINDOW", on_close_exit)
 
     ui.run()
     try:

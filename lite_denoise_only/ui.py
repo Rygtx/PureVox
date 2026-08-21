@@ -3,6 +3,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 
 import tkinter as tk
+import tkinter.font as tkfont
 from tkinter import messagebox
 import subprocess
 import sys
@@ -25,12 +26,72 @@ TITLE_FG = "#FFF8E1"
 PIXEL_FONTS = ["Ark Pixel 12px Mono zh_cn", "Ark Pixel 12px Mono", "Microsoft YaHei"]
 PIXEL_FONT = "Microsoft YaHei"
 
-def _get_system_dpi():
-    # 已彻底甩开系统 DPI，保留接口兼容但恒返回 96
-    return 96
+# ---------------------------------------------------------------------------
+# 分辨率自动挡位：屏幕等效高度跨过门槛升一档，所有组件共用同一倍率。
+# 基准档 100% 对应 1080P；宽度按 16:9 折算成等效高度参与判断（兼容异形屏）。
+# 手动百分比（托盘菜单）可覆盖，选「自动」恢复按分辨率定挡。
+# ---------------------------------------------------------------------------
+RES_GEARS = [
+    (0,    85),   # ≤ HD 768
+    (801,  95),   # ≤ 900
+    (951,  100),  # ≤ 1080（基准档）
+    (1151, 110),  # ≤ 1200
+    (1351, 125),  # ≤ 2K 1440
+    (1651, 145),  # ≤ 1650
+    (2001, 175),  # 4K 2160
+]
 
-def _enable_hidpi(root):
-    # 声明 PerMonitor DPI Aware 避免系统位图拉伸发糊，缩放完全自管
+def detect_zoom_for_screen(w, h):
+    eff = max(int(h), int(w * 9 / 16))
+    z = RES_GEARS[0][1]
+    for th, pct in RES_GEARS:
+        if eff >= th:
+            z = pct
+    return z
+
+def clamp_zoom(percent):
+    try:
+        p = int(percent)
+    except Exception:
+        p = 100
+    return max(RES_GEARS[0][1], min(RES_GEARS[-1][1], p))
+
+def make_sizes(zoom):
+    """一个挡位一套 px：所有组件尺寸/间距/字号的唯一来源（Tk 负数字号 = 像素）。"""
+    s = zoom / 100.0
+
+    def r(v):
+        return max(1, int(round(v * s)))
+
+    return {
+        "scale": s,
+        # 字号（px）
+        "font_body": r(13),
+        "font_small": r(11),
+        "font_title": r(15),
+        # 控件目标高（px）
+        "ctl_h": r(26),          # 按钮/输入框统一高
+        "entry_w": r(64),        # 增益输入框宽（外壳锁定，防 propagate 关闭后塌缩）
+        "combo_h": r(28),        # 下拉框内行高
+        "titlebar_h": r(34),
+        "check_box": r(16),
+        "scrollbar_w": r(10),
+        "thumb_min": r(14),
+        # 弹出列表
+        "popup_rows": 6,
+        "popup_min_w": r(260),
+        "popup_max_w": r(560),
+        # 间距
+        "pad_sm": r(4),
+        "pad_md": r(6),
+        "pad_lg": r(10),
+        # 窗口基准（已含倍率）
+        "win_w": r(430),
+        "win_h": r(250),
+    }
+
+def _enable_hidpi():
+    # 声明 PerMonitor DPI Aware 避免系统位图拉伸发糊；缩放完全由 tk scaling 自管
     try:
         if sys.platform.startswith("win"):
             import ctypes
@@ -47,14 +108,8 @@ def _enable_hidpi(root):
                         ctypes.windll.user32.SetProcessDPIAware()
                     except Exception:
                         pass
-            # 固定 tk scaling 为 1.0 基准，后续按 zoom*0.88 自管
-            try:
-                root.tk.call("tk", "scaling", 1.0)
-            except Exception:
-                pass
     except Exception:
         pass
-    return 96
 
 def _load_pixel_font():
     try:
@@ -86,38 +141,9 @@ def _pick_pixel_font(root):
     PIXEL_FONT = "Microsoft YaHei"
     return PIXEL_FONT
 
-def _apply_pixel_font(root):
-    name = _pick_pixel_font(root)
-    try:
-        import tkinter.font as tkfont
-        # 使用 Font 对象避免空格解析错误，优雅回退
-        for fname in ("TkDefaultFont", "TkTextFont", "TkFixedFont", "TkMenuFont"):
-            try:
-                tkfont.nametofont(fname).configure(family=name, size=10)
-            except Exception:
-                try:
-                    tkfont.Font(root=root, name=fname, exists=True).configure(family=name, size=10)
-                except Exception:
-                    pass
-    except Exception:
-        pass
-    return name
-    # 强制尝试直接创建字体测试是否可用
-    for cand in PIXEL_FONTS:
-        try:
-            f = tk.font.Font(root=root, family=cand, size=9)
-            # 若创建未抛异常且实际 family 匹配，视为可用
-            if f.actual("family") == cand or cand in f.actual("family"):
-                PIXEL_FONT = cand
-                return cand
-        except Exception:
-            pass
-    PIXEL_FONT = "Microsoft YaHei"
-    return PIXEL_FONT
-
 class BlackCombo(tk.Frame):
     """星露谷像素风下拉，单行，过滤空行避免计算错位"""
-    def __init__(self, parent, values, var, on_change, width=38, props_map=None):
+    def __init__(self, parent, values, var, on_change, props_map=None, sizes=None, fonts=None):
         super().__init__(parent, bg=BG)
         self.var = var
         # 过滤空字符串/空白，避免输入空行导致显示空白与索引错位
@@ -125,19 +151,23 @@ class BlackCombo(tk.Frame):
         self.props_map = props_map or {}
         self.on_change = on_change
         self._popup = None
+        # 共享尺寸表与命名字体（LiteUI 统一原地更新，本组件只读）
+        self.sizes = sizes if sizes is not None else make_sizes(100)
+        self.fonts = fonts if fonts is not None else {}
         self.configure(bg=BORDER, bd=0, padx=2, pady=2)
         inner = tk.Frame(self, bg=ENTRY_BG)
+        self.inner = inner
         inner.pack(fill=tk.BOTH, expand=True)
         self._display = tk.StringVar()
         self.var.trace_add("write", lambda *a: self._sync_display())
         self._sync_display()
         # 显示区按像素自适应，已放宽省略
-        self.btn = tk.Label(inner, textvariable=self._display, bg=ENTRY_BG, fg=FG, anchor="w", padx=6, pady=6, font=(PIXEL_FONT, 11))
+        self.btn = tk.Label(inner, textvariable=self._display, bg=ENTRY_BG, fg=FG, anchor="w", padx=self.sizes["pad_md"], font=self.fonts.get("body"))
         self.btn.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        self.arrow = tk.Label(inner, text="▾", bg=BTN_BG, fg=TITLE_BG, font=(PIXEL_FONT, 11, "bold"), width=2, anchor="center", padx=0, pady=4, bd=1, relief=tk.RAISED)
+        self.arrow = tk.Label(inner, text="▾", bg=BTN_BG, fg=TITLE_BG, font=self.fonts.get("bold"), width=2, anchor="center", padx=0, pady=self.sizes["pad_sm"], bd=1, relief=tk.RAISED)
         self.arrow.pack(side=tk.RIGHT, fill=tk.Y)
         inner.pack_propagate(False)
-        inner.configure(height=28)
+        inner.configure(height=self.sizes["combo_h"])
         for w in (self, inner, self.btn, self.arrow):
             w.bind("<Button-1>", lambda e: self._toggle())
         if var.get() not in self.values and self.values:
@@ -164,17 +194,27 @@ class BlackCombo(tk.Frame):
         if (not self.var.get() or self.var.get().strip() == "" or self.var.get() not in self.values) and self.values:
             self.var.set(self.values[0])
 
+    def apply_sizes(self):
+        # 尺寸表已由 LiteUI 原地更新，这里把新 px 推到本组件
+        try:
+            self.inner.configure(height=self.sizes["combo_h"])
+            self.btn.configure(padx=self.sizes["pad_md"], font=self.fonts.get("body"))
+            self.arrow.configure(pady=self.sizes["pad_sm"], font=self.fonts.get("bold"))
+        except Exception:
+            pass
+
     def _open(self):
         if not self.values or (self._popup and self._popup.winfo_exists()):
             return
         x = self.winfo_rootx()
         y = self.winfo_rooty() + self.winfo_height()
-        pw = max(self.winfo_width(), 260)
-        # 测量最长项，自动扩宽，放宽至 560 以显示全名
+        S = self.sizes
+        pw = max(self.winfo_width(), S["popup_min_w"])
+        # 测量最长项，自动扩宽，放宽上限以显示全名
         try:
-            f = tkfont.Font(family=PIXEL_FONT, size=11)
-            max_w = max(f.measure(v) for v in self.values) + 40
-            pw = max(pw, min(max_w, 560))
+            f = self.fonts.get("body")
+            max_w = max(f.measure(v) for v in self.values) + S["pad_lg"] * 5
+            pw = max(pw, min(max_w, S["popup_max_w"]))
         except Exception:
             pass
         self._popup = tk.Toplevel(self)
@@ -183,18 +223,19 @@ class BlackCombo(tk.Frame):
         self._popup.attributes("-topmost", True)
         outer = tk.Frame(self._popup, bg=BORDER, bd=1)
         outer.pack(fill=tk.BOTH, expand=True)
-        # 滚轮一格一设备，进度全局按设备数（项高28+2*1=30）
-        canvas = tk.Canvas(outer, bg=ENTRY_BG, bd=0, highlightthickness=0, yscrollincrement=30)
-        bar = tk.Frame(outer, bg=PANEL_BG, width=10, bd=1, relief=tk.FLAT, highlightbackground=BORDER, highlightthickness=1)
+        # 滚轮一格一设备，行高/滚动步长全部来自尺寸表
+        row_h = S["combo_h"]
+        canvas = tk.Canvas(outer, bg=ENTRY_BG, bd=0, highlightthickness=0, yscrollincrement=row_h + 2)
+        bar = tk.Frame(outer, bg=PANEL_BG, width=S["scrollbar_w"], bd=1, relief=tk.FLAT, highlightbackground=BORDER, highlightthickness=1)
         bar.pack(side=tk.RIGHT, fill=tk.Y, padx=(1, 0))
         thumb = tk.Frame(bar, bg=BORDER, bd=0)
-        thumb.place(relx=0, rely=0, relwidth=1, height=24)
+        thumb.place(relx=0, rely=0, relwidth=1, height=S["thumb_min"])
         canvas.configure(yscrollcommand=lambda *a: _update_thumb(*a))
         # 标准进度：thumb 高= h*可见/总数，y= h*first
         def _update_thumb(first, last):
             try:
-                h = bar.winfo_height() or outer.winfo_height() or 180
-                th = max(16, int(h * (float(last) - float(first))))
+                h = bar.winfo_height() or outer.winfo_height() or S["win_h"]
+                th = max(S["thumb_min"], int(h * (float(last) - float(first))))
                 y0 = int(h * float(first))
                 # 保持在边界内
                 th = min(th, h)
@@ -215,17 +256,17 @@ class BlackCombo(tk.Frame):
         for idx, disp in enumerate(self.values):
             is_sel = (disp == self.var.get())
             bgc = SELECT_BG if is_sel else ENTRY_BG
-            item = tk.Frame(inner, bg=bgc, bd=0, height=28)
+            item = tk.Frame(inner, bg=bgc, bd=0, height=row_h)
             item.pack(fill=tk.X, padx=1, pady=1)
             item.pack_propagate(False)
-            l1 = tk.Label(item, text=disp, bg=bgc, fg=FG, anchor="w", font=(PIXEL_FONT, 11))
-            l1.pack(fill=tk.BOTH, expand=True, padx=6, pady=4)
+            l1 = tk.Label(item, text=disp, bg=bgc, fg=FG, anchor="w", font=self.fonts.get("body"))
+            l1.pack(fill=tk.BOTH, expand=True, padx=S["pad_md"], pady=S["pad_sm"])
             for w in (item, l1):
                 w.bind("<Button-1>", lambda e, i=idx: self._pick(i))
                 w.bind("<Enter>", lambda e, f=item: self._hover(f, True))
                 w.bind("<Leave>", lambda e, f=item, sel=is_sel: self._hover(f, False, sel))
         inner.update_idletasks()
-        h = min(len(self.values), 6) * 30
+        h = min(len(self.values), S["popup_rows"]) * (row_h + 2)
         canvas.configure(height=h)
         # 外层 bd=1，需补 2px 边框
         self._popup.geometry(f"{pw}x{h+2}+{x}+{y}")
@@ -235,7 +276,7 @@ class BlackCombo(tk.Frame):
         try:
             idx = self.values.index(self.var.get())
             n = len(self.values)
-            vis = 6
+            vis = S["popup_rows"]
             # 选中项尽量居中，尾部时贴底避免空行
             top = max(0, min(idx, n - vis)) / max(1, n) if n > vis else 0
             canvas.yview_moveto(top)
@@ -326,19 +367,22 @@ class BlackCombo(tk.Frame):
 
 class PixelCheck(tk.Frame):
     """星露谷像素风复选框，纯 tk，匹配黑底白字/木纹边框风格，替代系统 Checkbutton"""
-    def __init__(self, parent, text, variable, command=None):
+    def __init__(self, parent, text, variable, command=None, sizes=None, fonts=None):
         super().__init__(parent, bg=BG)
         self.variable = variable
         self.command = command
-        self._box_size = 18
+        # 共享尺寸表与命名字体（LiteUI 统一原地更新，本组件只读）
+        self.sizes = sizes if sizes is not None else make_sizes(100)
+        self.fonts = fonts if fonts is not None else {}
         # 方框：ENTRY_BG 未选中，SELECT_BG 选中，BORDER 边框
-        self.box = tk.Frame(self, bg=ENTRY_BG, width=self._box_size, height=self._box_size, bd=0, highlightbackground=BORDER, highlightthickness=1, relief=tk.FLAT)
+        sz = self.sizes["check_box"]
+        self.box = tk.Frame(self, bg=ENTRY_BG, width=sz, height=sz, bd=0, highlightbackground=BORDER, highlightthickness=1, relief=tk.FLAT)
         self.box.pack(side=tk.LEFT)
         self.box.pack_propagate(False)
-        self.mark = tk.Label(self.box, text="", bg=ENTRY_BG, fg=FG, font=(PIXEL_FONT, 11, "bold"), anchor="center")
+        self.mark = tk.Label(self.box, text="", bg=ENTRY_BG, fg=FG, font=self.fonts.get("bold"), anchor="center")
         self.mark.pack(expand=True, fill=tk.BOTH)
-        self.label = tk.Label(self, text=text, bg=BG, fg=FG, font=(PIXEL_FONT, 13))
-        self.label.pack(side=tk.LEFT, padx=6)
+        self.label = tk.Label(self, text=text, bg=BG, fg=FG, font=self.fonts.get("body"))
+        self.label.pack(side=tk.LEFT, padx=self.sizes["pad_md"])
         self._sync()
         try:
             variable.trace_add("write", lambda *a: self._sync())
@@ -382,10 +426,13 @@ class PixelCheck(tk.Frame):
         except Exception:
             pass
 
-    def set_scale(self, scale):
+    def apply_sizes(self):
+        # 尺寸表已由 LiteUI 原地更新，这里把新 px 推到本组件
         try:
-            sz = int(18 * scale)
+            sz = self.sizes["check_box"]
             self.box.configure(width=sz, height=sz)
+            self.mark.configure(font=self.fonts.get("bold"))
+            self.label.configure(font=self.fonts.get("body"), padx=self.sizes["pad_md"])
         except Exception:
             pass
 
@@ -399,44 +446,36 @@ class LiteUI:
         self._on_close = on_close
         self._on_minimize = on_minimize
 
-        # 创建 Tk 前先声明，避免系统位图缩放发糊
+        # 创建 Tk 前声明 PerMonitor Aware，避免系统位图拉伸发糊
+        _enable_hidpi()
+        self.root = tk.Tk()
+        # 全组件像素化（负数字号 + px 尺寸表），tk scaling 固定 1 不参与缩放
         try:
-            if sys.platform.startswith("win"):
-                import ctypes
-                try:
-                    ctypes.windll.shcore.SetProcessDpiAwareness(2)
-                except Exception:
-                    try:
-                        ctypes.windll.user32.SetProcessDpiAwarenessContext(ctypes.c_void_p(-4))
-                    except Exception:
-                        try:
-                            ctypes.windll.user32.SetProcessDPIAware()
-                        except Exception:
-                            pass
+            self.root.tk.call("tk", "scaling", 1.0)
         except Exception:
             pass
-        self.root = tk.Tk()
-        dpi = _enable_hidpi(self.root)
-        self._base_w, self._base_h = 420, 240
-        self._zoom = int(cfg.get("zoom", 100))
-        self._dpi = dpi
         self.pixel_font = _pick_pixel_font(self.root)
-        # 优雅全局字体与自定义缩放（完全自管，不跟随系统；字体普遍加大，DPI 计算调小）
+        # 挡位：默认按分辨率自动定挡；用户手动选过百分比则用保存值
+        if bool(cfg.get("auto_zoom", True)):
+            self._zoom = detect_zoom_for_screen(self.root.winfo_screenwidth(), self.root.winfo_screenheight())
+        else:
+            self._zoom = clamp_zoom(cfg.get("zoom", 100))
+        cfg["zoom"] = self._zoom
+        # 共享尺寸表 + 命名字体：全部组件尺寸的唯一来源，换挡只改这里
+        self.sizes = make_sizes(self._zoom)
+        S = self.sizes
+        self.fonts = {
+            "body": tkfont.Font(family=self.pixel_font, size=-S["font_body"]),
+            "bold": tkfont.Font(family=self.pixel_font, size=-S["font_body"], weight="bold"),
+            "title": tkfont.Font(family=self.pixel_font, size=-S["font_title"], weight="bold"),
+            "small": tkfont.Font(family=self.pixel_font, size=-S["font_small"]),
+        }
         try:
-            import tkinter.font as tkfont
-            scale = self._zoom / 100.0
-            # DPI 调小 0.88x，字体加大至 12pt
-            tk_scale = scale * 0.88
-            self.root.tk.call("tk", "scaling", tk_scale)
-            self._zoom_w = int(self._base_w * scale)
-            self._zoom_h = int(self._base_h * scale)
-            # 整体字体加大：名义字体 12pt
             for fname in ("TkDefaultFont", "TkTextFont", "TkFixedFont", "TkMenuFont", "TkHeadingFont"):
                 try:
-                    tkfont.nametofont(fname).configure(family=self.pixel_font, size=12)
+                    tkfont.nametofont(fname).configure(family=self.pixel_font, size=-S["font_body"])
                 except Exception:
                     pass
-            self.root.option_add("*Font", f"{{{self.pixel_font}}} 12")
         except Exception:
             pass
         self.root.title("PureVox Lite")
@@ -494,37 +533,30 @@ class LiteUI:
         except Exception:
             pass
         self.root.resizable(False, False)
-        self.root.geometry(f"{self._zoom_w}x{self._zoom_h}+600+400")
-        self.root.update_idletasks()
-        try:
-            req_w = self.root.winfo_reqwidth()
-            req_h = self.root.winfo_reqheight()
-            if req_w > self._zoom_w or req_h > self._zoom_h:
-                self.root.geometry(f"{max(self._zoom_w, req_w)}x{max(self._zoom_h, req_h)}+600+400")
-        except Exception:
-            pass
 
         # 自绘标题栏（可拖动）
-        # 星露谷木纹标题栏
-        bar = tk.Frame(self.root, bg=TITLE_BG, height=30, bd=0)
+        # 星露谷木纹标题栏，高度随缩放
+        bar = tk.Frame(self.root, bg=TITLE_BG, height=S["titlebar_h"], bd=0)
+        self._title_bar = bar
         bar.pack(fill=tk.X, side=tk.TOP)
         bar.bind("<Button-1>", self._drag_start)
         bar.bind("<B1-Motion>", self._drag_move)
         self._drag_x = 0
         self._drag_y = 0
         # 像素标题（可拖动）
-        title_lbl = tk.Label(bar, text="◆ PureVox Lite", bg=TITLE_BG, fg=TITLE_FG, font=(PIXEL_FONT, 14, "bold"))
-        title_lbl.pack(side=tk.LEFT, padx=10, pady=4)
+        title_lbl = tk.Label(bar, text="◆ PureVox Lite", bg=TITLE_BG, fg=TITLE_FG, font=self.fonts["title"])
+        title_lbl.pack(side=tk.LEFT, padx=S["pad_lg"], pady=S["pad_sm"])
         # 仅保留叉，正方形 28x28 像素风
-        close_btn = tk.Button(bar, text="✕", bg="#E57373", fg="white", bd=1, relief=tk.RAISED, highlightbackground=BORDER, font=(PIXEL_FONT, 11, "bold"), width=2, height=1, padx=6, pady=2, command=self._do_close, activebackground="#EF5350")
-        close_btn.pack(side=tk.RIGHT, padx=4, pady=4)
+        close_btn = tk.Button(bar, text="✕", bg="#E57373", fg="white", bd=1, relief=tk.RAISED, highlightbackground=BORDER, font=self.fonts["bold"], width=2, height=1, padx=S["pad_sm"], pady=S["pad_sm"], command=self._do_close, activebackground="#EF5350")
+        self.btn_close = close_btn
+        close_btn.pack(side=tk.RIGHT, padx=S["pad_sm"], pady=S["pad_sm"])
         # 标题栏整体及文字均可拖动
         for w in (bar, title_lbl):
             w.bind("<Button-1>", self._drag_start)
             w.bind("<B1-Motion>", self._drag_move)
 
         body = tk.Frame(self.root, bg=BG)
-        body.pack(fill=tk.BOTH, expand=True, padx=10, pady=8)
+        body.pack(fill=tk.BOTH, expand=True, padx=S["pad_lg"], pady=S["pad_md"])
 
         self.in_var = tk.StringVar(value=cfg.get("input_device", ""))
         self.out_var = tk.StringVar(value=cfg.get("output_device", ""))
@@ -544,131 +576,181 @@ class LiteUI:
         self.out_names, self.out_map, self.out_props = _unpack(outs)
 
         row1 = tk.Frame(body, bg=BG)
-        row1.pack(fill=tk.X, pady=4)
-        tk.Label(row1, text="输入", bg=BG, fg=FG, width=6, anchor="w", font=(PIXEL_FONT, 13)).pack(side=tk.LEFT)
-        self.cb_in = BlackCombo(row1, self.in_names, self.in_var, self._device_changed, width=38, props_map=self.in_props)
-        self.cb_in.pack(side=tk.LEFT, padx=6, fill=tk.X, expand=True)
+        row1.pack(fill=tk.X, pady=S["pad_sm"])
+        tk.Label(row1, text="输入", bg=BG, fg=FG, width=6, anchor="w", font=self.fonts["body"]).pack(side=tk.LEFT)
+        self.cb_in = BlackCombo(row1, self.in_names, self.in_var, self._device_changed, props_map=self.in_props, sizes=self.sizes, fonts=self.fonts)
+        self.cb_in.pack(side=tk.LEFT, padx=S["pad_md"], fill=tk.X, expand=True)
 
         row2 = tk.Frame(body, bg=BG)
-        row2.pack(fill=tk.X, pady=4)
-        tk.Label(row2, text="输出", bg=BG, fg=FG, width=6, anchor="w", font=(PIXEL_FONT, 13)).pack(side=tk.LEFT)
-        self.cb_out = BlackCombo(row2, self.out_names, self.out_var, self._device_changed, width=38, props_map=self.out_props)
-        self.cb_out.pack(side=tk.LEFT, padx=6, fill=tk.X, expand=True)
+        row2.pack(fill=tk.X, pady=S["pad_sm"])
+        tk.Label(row2, text="输出", bg=BG, fg=FG, width=6, anchor="w", font=self.fonts["body"]).pack(side=tk.LEFT)
+        self.cb_out = BlackCombo(row2, self.out_names, self.out_var, self._device_changed, props_map=self.out_props, sizes=self.sizes, fonts=self.fonts)
+        self.cb_out.pack(side=tk.LEFT, padx=S["pad_md"], fill=tk.X, expand=True)
 
         row3 = tk.Frame(body, bg=BG)
-        row3.pack(fill=tk.X, pady=6)
-        tk.Label(row3, text="前增益", bg=BG, fg=FG, width=6, anchor="w", font=(PIXEL_FONT, 13)).pack(side=tk.LEFT)
-        tk.Button(row3, text="−", bg=BTN_BG, fg=FG, bd=0, relief=tk.FLAT, width=3, font=("Arial", 11, "bold"), activebackground=HOVER_BG, activeforeground=FG, command=lambda: self._step("pre", -1)).pack(side=tk.LEFT, padx=4)
+        row3.pack(fill=tk.X, pady=S["pad_md"])
+        tk.Label(row3, text="前增益", bg=BG, fg=FG, width=6, anchor="w", font=self.fonts["body"]).pack(side=tk.LEFT)
+        # 内边距 pady 由 _apply_pads 按统一控件高计算，保证四行控件等高
+        self.btn_pre_dec = tk.Button(row3, text="−", bg=BTN_BG, fg=FG, bd=0, relief=tk.FLAT, width=3, font=self.fonts["bold"], activebackground=HOVER_BG, activeforeground=FG, command=lambda: self._step("pre", -1))
+        self.btn_pre_dec.pack(side=tk.LEFT, padx=S["pad_sm"])
         self.pre_var = tk.StringVar(value=str(int(cfg.get("pre_gain_db", 0))))
-        self.ent_pre = tk.Entry(row3, textvariable=self.pre_var, bg=ENTRY_BG, fg=FG, insertbackground=FG, width=6, justify="center", relief=tk.FLAT, bd=1, highlightbackground=BORDER, highlightthickness=1, font=(PIXEL_FONT, 13))
-        self.ent_pre.pack(side=tk.LEFT)
+        # Entry 外壳：宽高全部锁定（propagate 关闭后 Frame 不再跟随子控件，必须显式给尺寸）
+        self.ent_pre_wrap = tk.Frame(row3, bg=BORDER, bd=1, relief=tk.FLAT, width=self.sizes["entry_w"], height=self.sizes["ctl_h"])
+        self.ent_pre_wrap.pack(side=tk.LEFT)
+        self.ent_pre_wrap.pack_propagate(False)
+        self.ent_pre = tk.Entry(self.ent_pre_wrap, textvariable=self.pre_var, bg=ENTRY_BG, fg=FG, insertbackground=FG, width=6, justify="center", relief=tk.FLAT, bd=0, highlightthickness=0, font=self.fonts["body"])
+        self.ent_pre.pack(fill=tk.BOTH, expand=True)
         self.ent_pre.bind("<Return>", lambda e: self._gain_enter("pre"))
         self.ent_pre.bind("<FocusOut>", lambda e: self._gain_enter("pre"))
-        tk.Button(row3, text="+", bg=BTN_BG, fg=FG, bd=0, relief=tk.FLAT, width=3, font=("Arial", 11, "bold"), activebackground=HOVER_BG, activeforeground=FG, command=lambda: self._step("pre", 1)).pack(side=tk.LEFT, padx=4)
-        tk.Label(row3, text="dB", bg=BG, fg=FG, font=(PIXEL_FONT, 13)).pack(side=tk.LEFT)
+        self.btn_pre_inc = tk.Button(row3, text="+", bg=BTN_BG, fg=FG, bd=0, relief=tk.FLAT, width=3, font=self.fonts["bold"], activebackground=HOVER_BG, activeforeground=FG, command=lambda: self._step("pre", 1))
+        self.btn_pre_inc.pack(side=tk.LEFT, padx=S["pad_sm"])
+        tk.Label(row3, text="dB", bg=BG, fg=FG, font=self.fonts["body"]).pack(side=tk.LEFT)
 
         row4 = tk.Frame(body, bg=BG)
-        row4.pack(fill=tk.X, pady=4)
-        tk.Label(row4, text="后增益", bg=BG, fg=FG, width=6, anchor="w", font=(PIXEL_FONT, 13)).pack(side=tk.LEFT)
-        tk.Button(row4, text="−", bg=BTN_BG, fg=FG, bd=0, relief=tk.FLAT, width=3, font=("Arial", 11, "bold"), activebackground=HOVER_BG, activeforeground=FG, command=lambda: self._step("post", -1)).pack(side=tk.LEFT, padx=4)
+        row4.pack(fill=tk.X, pady=S["pad_sm"])
+        tk.Label(row4, text="后增益", bg=BG, fg=FG, width=6, anchor="w", font=self.fonts["body"]).pack(side=tk.LEFT)
+        self.btn_post_dec = tk.Button(row4, text="−", bg=BTN_BG, fg=FG, bd=0, relief=tk.FLAT, width=3, font=self.fonts["bold"], activebackground=HOVER_BG, activeforeground=FG, command=lambda: self._step("post", -1))
+        self.btn_post_dec.pack(side=tk.LEFT, padx=S["pad_sm"])
         self.post_var = tk.StringVar(value=str(int(cfg.get("post_gain_db", 0))))
-        self.ent_post = tk.Entry(row4, textvariable=self.post_var, bg=ENTRY_BG, fg=FG, insertbackground=FG, width=6, justify="center", relief=tk.FLAT, bd=1, highlightbackground=BORDER, highlightthickness=1, font=(PIXEL_FONT, 12))
-        self.ent_post.pack(side=tk.LEFT)
+        self.ent_post_wrap = tk.Frame(row4, bg=BORDER, bd=1, relief=tk.FLAT, width=self.sizes["entry_w"], height=self.sizes["ctl_h"])
+        self.ent_post_wrap.pack(side=tk.LEFT)
+        self.ent_post_wrap.pack_propagate(False)
+        self.ent_post = tk.Entry(self.ent_post_wrap, textvariable=self.post_var, bg=ENTRY_BG, fg=FG, insertbackground=FG, width=6, justify="center", relief=tk.FLAT, bd=0, highlightthickness=0, font=self.fonts["body"])
+        self.ent_post.pack(fill=tk.BOTH, expand=True)
         self.ent_post.bind("<Return>", lambda e: self._gain_enter("post"))
         self.ent_post.bind("<FocusOut>", lambda e: self._gain_enter("post"))
-        tk.Button(row4, text="+", bg=BTN_BG, fg=FG, bd=0, relief=tk.FLAT, width=3, font=("Arial", 10, "bold"), activebackground=HOVER_BG, activeforeground=FG, command=lambda: self._step("post", 1)).pack(side=tk.LEFT, padx=4)
-        tk.Label(row4, text="dB", bg=BG, fg=FG, font=(PIXEL_FONT, 12)).pack(side=tk.LEFT)
+        self.btn_post_inc = tk.Button(row4, text="+", bg=BTN_BG, fg=FG, bd=0, relief=tk.FLAT, width=3, font=self.fonts["bold"], activebackground=HOVER_BG, activeforeground=FG, command=lambda: self._step("post", 1))
+        self.btn_post_inc.pack(side=tk.LEFT, padx=S["pad_sm"])
+        tk.Label(row4, text="dB", bg=BG, fg=FG, font=self.fonts["body"]).pack(side=tk.LEFT)
 
         row5 = tk.Frame(body, bg=BG)
-        row5.pack(fill=tk.X, pady=8)
+        row5.pack(fill=tk.X, pady=S["pad_lg"])
         self.autostart_var = tk.BooleanVar(value=bool(cfg.get("autostart", False)))
-        self.cb_autostart = PixelCheck(row5, text="开机自启", variable=self.autostart_var, command=self._autostart_toggle)
+        self.cb_autostart = PixelCheck(row5, text="开机自启", variable=self.autostart_var, command=self._autostart_toggle, sizes=self.sizes, fonts=self.fonts)
         self.cb_autostart.pack(side=tk.LEFT)
-        tk.Button(row5, text="声音控制面板", bg=BTN_BG, fg=FG, bd=0, relief=tk.FLAT, font=(PIXEL_FONT, 12), padx=8, pady=4, activebackground=HOVER_BG, activeforeground=FG, command=self._open_sound).pack(side=tk.RIGHT, padx=4)
-        tk.Button(row5, text="VB 面板", bg=BTN_BG, fg=FG, bd=0, relief=tk.FLAT, font=(PIXEL_FONT, 12), padx=8, pady=4, activebackground=HOVER_BG, activeforeground=FG, command=self._open_vb).pack(side=tk.RIGHT)
+        self.btn_sound = tk.Button(row5, text="声音控制面板", bg=BTN_BG, fg=FG, bd=0, relief=tk.FLAT, font=self.fonts["body"], padx=S["pad_lg"], activebackground=HOVER_BG, activeforeground=FG, command=self._open_sound)
+        self.btn_sound.pack(side=tk.RIGHT, padx=S["pad_sm"])
+        self.btn_vb = tk.Button(row5, text="VB 面板", bg=BTN_BG, fg=FG, bd=0, relief=tk.FLAT, font=self.fonts["body"], padx=S["pad_lg"], activebackground=HOVER_BG, activeforeground=FG, command=self._open_vb)
+        self.btn_vb.pack(side=tk.RIGHT)
 
-        self.status = tk.Label(body, text="运行中 · 48kHz 单声道 · 降噪常驻", bg=BG, fg="#AAAAAA", font=(PIXEL_FONT, 10))
-        self.status.pack(side=tk.BOTTOM, pady=4)
-        # 定时校验——已 DPI Unaware，不再跟随系统 DPI 回退，只保留空轮询以兼容旧逻辑
-        self.root.after(1000, self._poll_dpi)
+        self.status = tk.Label(body, text="运行中 · 48kHz 单声道 · 降噪常驻", bg=BG, fg="#AAAAAA", font=self.fonts["small"])
+        self.status.pack(side=tk.BOTTOM, pady=S["pad_sm"])
 
-    def set_zoom(self, percent):
+        # 初始统一控件高（按钮 pady / 输入框外壳全部来自尺寸表）
+        self._apply_pads()
+        # 初始定窗：必须在全部控件创建完成后测量，否则按空窗口截断内容
+        w, h = self._fit_size()
+        self._zoom_w, self._zoom_h = w, h
+        self.root.geometry(f"{w}x{h}+600+400")
+
+    def _ctl_pad_v(self):
+        # 统一控件高：目标 ctl_h 与字体行高之差 = 按钮 pady / 输入框 ipady，保证同行等高
         try:
-            percent = max(75, min(200, int(percent)))
-            self._zoom = percent
-            self.cfg["zoom"] = percent
-            scale = percent / 100.0
-            # 先设缩放，再算几何，避免立即回弹；立即刷新内容字体以免“只放大窗口”，DPI 0.88x 调小
+            ls = self.fonts["body"].metrics("linespace")
+        except Exception:
+            ls = self.sizes["font_body"] + 4
+        return max(0, (self.sizes["ctl_h"] - ls) // 2)
+
+    def _apply_sizes(self):
+        S = self.sizes
+        # 命名字体改 px 后，所有引用该字体的控件由 Tk 自动重排
+        font_key = (("body", "font_body"), ("bold", "font_body"), ("title", "font_title"), ("small", "font_small"))
+        for name, key in font_key:
             try:
-                self.root.tk.call("tk", "scaling", scale * 0.88)
+                self.fonts[name].configure(size=-S[key])
             except Exception:
                 pass
-            # 立即刷新内容：名义字体重触发缩放，匿名tuple字体用新Font对象重建
+        try:
+            self._title_bar.configure(height=S["titlebar_h"])
+        except Exception:
+            pass
+        for cb in (self.cb_in, self.cb_out, self.cb_autostart):
             try:
-                import tkinter.font as tkfont
-                for fname in ("TkDefaultFont", "TkTextFont", "TkFixedFont", "TkMenuFont", "TkHeadingFont"):
-                    try:
-                        tkfont.nametofont(fname).configure(size=12)
-                    except Exception:
-                        pass
-                def _refresh_fonts(w):
-                    try:
-                        fval = w.cget("font")
-                    except Exception:
-                        fval = None
-                    if fval:
-                        try:
-                            # 命名体系已在上一步处理，跳过 Tk* 命名
-                            if isinstance(fval, str) and fval.startswith("Tk"):
-                                pass
-                            else:
-                                orig = tkfont.Font(font=w.cget("font"))
-                                nf = tkfont.Font(family=orig.actual("family"), size=orig.actual("size"), weight=orig.actual("weight"), slant=orig.actual("slant"))
-                                try:
-                                    nf.configure(underline=orig.actual("underline"), overstrike=orig.actual("overstrike"))
-                                except Exception:
-                                    pass
-                                w.configure(font=nf)
-                        except Exception:
-                            pass
-                    for ch in w.winfo_children():
-                        _refresh_fonts(ch)
-                _refresh_fonts(self.root)
+                cb.apply_sizes()
             except Exception:
                 pass
-            w = int(self._base_w * scale)
-            h = int(self._base_h * scale)
-            self._zoom_w, self._zoom_h = w, h
-            self.root.update_idletasks()
+        self._apply_pads()
+
+    def _apply_pads(self):
+        pv = self._ctl_pad_v()
+        S = self.sizes
+        for b in (self.btn_pre_dec, self.btn_pre_inc, self.btn_post_dec, self.btn_post_inc,
+                  self.btn_sound, self.btn_vb, self.btn_close):
             try:
-                req_w = self.root.winfo_reqwidth()
-                req_h = self.root.winfo_reqheight()
-                w = max(w, req_w)
-                h = max(h, req_h)
-                self._zoom_w, self._zoom_h = w, h
+                b.configure(pady=pv)
             except Exception:
                 pass
-            # 保留窗口位置，只改变大小
+        # 完整事件循环后取按钮实际需求高（Tk 按钮有随字体缩放的固有内高，
+        # 无法纯公式预测），Entry 外壳直接对齐该值，实现同行严格等高
+        try:
+            self.root.update()
+            ref = self.btn_pre_inc.winfo_reqheight()
+        except Exception:
+            ref = S["ctl_h"]
+        for wrap in (self.ent_pre_wrap, self.ent_post_wrap):
             try:
-                cur = self.root.geometry()
-                parts = cur.split("+", 1)
-                pos = "+" + parts[1] if len(parts) > 1 else ""
-                self.root.geometry(f"{w}x{h}{pos}")
-            except Exception:
-                self.root.geometry(f"{w}x{h}")
-            # 持久化
-            try:
-                from config import save as _save
-                _save(self.cfg)
+                wrap.configure(width=S["entry_w"], height=max(S["ctl_h"], ref))
             except Exception:
                 pass
+
+    def _fit_size(self):
+        # 窗口尺寸 = max(挡位基准 px, 内容需求)，保证任何挡位下内容不被裁剪
+        self.root.update_idletasks()
+        S = self.sizes
+        try:
+            w = max(S["win_w"], self.root.winfo_reqwidth())
+            h = max(S["win_h"], self.root.winfo_reqheight())
+        except Exception:
+            w, h = S["win_w"], S["win_h"]
+        return w, h
+
+    def _apply_zoom(self, percent):
+        percent = clamp_zoom(percent)
+        self._zoom = percent
+        self.cfg["zoom"] = percent
+        # 原地更新尺寸表：所有子组件持同一 dict，读到的即是新挡位 px
+        self.sizes.update(make_sizes(percent))
+        self._apply_sizes()
+        # 完整事件循环：让新字体的需求尺寸传播到几何系统，
+        # 只用 update_idletasks 会取到上一挡的陈旧 req 值
+        try:
+            self.root.update()
+        except Exception:
+            pass
+        w, h = self._fit_size()
+        self._zoom_w, self._zoom_h = w, h
+        # 保留窗口位置，只改变大小
+        try:
+            cur = self.root.geometry()
+            parts = cur.split("+", 1)
+            pos = "+" + parts[1] if len(parts) > 1 else ""
+            self.root.geometry(f"{w}x{h}{pos}")
+        except Exception:
+            self.root.geometry(f"{w}x{h}")
+
+    def _save_cfg(self):
+        try:
+            from config import save as _save
+            _save(self.cfg)
         except Exception:
             pass
 
-    def _poll_dpi(self):
-        # 已完全自管 DPI，不跟随系统回退缩放；轮询只保留定时器，不改变几何
+    def set_zoom(self, percent):
+        # 手动选挡：退出自动模式并记住百分比
         try:
-            self.root.after(1000, self._poll_dpi)
+            self.cfg["auto_zoom"] = False
+            self._apply_zoom(percent)
+            self._save_cfg()
+        except Exception:
+            pass
+
+    def set_auto_zoom(self):
+        # 回到自动挡：按当前屏幕分辨率定挡
+        try:
+            self.cfg["auto_zoom"] = True
+            z = detect_zoom_for_screen(self.root.winfo_screenwidth(), self.root.winfo_screenheight())
+            self._apply_zoom(z)
+            self._save_cfg()
         except Exception:
             pass
 

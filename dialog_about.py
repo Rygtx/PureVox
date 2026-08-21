@@ -361,6 +361,21 @@ AGC、VAD，31 段均衡器在菜单「设置 → 均衡器」打开。</p>
 
 CHANGELOG_TEXT = """# 更新日志
 
+## 2026-08-21 — Lite 界面尺寸体系重构：分辨率自动挡位
+
+- **分辨率自动定挡**：新增 `RES_GEARS` 门槛表，按屏幕等效高度（宽度按 16:9 折算）自动选挡
+  （768→85%、900→95%、1080→100% 基准、1152→110%、1440→125%、1440+带鱼屏→145%、4K→175%），
+  启动即定挡，换显示器免调；托盘「缩放比例」菜单新增「自动（按分辨率）」项，手动百分比可覆盖并记忆
+- **一套尺寸表驱动全部组件**：新增 `make_sizes(zoom)`，每个挡位对应一组确定 px 值
+  （字号/按钮高/下拉行高/标题栏/间距/窗口基准），所有组件只从表取值，杜绝混排
+- **像素字号替代 pt 字号**：全部字体改 Tk 负数字号（px），`tk scaling` 固定 1 不再参与缩放，
+  命名 Font 对象全局共享，换挡改一处字号全界面自动重排，删除 `_refresh_fonts` 全树遍历补丁
+- **同行控件严格等高**：增益输入框改为固定高度外壳 Frame（与下拉框同手法），
+  高度对齐按钮实测需求高，消除 Entry 边框固有差；前后增益行字号统一为同一像素值，
+  四个加减按钮统一像素字体（原 Arial 与像素字混排、两行字号不一致）
+- **清理**：删除空转的 `_poll_dpi` 轮询、从未被调用的 `_apply_pixel_font` 死代码、
+  pystray 失败时的 BeautifiedTray 兜底托盘（单一实现路径；CI 同步补装 pystray/pyaudio 并显式打包）
+
 ## 2026-08-20 — 切换到 Python 3.12（PyAudio 暂无 3.13 wheel，自包含）
 
 - **Python 3.13 → 3.12（自包含）**：内嵌 Python 由 3.13.7 切换到 3.12.11（`bootstrap_python312.sh/.ps1` + `py312` 启动器、`packages/python312*` / `.py312-src`、`packages/cpython@v3.12.11`），CI 基线同步 `python:3.12-bullseye` / `setup-python 3.12`，`pack_deb.sh` / `pack_appimage.sh` / `build_win.ps1` 路径同步为 `python312`，原因：目前 Python 3.13 暂无 PyAudio 预编译 wheel，切到 3.12 保证 `pip install PyAudio` 有 wheel 可用
