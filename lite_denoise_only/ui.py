@@ -166,6 +166,7 @@ class BlackCombo(tk.Frame):
         self.btn.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         self.arrow = tk.Label(inner, text="▾", bg=BTN_BG, fg=TITLE_BG, font=self.fonts.get("bold"), width=2, anchor="center", padx=0, pady=self.sizes["pad_sm"], bd=1, relief=tk.RAISED)
         self.arrow.pack(side=tk.RIGHT, fill=tk.Y)
+        inner.bind("<Configure>", lambda e: self._sync_display())
         inner.pack_propagate(False)
         inner.configure(height=self.sizes["combo_h"])
         for w in (self, inner, self.btn, self.arrow):
@@ -173,11 +174,28 @@ class BlackCombo(tk.Frame):
         if var.get() not in self.values and self.values:
             var.set(self.values[0])
 
+    def _elide(self, v, avail):
+        # 按像素宽度省略：超宽即逐字截断加 …，文字再长也只截断自己
+        try:
+            f = self.fonts.get("body")
+            if avail > 20 and f.measure(v) > avail:
+                while v and f.measure(v + "…") > avail:
+                    v = v[:-1]
+                v += "…"
+        except Exception:
+            pass
+        return v
+
     def _sync_display(self, *a):
         v = self.var.get() or ""
-        # 放宽省略至 50 字符，配合宽度自适应基本可显示全名
-        if len(v) > 50:
-            v = v[:48] + "…"
+        # 可用宽 = 内框宽 − 箭头宽 − 边距，保证右侧箭头永不被挤出框外
+        try:
+            avail = (self.inner.winfo_width()
+                     - self.arrow.winfo_reqwidth()
+                     - 2 * (self.sizes["pad_md"] + 2))
+            v = self._elide(v, avail)
+        except Exception:
+            pass
         self._display.set(v)
 
     def _toggle(self):
@@ -209,14 +227,10 @@ class BlackCombo(tk.Frame):
         x = self.winfo_rootx()
         y = self.winfo_rooty() + self.winfo_height()
         S = self.sizes
-        pw = max(self.winfo_width(), S["popup_min_w"])
-        # 测量最长项，自动扩宽，放宽上限以显示全名
-        try:
-            f = self.fonts.get("body")
-            max_w = max(f.measure(v) for v in self.values) + S["pad_lg"] * 5
-            pw = max(pw, min(max_w, S["popup_max_w"]))
-        except Exception:
-            pass
+        # 弹层与外框严格同宽：不做自动扩宽，长项由 _elide 按像素截断
+        pw = max(self.winfo_width(), 60)
+        # 行内文字可用宽 = 弹层宽 − 滚动条 − 行内边距
+        avail_item = pw - S["scrollbar_w"] - 2 * S["pad_md"] - 8
         self._popup = tk.Toplevel(self)
         self._popup.overrideredirect(True)
         self._popup.configure(bg=BORDER)
@@ -259,7 +273,7 @@ class BlackCombo(tk.Frame):
             item = tk.Frame(inner, bg=bgc, bd=0, height=row_h)
             item.pack(fill=tk.X, padx=1, pady=1)
             item.pack_propagate(False)
-            l1 = tk.Label(item, text=disp, bg=bgc, fg=FG, anchor="w", font=self.fonts.get("body"))
+            l1 = tk.Label(item, text=self._elide(disp, avail_item), bg=bgc, fg=FG, anchor="w", font=self.fonts.get("body"))
             l1.pack(fill=tk.BOTH, expand=True, padx=S["pad_md"], pady=S["pad_sm"])
             for w in (item, l1):
                 w.bind("<Button-1>", lambda e, i=idx: self._pick(i))
@@ -546,10 +560,14 @@ class LiteUI:
         # 像素标题（可拖动）
         title_lbl = tk.Label(bar, text="◆ PureVox Lite", bg=TITLE_BG, fg=TITLE_FG, font=self.fonts["title"])
         title_lbl.pack(side=tk.LEFT, padx=S["pad_lg"], pady=S["pad_sm"])
-        # 仅保留叉，正方形 28x28 像素风
-        close_btn = tk.Button(bar, text="✕", bg="#E57373", fg="white", bd=1, relief=tk.RAISED, highlightbackground=BORDER, font=self.fonts["bold"], width=2, height=1, padx=S["pad_sm"], pady=S["pad_sm"], command=self._do_close, activebackground="#EF5350")
+        # 仅保留叉：外壳锁定正方形（ctl_h x ctl_h），按钮填满，保证严格方形
+        close_wrap = tk.Frame(bar, bg=TITLE_BG, width=S["ctl_h"], height=S["ctl_h"], bd=0)
+        close_wrap.pack(side=tk.RIGHT, padx=S["pad_sm"], pady=S["pad_sm"])
+        close_wrap.pack_propagate(False)
+        self.btn_close_wrap = close_wrap
+        close_btn = tk.Button(close_wrap, text="✕", bg="#E57373", fg="white", bd=1, relief=tk.RAISED, highlightbackground=BORDER, font=self.fonts["bold"], padx=0, pady=0, command=self._do_close, activebackground="#EF5350")
         self.btn_close = close_btn
-        close_btn.pack(side=tk.RIGHT, padx=S["pad_sm"], pady=S["pad_sm"])
+        close_btn.pack(fill=tk.BOTH, expand=True)
         # 标题栏整体及文字均可拖动
         for w in (bar, title_lbl):
             w.bind("<Button-1>", self._drag_start)
@@ -675,11 +693,16 @@ class LiteUI:
         pv = self._ctl_pad_v()
         S = self.sizes
         for b in (self.btn_pre_dec, self.btn_pre_inc, self.btn_post_dec, self.btn_post_inc,
-                  self.btn_sound, self.btn_vb, self.btn_close):
+                  self.btn_sound, self.btn_vb):
             try:
                 b.configure(pady=pv)
             except Exception:
                 pass
+        # 关闭按钮：pady 恒 0（由方形外壳撑满），换挡只重设外壳
+        try:
+            self.btn_close_wrap.configure(width=S["ctl_h"], height=S["ctl_h"])
+        except Exception:
+            pass
         # 完整事件循环后取按钮实际需求高（Tk 按钮有随字体缩放的固有内高，
         # 无法纯公式预测），Entry 外壳直接对齐该值，实现同行严格等高
         try:

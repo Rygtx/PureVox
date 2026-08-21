@@ -42,22 +42,24 @@ if (-not (Test-Path "lite_icon.ico")) { throw "icon generation failed" }
 # --- Version stamp module (window title) ---
 Set-Content _build_version.py "BUILD_DATE = `"$ver`"" -Encoding UTF8
 
-# --- PyInstaller onefile ---
-# Explicit collection is mandatory: static analysis alone misses runtime-needed data.
-# No --strip on Windows: GNU strip is unavailable and only spams warnings.
-& $PY -m PyInstaller --noconfirm --onefile --windowed --name PureVoxLite `
+# --- PyInstaller onedir ---
+# onedir: no per-launch extraction to %TEMP%\_MEI* (onefile = +121MB temp disk & slow start)
+# Explicit collection is mandatory; excludes cut unused codec bulk (PIL._avif alone ~7.5MB).
+& $PY -m PyInstaller --noconfirm --name PureVoxLite `
+    --windowed `
     --icon lite_icon.ico `
     --collect-all onnxruntime `
     --collect-all numpy `
     --collect-all PIL `
     --collect-all pystray `
     --hidden-import=pyaudio `
+    --exclude-module PIL._avif `
     --add-data "v9_fft2048_band256_epoch_261.onnx;." `
     --add-data "lite_denoise_only/fonts;lite_denoise_only/fonts" `
     --add-data "_build_version.py;." `
     lite_denoise_only/main.py
 if ($LASTEXITCODE -ne 0) { throw "PyInstaller failed" }
 
-if (-not (Test-Path "dist\PureVoxLite.exe")) { throw "PureVoxLite.exe not built" }
-Get-ChildItem dist\PureVoxLite.exe | Format-Table Name,Length
-Write-Host "==> Done: dist\PureVoxLite.exe"
+if (-not (Test-Path "dist\PureVoxLite\PureVoxLite.exe")) { throw "PureVoxLite.exe not built" }
+$sz = [math]::Round((Get-ChildItem dist\PureVoxLite -Recurse -File | Measure-Object Length -Sum).Sum/1MB, 1)
+Write-Host "==> Done: dist\PureVoxLite\  (${sz} MB)"

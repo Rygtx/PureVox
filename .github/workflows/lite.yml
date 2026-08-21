@@ -48,11 +48,11 @@ jobs:
         shell: pwsh
         run: powershell -ExecutionPolicy Bypass -File build_lite_local.ps1
 
-      - name: Upload Lite exe (single file)
+      - name: Upload Lite bundle (onedir)
         uses: actions/upload-artifact@v7.0.1
         with:
           name: PureVoxLite-Windows-x64-${{ steps.ts.outputs.stamp }}
-          path: dist/PureVoxLite.exe
+          path: dist/PureVoxLite/
           if-no-files-found: error
 
   release-lite:
@@ -69,10 +69,17 @@ jobs:
           path: artifacts
       - name: List Lite exe
         run: |
-          find artifacts -type f -name "*.exe" | xargs ls -lh
+          find artifacts -type f -name "*.exe" | xargs ls -lh || true
+      - name: Pack Lite bundle (onedir -> zip)
+        run: |
+          exe=$(find artifacts -type f -name "PureVoxLite.exe" | head -n 1)
+          dir=$(dirname "$exe")
+          base=$(basename "$dir")
+          (cd "$(dirname "$dir")" && zip -9 -q -r "${GITHUB_WORKSPACE}/PureVoxLite-Windows-x64-${GITHUB_REF_NAME#lite-v}.zip" "$base")
+          ls -lh PureVoxLite-Windows-x64-*.zip
       - name: Create GitHub release for Lite
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          files=$(find artifacts -type f -name "*.exe" | tr '\n' ' ')
-          gh release create -R "${GITHUB_REPOSITORY}" "${GITHUB_REF_NAME}" --title "PureVox Lite ${GITHUB_REF_NAME}" --notes "Lite 纯 Python 版（无 gcc，Tk 像素风，单文件压缩）自动发布：${GITHUB_REF_NAME}" $files || gh release upload "${GITHUB_REF_NAME}" $files --clobber
+          asset=$(ls PureVoxLite-Windows-x64-*.zip)
+          gh release create -R "${GITHUB_REPOSITORY}" "${GITHUB_REF_NAME}" --title "PureVox Lite ${GITHUB_REF_NAME}" --notes "Lite 纯 Python 版（无 gcc，Tk 像素风，onedir 解压即用）自动发布：${GITHUB_REF_NAME}" "$asset" || gh release upload "${GITHUB_REF_NAME}" "$asset" --clobber

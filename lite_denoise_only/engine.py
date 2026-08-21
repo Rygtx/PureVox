@@ -27,6 +27,8 @@ class LiteDenoiseEngine:
         so.log_severity_level = 3
         so.intra_op_num_threads = 1
         so.inter_op_num_threads = 1
+        # 保持默认 BFC arena：实测关闭仅省 ~6MB Commit，却让每帧推理 +33% CPU
+        # （分配器逐帧搬运），得不偿失
         so.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
         so.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
         self.sess = ort.InferenceSession(model_path, sess_options=so, providers=["CPUExecutionProvider"])
