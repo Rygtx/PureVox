@@ -1,4 +1,4 @@
-# PureVox Lite Denoise Only — Tk UI 黑底白字 纯tk无ttk
+﻿# PureVox Lite Denoise Only — Tk UI 黑底白字 纯tk无ttk
 # Copyright (C) 2024-2026 a2heng <752848283@qq.com>
 # SPDX-License-Identifier: GPL-3.0-or-later
 
@@ -852,7 +852,9 @@ class LiteUI:
             ]
             for p in candidates:
                 if os.path.exists(p):
-                    subprocess.Popen([p], shell=False)
+                    import ctypes
+                    # VB-CABLE 控制面板需要管理员权限（改系统驱动级配置），UAC 提权打开
+                    ctypes.windll.shell32.ShellExecuteW(None, "runas", p, None, None, 1)
                     return
             self._open_sound()
             self.root.after(500, lambda: messagebox.showinfo("VB-CABLE", "未找到 VBCABLE_ControlPanel.exe，已打开声音控制面板。\n请在播放/录制页查看 CABLE Input/Output。"))
