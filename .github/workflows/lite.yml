@@ -72,11 +72,13 @@ jobs:
           find artifacts -type f -name "*.exe" | xargs ls -lh || true
       - name: Pack Lite bundle (onedir -> zip)
         run: |
+          # download-artifact 不带子目录，exe 落在 artifacts/ 下；
+          # 归位到固定目录 PureVoxLite/，保证解压即 PureVoxLite/PureVoxLite.exe
           exe=$(find artifacts -type f -name "PureVoxLite.exe" | head -n 1)
-          dir=$(dirname "$exe")
-          base=$(basename "$dir")
-          (cd "$(dirname "$dir")" && zip -9 -q -r "${GITHUB_WORKSPACE}/PureVoxLite-Windows-x64-${GITHUB_REF_NAME#lite-v}.zip" "$base")
-          ls -lh PureVoxLite-Windows-x64-*.zip
+          rm -rf PureVoxLite
+          mv "$(dirname "$exe")" PureVoxLite
+          zip -9 -q -r "${GITHUB_WORKSPACE}/PureVoxLite-Windows-x64-${GITHUB_REF_NAME#lite-v}.zip" PureVoxLite
+          unzip -l PureVoxLite-Windows-x64-*.zip | head -n 8
       - name: Create GitHub release for Lite
         env:
           GH_TOKEN: ${{ github.token }}
