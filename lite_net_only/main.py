@@ -194,8 +194,8 @@ def main():
         def _watch():
             ui = ui_holder.get("ui")
             deadline = _time.time() + 180
-            hint1 = "请在弹出的 Windows 安全中心警报中勾选并允许"
-            hint2 = "仍未放行：控制面板→防火墙→允许应用通过防火墙"
+            hint1 = "未放行：点允许安全警报"
+            hint2 = "未放行：控制面板→允许应用"
             while _time.time() < deadline:
                 if fwmod.rules_present(port, mdns.addr):
                     u = ui_holder.get("ui")
@@ -258,17 +258,26 @@ def main():
         start_stream()
 
     def on_network(ip):
-        # 切换网卡：保存选择 + mDNS 换接口重注册 + 防火墙重新检测（IP 变了规则不匹配）
+        # 切换网卡：保存选择 + mDNS 换接口重注册 + 防火墙自动重新申请。
+        # IP 变了旧规则必不匹配，且系统警报不会因 exe 已有规则再弹——
+        # 所以这里直接走手动路径（UAC 提权装最小规则），失败由提示兜底
         cfg["net_ip"] = ip
         save(cfg)
         try:
             mdns.restart(ip)
-            if not fwmod.rules_present(port, ip):
-                start_fw_watch()
-            else:
-                ui_holder.get("ui") and ui_holder["ui"].set_fw_hint(None)
         except Exception:
             pass
+
+        def _reapply():
+            ok, err = fwmod.manual_install(port, ip)
+            u = ui_holder.get("ui")
+            if u:
+                msg = None if ok else ("申请取消" if "取消" in (err or "") else "申请失败")
+                try:
+                    u.root.after(0, lambda: u.set_fw_hint(msg))
+                except Exception:
+                    pass
+        _th.Thread(target=_reapply, daemon=True).start()
 
     def on_autostart(enable):
         cfg["autostart"] = bool(enable)

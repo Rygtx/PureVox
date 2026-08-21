@@ -978,6 +978,9 @@ class LiteUI:
                 if hint:
                     txt = f"{txt} · {hint}"
                     fgc = "#EF6C00"
+                # 硬截断：提示再长也不能把右侧「防火墙」按钮挤出窗口
+                if len(txt) > 42:
+                    txt = txt[:41] + "…"
                 self.lbl_server.configure(text=txt, fg=fgc)
             except Exception:
                 pass
