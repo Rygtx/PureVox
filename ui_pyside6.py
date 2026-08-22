@@ -44,7 +44,7 @@ from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QGridLayout, QLabel, QPushButton, QComboBox, QCheckBox,
     QSlider, QSizePolicy, QSystemTrayIcon, QMenu, QButtonGroup,
-    QLineEdit, QDialog, QFrame,
+    QLineEdit, QDialog, QFrame, QScrollArea,
 )
 from PySide6.QtCore import Qt, QTimer, Signal, QSize, QRectF, QUrl
 from PySide6.QtGui import QIcon, QAction, QFont, QColor, QPalette, QPainter, QPainterPath, QPixmap, QPen, QDesktopServices
@@ -79,13 +79,6 @@ except ImportError:
     BUILD_DATE = "开发版"
 
 RECORD_DURATION = 10.0
-
-# 模式常量
-MODE_OFF = "off"
-MODE_DENOISE = "denoise"
-MODE_AEC = "aec"
-MODE_TSE = "tse"
-
 
 def _api_tooltip() -> str:
     """音频接口下拉框的工具提示（平台感知）。"""
@@ -307,120 +300,11 @@ def _set_titlebar_theme(hwnd: int, dark: bool) -> None:
 
 
 # ═══════════════════════════════════════════════════════════════
-#  胶囊控件
+#  VU 表常量
 # ═══════════════════════════════════════════════════════════════
 
-class SegmentedControl(QWidget):
-    value_changed = Signal(str)
-
-    def __init__(self, items: List[Tuple[str, str]], parent=None):
-        super().__init__(parent)
-        self._items = items
-        self._current = items[0][1]
-        self._buttons = []
-        self._updating_style = False
-        self._setup_ui()
-
-    def _setup_ui(self):
-        layout = QHBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(0)
-
-        self._btn_group = QButtonGroup(self)
-        self._btn_group.setExclusive(True)
-
-        for i, (text, val) in enumerate(self._items):
-            btn = QPushButton(text)
-            btn.setCheckable(True)
-            btn.setCursor(Qt.PointingHandCursor)
-            btn.setFixedHeight(24)
-            btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-            self._btn_group.addButton(btn)
-            self._buttons.append(btn)
-            layout.addWidget(btn)
-            btn.clicked.connect(lambda *a, v=val: self._on_clicked(v))
-
-        self._buttons[0].setChecked(True)
-        self._apply_style()
-
-    def _on_clicked(self, val):
-        if val != self._current:
-            self._current = val
-            self._apply_style()
-            self.value_changed.emit(val)
-
-    def _apply_style(self):
-        if self._updating_style:
-            return
-        self._updating_style = True
-        from theme_colors import current_colors
-        pal = self.palette()
-        accent = pal.highlight().color().name()
-        tc = current_colors()
-
-        btn_fg = tc.segment_btn_fg
-        btn_bg = "transparent"
-        sep_color = tc.segment_sep
-
-        self.setStyleSheet(f"""
-            SegmentedControl {{
-                background: transparent;
-                border: 1px solid {accent};
-            }}
-            SegmentedControl QPushButton {{
-                background: {btn_bg};
-                border: none;
-                border-right: 1px solid {sep_color};
-                padding: 2px 4px;
-                color: {btn_fg};
-                font-size: 10pt;
-            }}
-            SegmentedControl QPushButton:last-child {{
-                border-right: none;
-            }}
-            SegmentedControl QPushButton:checked {{
-                background: {accent};
-                color: #ffffff;
-                font-weight: bold;
-            }}
-            SegmentedControl QPushButton:hover:!checked {{
-                background: rgba(128, 128, 128, 0.15);
-            }}
-        """)
-        self._updating_style = False
-
-    def value(self):
-        return self._current
-
-    def set_value(self, val):
-        if val != self._current:
-            self._current = val
-            for btn, (_, v) in zip(self._buttons, self._items):
-                if v == val:
-                    btn.setChecked(True)
-                    break
-
-    def changeEvent(self, event):
-        from PySide6.QtCore import QEvent
-        if event.type() == QEvent.PaletteChange:
-            self._apply_style()
-        super().changeEvent(event)
-
-
-
-# ═══════════════════════════════════════════════════════════════
-#  VU 电平表（横向，带峰值保持+衰减+dB 刻度）
-# ═══════════════════════════════════════════════════════════════
-
-import math as _math
-
-_VU_GREEN = QColor("#00cc44")
-_VU_YELLOW = QColor("#cccc00")
-_VU_RED = QColor("#cc2200")
 _VU_DB_MIN, _VU_DB_MAX = -60.0, 0.0
 _VU_DB_RNG = _VU_DB_MAX - _VU_DB_MIN
-_VU_TICKS = [-60, -54, -48, -42, -36, -30, -24, -18, -12, -6, 0]
-_VU_PEAK_HOLD = 10.0
 _VU_PEAK_FALL = 20.0
 
 
@@ -598,6 +482,306 @@ class VUPanel(QWidget):
 #  主面板
 # ═══════════════════════════════════════════════════════════════
 
+class PluginRow(QWidget):
+    """插件行——三级 UI：
+    toggle  仅开关（无参数插件，如 AI 智能降噪）
+    inline  开关 + 行内参数滑杆（或特殊控件：AEC 的 far 设备下拉）
+    expand  行内控制 + 「展开…」按钮弹出独立 UI（EQ 曲线 / TSE 参考录音）
+    """
+
+    changed = Signal(int, str, object)      # (row_index, key, value) 参数微调
+    toggled = Signal(int, bool)             # 行内启用/停用
+    actionRequested = Signal(str, int, int) # (remove|move, row_index, direction)
+    expandRequested = Signal(str)           # 展开独立 UI（携带 ptype）
+
+    def __init__(self, index, plugin_type, label, params_spec, params, enabled,
+                 devices=None, parent=None):
+        super().__init__(parent)
+        from pvengine.plugins import ui_tier
+        self.row_index = index
+        self.plugin_type = plugin_type
+        self.params_spec = params_spec
+        self.tier = ui_tier(plugin_type)
+        self._devices = list(devices or [])
+
+        card = QFrame()
+        card.setFrameShape(QFrame.StyledPanel)
+        lay = QVBoxLayout(card)
+        lay.setContentsMargins(6, 4, 6, 4)
+        lay.setSpacing(2)
+
+        head = QHBoxLayout()
+        head.setSpacing(4)
+        self.cb_on = QCheckBox(label)
+        self.cb_on.setChecked(enabled)
+        self.cb_on.toggled.connect(self._on_toggle)
+        head.addWidget(self.cb_on)
+        head.addStretch()
+        if self.tier == "expand":
+            title = {"eq": "均衡器…", "tse": "参考音频…"}.get(plugin_type, "展开…")
+            eb = QPushButton(title)
+            eb.setFixedHeight(20)
+            eb.clicked.connect(lambda: self.expandRequested.emit(self.plugin_type))
+            head.addWidget(eb)
+        for sym, tip, fn in (("↑", "上移", lambda: self._move(-1)),
+                             ("↓", "下移", lambda: self._move(1)),
+                             ("✕", "删除", self._remove)):
+            b = QPushButton(sym)
+            b.setFixedSize(20, 20)
+            b.setToolTip(tip)
+            b.clicked.connect(fn)
+            head.addWidget(b)
+        lay.addLayout(head)
+
+        if self.tier == "inline":
+            grid = QGridLayout()
+            grid.setSpacing(2)
+            grid.setColumnStretch(1, 1)
+            r = 0
+            self._sliders = {}
+            if plugin_type == "echo_cancel":
+                # 特殊控件：far 端扬声器下拉（回声参考设备）
+                gl = QLabel("回声参考设备")
+                gl.setStyleSheet("color: palette(mid); font-size: 8pt;")
+                grid.addWidget(gl, r, 0)
+                self.dev_combo = QComboBox()
+                self._fill_devices(params.get("far_device", ""))
+                self.dev_combo.currentTextChanged.connect(
+                    lambda txt: self.changed.emit(self.row_index, "far_device", txt))
+                self.dev_combo.setToolTip(
+                    "回声消除需要采集正在出声的扬声器作参考。\n"
+                    "选「自动」时使用系统默认物理扬声器。")
+                grid.addWidget(self.dev_combo, r, 1, 1, 2)
+                r += 1
+            for key, (lbl, lo, hi, default, step) in params_spec.items():
+                gl = QLabel(lbl)
+                gl.setStyleSheet("color: palette(mid); font-size: 8pt;")
+                grid.addWidget(gl, r, 0)
+                sl = QSlider(Qt.Horizontal)
+                sl.setRange(int(lo * 10), int(hi * 10))
+                sl.setValue(int(float(params.get(key, default)) * 10))
+                val_lbl = QLabel(self._fmt(params.get(key, default)))
+                val_lbl.setFixedWidth(46)
+                val_lbl.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+
+                def _on_slide(v, k=key, vl=val_lbl):
+                    real = v / 10.0
+                    vl.setText(self._fmt(real))
+                    self.changed.emit(self.row_index, k, real)
+
+                sl.valueChanged.connect(_on_slide)
+                grid.addWidget(sl, r, 1)
+                grid.addWidget(val_lbl, r, 2)
+                self._sliders[key] = sl
+                r += 1
+            lay.addLayout(grid)
+
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.addWidget(card)
+
+    def _fill_devices(self, current: str):
+        items = [("自动（默认物理扬声器）", "")] + [(d, d) for d in self._devices]
+        self.dev_combo.blockSignals(True)
+        self.dev_combo.clear()
+        for text, data in items:
+            self.dev_combo.addItem(text, data)
+        idx = self.dev_combo.findData(current)
+        self.dev_combo.setCurrentIndex(idx if idx >= 0 else 0)
+        self.dev_combo.blockSignals(False)
+
+    def set_devices(self, devices):
+        """外部刷新输出设备列表（echo_cancel 行的下拉随之更新）。"""
+        self._devices = list(devices or [])
+        if hasattr(self, "dev_combo"):
+            cur = self.dev_combo.currentData()
+            self._fill_devices(cur or "")
+
+    def to_params(self) -> dict:
+        """行内当前参数（含特殊控件值）。"""
+        out = {k: sl.value() / 10.0 for k, sl in self._sliders.items()} \
+            if hasattr(self, "_sliders") else {}
+        if self.plugin_type == "echo_cancel" and hasattr(self, "dev_combo"):
+            out["far_device"] = self.dev_combo.currentData() or ""
+        return out
+
+    @staticmethod
+    def _fmt(v):
+        fv = float(v)
+        return f"{fv:.1f}" if fv != int(fv) else f"{int(fv):g}"
+
+    def _on_toggle(self, on):
+        self.toggled.emit(self.row_index, on)
+
+    def _remove(self):
+        self.actionRequested.emit("remove", self.row_index, 0)
+
+    def _move(self, direction):
+        self.actionRequested.emit("move", self.row_index, direction)
+
+
+class PluginPanel(QWidget):
+    """右侧插件面板：全部音频处理以插件行呈现，可添加/删除/排序/实时调参。"""
+
+    chainChanged = Signal(list)
+
+    def __init__(self, config, saver=None, get_processor=None,
+                 get_devices=None, logger=None, parent=None):
+        super().__init__(parent)
+        self._config = config
+        self._saver = saver
+        self._get_processor = get_processor or (lambda: None)
+        self._get_devices = get_devices or (lambda: [])
+        self._log = logger or get_logger()
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(4, 4, 4, 4)
+        root.setSpacing(4)
+
+        head = QHBoxLayout()
+        head.setSpacing(4)
+        title = QLabel("处理链")
+        title.setStyleSheet("font-weight: bold;")
+        head.addWidget(title)
+        head.addStretch()
+        self._add_combo = QComboBox()
+        from pvengine.plugins import CATALOG
+        for cls in CATALOG:
+            self._add_combo.addItem(cls.LABEL, cls.NAME)
+        head.addWidget(self._add_combo, 1)
+        add_btn = QPushButton("+ 添加")
+        add_btn.setFixedHeight(22)
+        add_btn.clicked.connect(self._on_add)
+        head.addWidget(add_btn)
+        clear_btn = QPushButton("清空")
+        clear_btn.setFixedHeight(22)
+        clear_btn.setToolTip("清空处理链")
+        clear_btn.clicked.connect(lambda: self.load_chain([]))
+        head.addWidget(clear_btn)
+        root.addLayout(head)
+
+        self._scroll = QScrollArea()
+        self._scroll.setWidgetResizable(True)
+        self._scroll.setFrameShape(QFrame.NoFrame)
+        body = QWidget()
+        self._rows_lay = QVBoxLayout(body)
+        self._rows_lay.setContentsMargins(0, 0, 0, 0)
+        self._rows_lay.setSpacing(4)
+        self._rows_lay.addStretch()
+        self._scroll.setWidget(body)
+        root.addWidget(self._scroll, 1)
+
+        self.load_chain(config.get("plugin_chain", []))
+
+    # ── 配置 ↔ UI ──
+    def load_chain(self, chain_cfg):
+        while self._rows_lay.count() > 1:
+            item = self._rows_lay.takeAt(0)
+            w = item.widget()
+            if w:
+                w.deleteLater()
+        from pvengine.plugins import PLUGIN_TYPES
+        self._rows = []
+        for item in chain_cfg:
+            t = str(item.get("type", ""))
+            cls = PLUGIN_TYPES.get(t)
+            if not cls:
+                continue
+            row = PluginRow(len(self._rows), t, cls.LABEL, cls.PARAMS,
+                            item.get("params", {}), bool(item.get("enabled", True)),
+                            devices=self._get_devices())
+            row.changed.connect(self._on_param)
+            row.toggled.connect(self._on_row_toggle)
+            row.actionRequested.connect(self._on_action)
+            row.expandRequested.connect(self._on_expand)
+            self._rows.append(row)
+            self._rows_lay.insertWidget(self._rows_lay.count() - 1, row)
+        self._renumber()
+
+    def refresh_devices(self):
+        for r in self._rows:
+            r.set_devices(self._get_devices())
+
+    def to_config(self):
+        return [{"type": r.plugin_type, "enabled": r.cb_on.isChecked(),
+                 "params": r.to_params()} for r in self._rows]
+
+    def _renumber(self):
+        for i, r in enumerate(self._rows):
+            r.row_index = i
+
+    # ── 变更处理 ──
+    def _save_and_apply(self):
+        cfg = self.to_config()
+        try:
+            self._config.set("plugin_chain", cfg)
+        except Exception:
+            pass
+        if self._saver:
+            self._saver.schedule()
+        proc = self._get_processor()
+        if proc is not None:
+            try:
+                proc.set_plugins(cfg)
+            except Exception as e:
+                self._log.warn(f"[插件链] 应用失败: {e}")
+        self.chainChanged.emit(cfg)
+
+    def _on_param(self, row_index, key, value):
+        proc = self._get_processor()
+        if proc is not None:
+            try:
+                proc.update_plugin_param(row_index, key, value)
+            except Exception:
+                pass
+        try:
+            self._config.set("plugin_chain", self.to_config())
+        except Exception:
+            pass
+        if self._saver:
+            self._saver.schedule()
+
+    def _on_row_toggle(self, row_index, on):
+        proc = self._get_processor()
+        if proc is not None and 0 <= row_index < len(self._rows):
+            try:
+                proc.set_plugin_enabled(row_index, on)
+            except Exception:
+                pass
+        self._save_and_apply()
+
+    def _on_add(self):
+        t = self._add_combo.currentData()
+        if not t:
+            return
+        cfg = self.to_config()
+        from pvengine.plugins import PLUGIN_TYPES
+        cls = PLUGIN_TYPES[t]
+        cfg.append({"type": t, "enabled": True,
+                    "params": {k: spec[3] for k, spec in cls.PARAMS.items()}})
+        self.load_chain(cfg)
+        self._save_and_apply()
+
+    def _on_action(self, action, row_index, direction):
+        cfg = self.to_config()
+        if action == "remove":
+            del cfg[row_index]
+        elif action == "move":
+            j = row_index + direction
+            if not (0 <= j < len(cfg)):
+                return
+            cfg[row_index], cfg[j] = cfg[j], cfg[row_index]
+        self.load_chain(cfg)
+        self._save_and_apply()
+
+    def _on_expand(self, ptype):
+        # 由外层接线到具体编辑器（EQ 曲线对话框 / TSE 参考录音弹框）
+        if ptype == "tse" and hasattr(self, "_open_tse_dialog"):
+            self._open_tse_dialog()
+        elif ptype == "eq" and hasattr(self, "_open_eq_editor"):
+            self._open_eq_editor()
+
+
 class MainPanel(QWidget):
     # 仅 Windows 有虚拟声卡概念；Linux/macOS 直接选真实输出设备
     DEFAULT_OUTPUT_DEVICE = "" if not IS_WINDOWS else "CABLE Input"
@@ -619,25 +803,11 @@ class MainPanel(QWidget):
 
         self._pre_gain = config.get("pre_gain_db", 0.0)
 
-        self._mode = config.get("mode", MODE_DENOISE)
-        self._prev_mode = self._mode
-
-        # AGC 跟随定时器
-        self._agc_poll_timer = QTimer(self)
-        self._agc_poll_timer.setInterval(16)
-        self._agc_poll_timer.timeout.connect(self._update_agc_slider)
-        self._agc_was_running = False  # 记录 AGC 定时器在隐藏前是否在跑
-
         self._build_ui()
         self._load_config()
         # AGC 初始状态：如果已启用，启动轮询定时器
-        if self._config.get("agc_enabled", False):
-            self._agc_poll_timer.start()
-
     def changeEvent(self, event):
         from PySide6.QtCore import QEvent
-        if event.type() == QEvent.PaletteChange:
-            self._seg.update()
         super().changeEvent(event)
 
     def _build_ui(self):
@@ -645,106 +815,6 @@ class MainPanel(QWidget):
         root = QVBoxLayout(self)
         root.setSpacing(4)
         root.setContentsMargins(4, 4, 4, 4)
-
-        # ── 第1行：模式选择 ──
-        ROW_H = 24
-        mode_row = QHBoxLayout()
-        mode_row.setSpacing(4)
-
-        self._seg = SegmentedControl([
-            ("直通", MODE_OFF), ("降噪", MODE_DENOISE), ("AEC", MODE_AEC),
-            ("TSE", MODE_TSE)
-        ])
-        self._seg.set_value(self._mode)
-        self._seg.value_changed.connect(self._on_mode_changed)
-        self._seg.setToolTip(
-            "直通 — 原始麦克风信号，轻处理（前增益+EQ+AGC+VAD）\n"
-            "降噪 — AI 深度学习降噪，消除键盘、风扇、空调等噪声\n"
-            "AEC  — 回声消除 + 降噪，消除扬声器回声\n"
-            "TSE  — 目标说话人提取，只保留指定人的声音")
-        self._seg.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Preferred)
-        mode_row.addWidget(self._seg)
-        root.addLayout(mode_row)
-
-        # ── 第2行：压缩/AGC/VAD + TSE录音/播放 ──
-        opts_row = QHBoxLayout()
-        opts_row.setSpacing(6)
-        opts_row.setContentsMargins(0, 0, 0, 0)
-
-        self._comp_cb = QCheckBox("压缩")
-        self._comp_cb.setFixedHeight(22)
-        self._comp_cb.setChecked(self._config.get("compressor_enabled", False))
-        self._comp_cb.setToolTip(
-            "压缩器：动态压缩大音量、提升小音量，缩小音量动态范围。")
-        self._comp_cb.toggled.connect(self._on_compressor_toggled)
-        opts_row.addWidget(self._comp_cb)
-
-        self._agc_cb = QCheckBox("AGC")
-        self._agc_cb.setFixedHeight(22)
-        self._agc_cb.setChecked(self._config.get("agc_enabled", False))
-        self._agc_cb.setToolTip(
-            "AGC 自动增益控制：自动调节增益，让声音始终稳定在合适音量。")
-        self._agc_cb.toggled.connect(self._on_agc_toggled)
-        opts_row.addWidget(self._agc_cb)
-
-        self._vad_cb = QCheckBox("VAD")
-        self._vad_cb.setFixedHeight(22)
-        self._vad_cb.setChecked(self._config.get("vad_enabled", False))
-        self._vad_cb.setToolTip(
-            "VAD 语音活性检测：不说话时自动静音，消除残留噪声。")
-        self._vad_cb.toggled.connect(self._on_vad_toggled)
-        opts_row.addWidget(self._vad_cb)
-
-        opts_row.addStretch()
-
-        # TSE 参考音频按钮（TSE 模式时显示，录音/播放已移入弹框）
-        self._ref_btn = QPushButton("参考音频…")
-        self._ref_btn.setFixedHeight(22)
-        self._ref_btn.setMinimumWidth(86)
-        self._ref_btn.clicked.connect(self._open_ref_dialog)
-        self._ref_btn.setToolTip(
-            "打开 TSE 参考音频弹框：录制 10 秒参考语音、播放、查看文件信息。\n"
-            "TSE 提取目标说话人需要参考语音。")
-        opts_row.addWidget(self._ref_btn)
-
-        root.addLayout(opts_row)
-
-        # ── 第3行：前增益 ──
-        gain_grid = QGridLayout()
-        gain_grid.setSpacing(4)
-        gain_grid.setContentsMargins(0, 0, 0, 0)
-        gain_grid.setColumnMinimumWidth(0, 56)
-        gain_grid.setColumnStretch(1, 1)
-
-        pre_row = QHBoxLayout()
-        pre_row.setContentsMargins(0, 0, 0, 0)
-        pre_row.setSpacing(2)
-        lbl_pre = QLabel("前增益")
-        lbl_pre.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
-        lbl_pre.setToolTip(
-            "前增益 — 麦克风输入增益\n"
-            "提高前增益 → 信号更强，降噪效果更好。\n"
-            "但过高会导致削波失真，声音劣化。\n"
-            "建议: 正常说话时峰值在 -12 ~ -6 dBFS 为最佳。")
-        pre_row.addWidget(lbl_pre)
-        pre_row.addStretch()
-
-        gain_grid.addLayout(pre_row, 0, 0)
-        self._pre_slider = QSlider(Qt.Horizontal)
-        self._pre_slider.setRange(-30, 30)
-        self._pre_slider.setValue(int(self._pre_gain))
-        self._pre_slider.valueChanged.connect(self._on_pre_changed)
-        gain_grid.addWidget(self._pre_slider, 0, 1)
-        self._pre_label = QLabel(f"{self._pre_gain:+.0f} dB")
-        self._pre_label.setFixedWidth(44)
-        self._pre_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
-        gain_grid.addWidget(self._pre_label, 0, 2)
-        # AGC 初始状态：如果已启用，禁用滑块
-        if self._config.get("agc_enabled", False):
-            self._pre_slider.setEnabled(False)
-            self._pre_slider.setStyleSheet("QSlider { opacity: 0.5; }")
-
-        root.addLayout(gain_grid)
 
         # ── 第4行：设备（扁平） ──
         dev_grid = QGridLayout()
@@ -831,104 +901,6 @@ class MainPanel(QWidget):
         btn_row.addWidget(self._quit_btn)
         root.addLayout(btn_row)
 
-        self._update_mode_ui()
-
-    def _update_mode_ui(self):
-        self._ref_btn.setVisible(self._mode == MODE_TSE)
-        in_aec = self._mode == MODE_AEC
-        # AEC 模式：把「监听」行变成 AEC 状态标签 + 手动 far 端选择
-        self._monitor_cb.setText("AEC" if in_aec else "监听")
-        self._monitor_cb.setEnabled(not in_aec)
-        self._monitor_cb.blockSignals(True)
-        self._monitor_cb.setChecked(in_aec or self._config.get("monitor_enabled", False))
-        self._monitor_cb.blockSignals(False)
-        if in_aec:
-            self._monitor_cb.setToolTip(
-                "AEC — 回声消除 + 降噪\n"
-                "自动采集下方所选扬声器的声音作参考\n"
-                "（手动选择 far 端设备）")
-            self._monitor_combo.setToolTip(
-                "AEC far 端设备：\n"
-                "回声消除需要参考正在出声的扬声器。\n"
-                "手动选择实际在播放的设备；\n"
-                "留空/自动时用系统物理扬声器兜底。")
-        else:
-            self._monitor_cb.setToolTip(
-                "监听（耳返）：\n"
-                "将处理后的声音实时回放到指定设备，\n"
-                "让你能听到自己说话的效果。\n"
-                "右侧下拉框选择监听用的设备，\n"
-                "通常是你的耳机。")
-            self._monitor_combo.setToolTip(
-                "监听设备 — 耳返输出的目标设备")
-
-    def _on_mode_changed(self, val):
-        if val == self._mode:
-            return
-        old = self._mode
-        self._mode = val
-        self._config.set("mode", val)
-        self._save()
-
-        if old != val:
-            self._save_gains(old)
-            self._load_gains(val)
-
-        self._update_mode_ui()
-        self._apply_mode(old)
-
-    def _apply_mode(self, old_mode=None):
-        """应用当前模式到处理器"""
-        viz_was_running = False
-        if hasattr(_state, '_viz_timer') and _state._viz_timer:
-            viz_was_running = _state._viz_timer.isActive()
-            _state._viz_timer.stop()
-
-        try:
-            mode = self._mode
-            labels = {MODE_OFF: "直通", MODE_DENOISE: "降噪", MODE_AEC: "AEC", MODE_TSE: "TSE"}
-
-            self._ref_btn.setVisible(mode == MODE_TSE)
-
-            # 任何模式切换且正在运行时，都需要重启（按需加载/释放模型）
-            if old_mode != mode and _state.is_processing:
-                self._log.mode(f"切换: {labels.get(old_mode, old_mode)} → {labels.get(mode, mode)}（重载模型）")
-                restart(_state, self._log)
-                return
-
-            # 无处理器时只保存配置
-            th = self._get_thread() if self._get_thread else None
-            if not th or not hasattr(th, 'processor') or not th.processor:
-                self._log.mode(f"切换: {labels.get(mode, mode)} (已保存)")
-                return
-
-            # ── Mode (four mutually exclusive) ──
-            _MODES = {MODE_OFF: 0, MODE_DENOISE: 1, MODE_AEC: 2, MODE_TSE: 3}
-            th.processor.set_mode(_MODES[mode])
-
-            th.processor.set_pre_gain(self._pre_gain)
-
-            # TSE reference / AEC speaker capture (Python-side actions)
-            if mode == MODE_TSE:
-                wav = self._config.get(CFG_REF_WAV_PATH, "")
-                if wav and os.path.exists(wav):
-                    try: th.set_tse_reference_wav(wav)
-                    except: pass
-            if mode == MODE_AEC:
-                if th.processor.is_aec_available():
-                    th.set_aec_enabled(True)
-                else:
-                    self._log.warn("[AEC] 模型未加载")
-            elif old_mode == MODE_AEC:
-                th.set_aec_enabled(False)
-
-            self._log.mode(f"切换: {labels.get(mode, mode)}")
-        except Exception as e:
-            self._log.err(f"切换失败: {e}")
-        finally:
-            if viz_was_running and hasattr(_state, '_viz_timer') and _state._viz_timer:
-                _state._viz_timer.start()
-
     def _save(self):
         if self._saver:
             self._saver.request_save()
@@ -947,10 +919,7 @@ class MainPanel(QWidget):
         self._api_combo.setCurrentText(name)
         self._update_devices()
 
-        pv = self._config.get("pre_gain_db", 0.0)
-        self._pre_gain = pv
-        self._pre_slider.setValue(int(pv))
-        self._pre_label.setText(f"{pv:+.0f} dB")
+        self._pre_gain = self._config.get("pre_gain_db", 0.0)
 
     def _handle_api_changed(self, text):
         try:
@@ -977,8 +946,8 @@ class MainPanel(QWidget):
             name = _combo_value(self._input_combo if is_input else self._output_combo)
             self._config.set(self._device_key("input" if is_input else "output"), name)
             self._save()
-            # 切换输出设备时，若监听与输出相同则自动关闭（非 AEC 模式）
-            if (not is_input and self._mode != MODE_AEC
+            # 切换输出设备时，若监听与输出相同则自动关闭
+            if (not is_input
                     and self._monitor_cb.isChecked() and self._is_monitor_same_as_output()):
                 self._monitor_cb.setChecked(False)
                 self._log.dev("监听与输出设备相同，已关闭监听")
@@ -990,15 +959,6 @@ class MainPanel(QWidget):
     def _handle_monitor_changed(self):
         try:
             name = _combo_value(self._monitor_combo)
-            if self._mode == MODE_AEC:
-                # AEC 模式：下拉框是手动 far 端设备选择（与监听分开存键）
-                self._config.set(self._device_key("far"), name)
-                self._save()
-                if self._get_thread:
-                    th = self._get_thread()
-                    if th and hasattr(th, 'set_aec_far_sink'):
-                        th.set_aec_far_sink(name)
-                return
             self._config.set(self._device_key("monitor"), name)
             self._save()
             if self._monitor_cb.isChecked() and self._get_thread:
@@ -1021,9 +981,6 @@ class MainPanel(QWidget):
 
     def _on_monitor_toggled(self, on):
         try:
-            if self._mode == MODE_AEC:
-                # AEC 模式：复选框是静态「AEC」状态标签，不处理监听开关
-                return
             if on and not _combo_value(self._monitor_combo):
                 self._monitor_cb.setChecked(False)
                 self._log.dev("请先选择监听设备")
@@ -1046,15 +1003,6 @@ class MainPanel(QWidget):
         except Exception as e:
             self._log.err(f"监听切换失败: {e}")
 
-    def _save_gains(self, mode):
-        self._config.set("pre_gain_db", self._pre_gain)
-
-    def _load_gains(self, mode):
-        pv = self._config.get("pre_gain_db", 0.0)
-        self._pre_gain = pv
-        self._pre_slider.setValue(int(pv))
-        self._pre_label.setText(f"{pv:+.0f} dB")
-
     # ── TSE 参考音频弹框 ──
 
     def _open_ref_dialog(self):
@@ -1063,100 +1011,7 @@ class MainPanel(QWidget):
         dlg = TseReferenceDialog(self._config, self._log, parent=self)
         dlg.exec()
 
-    # ── EQ ──
 
-    def toggle_eq_panel(self):
-        # 由"更多"按钮统一控制，此方法仅切换面板可见性
-        visible = not self._eq_panel.isVisible()
-        self._eq_panel.setVisible(visible)
-
-    def _load_eq_presets(self):
-        """从配置加载8个EQ预设"""
-        from dialog_eq import EQ_FREQS
-        n = len(EQ_FREQS)
-        presets = {}
-        for i in range(8):
-            key = f"eq_preset_{i}"
-            s = self._config.get(key) if self._config else None
-            if s and len(s) == n:
-                presets[i] = s
-            else:
-                presets[i] = [0.0] * n
-        return presets
-
-    def _save_eq_preset(self, slot):
-        """保存指定插槽的EQ预设"""
-        if self._config:
-            self._config.set(f"eq_preset_{slot}", self._eq_presets[slot])
-            if self._saver:
-                self._saver.request_save()
-            else:
-                self._config.save_config()
-
-    def _on_eq_slot(self, slot):
-        """切换EQ插槽"""
-        # 保存当前展示的到旧插槽
-        self._eq_presets[self._eq_active_slot] = self._eq_curve.get_gains()
-        self._save_eq_preset(self._eq_active_slot)
-        # 切换到新插槽
-        self._eq_active_slot = slot
-        self._config.set("eq_active_slot", slot)
-        self._eq_curve.set_gains(self._eq_presets[slot])
-        self._update_eq_btns()
-        self._log(f"切换: 插槽{slot + 1}")
-
-    def _on_eq_preset(self, name, gains):
-        """应用内置预设"""
-        self._eq_curve.set_gains(gains.copy())
-        self._update_eq_btns()
-        self._log(f"预设: {name}")
-
-    def _update_eq_btns(self):
-        """更新EQ按钮高亮状态"""
-        accent = self.palette().highlight().color().name()
-        _BTN_BASE = "font-size: 10pt; padding: 1px 8px; min-height: 18px; border: 1px solid palette(mid); border-radius: 3px;"
-        for slot, btn in self._eq_mbtns.items():
-            is_active = (slot == self._eq_active_slot)
-            if is_active:
-                btn.setStyleSheet(f"background-color: {accent}; color: white; {_BTN_BASE}")
-            else:
-                btn.setStyleSheet(f"background: palette(button); color: palette(text); {_BTN_BASE}")
-
-    def _on_eq_change(self, gains):
-        """EQ曲线变化时的回调"""
-        if not hasattr(self, '_eq_presets'):
-            return
-        if _state.processor:
-            try:
-                _state.processor.set_eq_gains(gains)
-            except Exception as e:
-                self._log(f"应用EQ失败: {e}")
-        # 保存到当前激活的插槽
-        self._eq_presets[self._eq_active_slot] = list(gains)
-        self._save_eq_preset(self._eq_active_slot)
-        # 保存当前展示的增益
-        if self._config:
-            self._config.set("eq_current_gains", list(gains))
-            if self._saver:
-                self._saver.request_save()
-            else:
-                self._config.save_config()
-
-    def _load_eq_config(self):
-        """加载EQ配置"""
-        if not self._config:
-            return
-        from dialog_eq import EQ_FREQS
-        n = len(EQ_FREQS)
-        # 加载当前展示的增益
-        gains = self._config.get("eq_current_gains")
-        if gains and len(gains) == n:
-            self._eq_curve.set_gains(gains)
-        # 加载激活的插槽索引
-        self._eq_active_slot = self._config.get("eq_active_slot", 0)
-        # 加载8个预设
-        self._eq_presets = self._load_eq_presets()
-        self._update_eq_btns()
 
     # ── 公共接口 ──
 
@@ -1167,14 +1022,9 @@ class MainPanel(QWidget):
         self._monitor_changed_cb = cb
 
     def suspend_ui_timers(self):
-        """暂停 UI 刷新定时器（窗口隐藏到托盘时调用）"""
-        self._agc_was_running = self._agc_poll_timer.isActive()
-        self._agc_poll_timer.stop()
-
+        pass  # AGC 轮询已随插件化移除
     def resume_ui_timers(self):
-        """恢复 UI 刷新定时器（窗口从托盘恢复时调用）"""
-        if self._agc_was_running:
-            self._agc_poll_timer.start(16)
+        pass
 
     def _update_devices(self):
         try:
@@ -1265,51 +1115,13 @@ class MainPanel(QWidget):
                 self._output_combo.setCurrentText(out[0])
                 self._config.set(self._device_key("output"), out[0])
 
-            # 监听/AEC far 设备：Linux 按 node.name（userData）选，其余按文本选
-            # monitor（监听）与 far（AEC 回声参考）各自独立存键
-            in_aec = self._mode == MODE_AEC
-            sm = self._config.get(self._device_key("far")) if in_aec else self._config.get(self._device_key("monitor"))
-            mon_selected = False
-            if IS_LINUX:
-                mon_selected = _set_by_port(self._monitor_combo, sm)
-            else:
-                mon_selected = bool(sm) and sm in out
-                if mon_selected:
+            # 监听设备：Linux 按 node.name（userData）选，其余按文本选
+            if sm:
+                if not _set_by_port(self._monitor_combo, sm):
                     self._monitor_combo.setCurrentText(sm)
-            if not mon_selected:
-                if out:
-                    if in_aec and IS_LINUX:
-                        # AEC far 未配置：默认物理扬声器兜底
-                        if not _set_by_port(self._monitor_combo, _jack_default_far()):
-                            self._monitor_combo.setCurrentIndex(0)
-                    else:
-                        self._monitor_combo.setCurrentIndex(0)
-                if self._monitor_combo.currentIndex() >= 0:
-                    self._config.set(
-                        self._device_key("far" if in_aec else "monitor"),
-                        _combo_value(self._monitor_combo))
-                if not in_aec and self._monitor_cb.isChecked():
-                    self._monitor_cb.setChecked(False)
-                self._save()
-            elif not in_aec:
-                should_monitor = self._config.get("monitor_enabled", False)
-                if should_monitor != self._monitor_cb.isChecked():
-                    self._monitor_cb.setChecked(should_monitor)
-            # AEC 模式：复选框是静态「AEC」状态标签，保持勾选（由 _update_mode_ui 维护）
 
-            self._input_combo.blockSignals(False)
-            self._output_combo.blockSignals(False)
-            self._monitor_combo.blockSignals(False)
-
-            # 启动时若监听与输出相同则自动关闭（非 AEC 模式）
-            if (not in_aec and self._monitor_cb.isChecked()
-                    and self._is_monitor_same_as_output()):
-                self._monitor_cb.setChecked(False)
-                self._config.set("monitor_enabled", False)
-
-            self._save()
         except Exception as e:
-            self._log.err(f"获取设备失败: {e}")
+            self._log.err(f"设备枚举失败: {e}")
 
     def get_device_ids(self):
         try:
@@ -1341,72 +1153,6 @@ class MainPanel(QWidget):
     def get_pre_gain(self):
         return self._pre_gain
 
-    def _on_pre_changed(self, val):
-        self._pre_gain = float(val)
-        self._pre_label.setText(f"{val:+.0f} dB")
-        self._config.set("pre_gain_db", float(val))
-        self._save()
-        if self._get_thread:
-            th = self._get_thread()
-            if th and hasattr(th, 'processor') and th.processor:
-                th.processor.set_pre_gain(float(val))
-
-    def _on_agc_toggled(self, val):
-        self._config.set("agc_enabled", val)
-        self._save()
-        if self._get_thread:
-            th = self._get_thread()
-            if th and hasattr(th, 'processor') and th.processor:
-                if val:
-                    # AGC 开启：用当前前增益作为初始值
-                    init_db = float(self._pre_gain)
-                    th.processor.set_agc_enabled(True, init_db)
-                    # 禁用滑块，启动跟随定时器
-                    self._pre_slider.setEnabled(False)
-                    self._pre_slider.setStyleSheet("QSlider { opacity: 0.5; }")
-                    self._agc_poll_timer.start(16)
-                else:
-                    # AGC 关闭：获取当前 AGC 增益作为前增益
-                    if th.processor.is_agc_enabled():
-                        agc_db = th.processor.get_agc_gain_db()
-                        th.processor.set_agc_enabled(False)
-                        self._pre_gain = agc_db
-                    # 停止定时器，恢复滑块
-                    self._agc_poll_timer.stop()
-                    self._pre_slider.setEnabled(True)
-                    self._pre_slider.setStyleSheet("")
-                self._pre_slider.setValue(int(self._pre_gain))
-                self._pre_label.setText(f"{self._pre_gain:+.0f} dB")
-
-    def _on_compressor_toggled(self, val):
-        self._config.set("compressor_enabled", val)
-        self._save()
-        if self._get_thread:
-            th = self._get_thread()
-            if th and hasattr(th, 'processor') and th.processor:
-                th.processor.set_compressor_enabled(val)
-
-    def _update_agc_slider(self):
-        """定时轮询 AGC 增益，更新滑块显示（值变化时才刷新 UI）"""
-        if self._get_thread:
-            th = self._get_thread()
-            if th and hasattr(th, 'processor') and th.processor:
-                agc_db = th.processor.get_agc_gain_db()
-                agc_int = int(agc_db)
-                if agc_int == self._pre_slider.value():
-                    return  # 值未变，跳过
-                self._pre_slider.blockSignals(True)
-                self._pre_slider.setValue(agc_int)
-                self._pre_slider.blockSignals(False)
-                self._pre_label.setText(f"{agc_db:+.0f} dB")
-
-    def _on_vad_toggled(self, val):
-        self._config.set("vad_enabled", val)
-        self._save()
-        if self._get_thread:
-            th = self._get_thread()
-            if th and hasattr(th, 'processor') and th.processor:
-                th.processor.set_vad_enabled(val)
 
     def _get_root(self):
         return self.window()
@@ -1613,21 +1359,6 @@ class MainWindow(QMainWindow):
 #  全局函数
 # ═══════════════════════════════════════════════════════════════
 
-def _apply_agc_vad(proc, config, pre_gain, mp):
-    """统一设置 AGC、VAD 和压缩器（所有模式共用）"""
-    if not config:
-        return
-    if config.get("compressor_enabled", False):
-        proc.set_compressor_enabled(True)
-    if config.get("agc_enabled", False):
-        proc.set_agc_enabled(True, float(pre_gain))
-        if mp and hasattr(mp, '_agc_poll_timer'):
-            mp._agc_poll_timer.start(16)
-    if config.get("vad_enabled", False):
-        proc.set_vad_enabled(True)
-
-
-_LAST_48K_WARN = 0.0  # 防重复弹框时间戳
 
 def _warn_48k(failed_in, failed_out, failed_mon, failed_aec,
               in_name, out_name, mon_name, aec_name, log):
@@ -1732,19 +1463,6 @@ def _warn_48k(failed_in, failed_out, failed_mon, failed_aec,
 def start_processing(state, log):
     if state.is_processing:
         return
-    # ── TSE 参考音频预检（在防重入锁之前弹框，允许弹框内录音递归启动临时会话）──
-    if state.config:
-        _mode0 = state.config.get("mode", MODE_DENOISE)
-        if _mode0 == MODE_TSE:
-            _wav = state.config.get(CFG_REF_WAV_PATH, "")
-            if not _wav or not os.path.exists(_wav):
-                from dialog_tse_reference import TseReferenceDialog
-                _dlg = TseReferenceDialog(state.config, log)
-                _dlg.exec()
-                _wav = state.config.get(CFG_REF_WAV_PATH, "")
-                if not _wav or not os.path.exists(_wav):
-                    log.warn("TSE 无参考音频，先按降噪运行；可点「参考音频…」录制后自动切 TSE")
-                    state.config.set("mode", MODE_DENOISE)
     # 防重入：防止事件循环中重复触发
     if getattr(start_processing, '_lock', False):
         return
@@ -1759,10 +1477,18 @@ def start_processing(state, log):
                 pass
             state.processor = None
 
-        mode = state.config.get("mode", MODE_DENOISE) if state.config else MODE_DENOISE
-        if mode != MODE_OFF and not state.model_path:
-            log.err("模型未找到")
-            return
+        # ── 插件链：全部处理行为由此决定 ──
+        chain_cfg = [dict(e) for e in (state.config.get("plugin_chain", []) if state.config else [])]
+
+        def _chain_enabled(ptype):
+            return any(e.get("type") == ptype and e.get("enabled", True)
+                       for e in chain_cfg)
+
+        def _chain_param(ptype, key, default=""):
+            for e in chain_cfg:
+                if e.get("type") == ptype and e.get("enabled", True):
+                    return (e.get("params") or {}).get(key, default)
+            return default
 
         # ── 设备检测 ──
         inp, out, api_type = _get_ids(state)
@@ -1776,9 +1502,8 @@ def start_processing(state, log):
             mp_in = _combo_value(state.main_panel._input_combo) if hasattr(state.main_panel, '_input_combo') else ""
             mp_out = _combo_value(state.main_panel._output_combo) if hasattr(state.main_panel, '_output_combo') else ""
             mp_mon = _combo_value(state.main_panel._monitor_combo) if hasattr(state.main_panel, '_monitor_combo') else ""
-            # AEC 模式：监听被禁用（复选框只是 AEC 状态标签），不建监听流
             mon_on = (state.main_panel._monitor_cb.isChecked()
-                      if hasattr(state.main_panel, '_monitor_cb') else False) and mode != MODE_AEC
+                      if hasattr(state.main_panel, '_monitor_cb') else False)
             pw_ports = (mp_in, mp_out, mp_mon if mon_on else "")
             if not mp_in or not mp_out:
                 log.err("请选择 PipeWire 输入与输出节点")
@@ -1857,8 +1582,8 @@ def start_processing(state, log):
                     mon_name = mp._monitor_combo.currentText() if mp else ""
                     if not _try_open_48k(_p, mon_id, False):
                         failed_mon = True
-                # AEC speaker 检测：默认播放设备（SpeakerCapture 用的那个）
-                if mode == MODE_AEC:
+                # AEC speaker 检测：启用回声消除时检测 far 参考输出（默认播放设备）
+                if _chain_enabled("echo_cancel"):
                     try:
                         aec_dev = _p.get_default_output_device_info()
                         aec_id = aec_dev['index']
@@ -1872,7 +1597,7 @@ def start_processing(state, log):
                     % ("OK" if not failed_in else "FAIL",
                        "OK" if not failed_out else "FAIL",
                        "OK" if not failed_mon else "FAIL",
-                       "OK" if not failed_aec else ("FAIL" if mode == MODE_AEC else "跳过")))
+                       "OK" if not failed_aec else ("FAIL" if _chain_enabled("echo_cancel") else "跳过")))
             finally:
                 _p.terminate()
 
@@ -1886,40 +1611,25 @@ def start_processing(state, log):
 
         pre = mp.get_pre_gain() if mp else 0
 
-        # ── 模型路径 ──
-        res = getattr(sys, '_MEIPASS', os.path.dirname(sys.executable)) if getattr(sys, 'frozen', False) else os.path.dirname(os.path.abspath(__file__))
-        denoise_path = state.model_path if mode != MODE_OFF else ""
-        tse_path = os.path.join(res, TSE_MODEL) if mode == MODE_TSE else ""
-        if mode == MODE_TSE and not os.path.exists(tse_path):
-            log.warn("TSE 模型不存在，回退降噪")
-            mode = MODE_DENOISE
-            denoise_path = state.model_path
-            tse_path = ""
-
-        aec_path = os.path.join(res, AEC_MODEL) if mode == MODE_AEC else ""
-
-        # ── 创建处理器 ──
-        log.msg(f"[启动] 创建音频处理器 (mode={mode}, pre={pre})...")
-        proc = create_audio_processor(pre, denoise_path, tse_path, aec_path)
+        # ── 创建处理器（模型由插件内部按需解析加载）──
+        log.msg(f"[启动] 创建音频处理器 (pre={pre})...")
+        proc = create_audio_processor(pre, "", "", "")
         state.processor = proc
-        if hasattr(proc, 'backend_info'):
-            try:
-                _eff, _reason = proc.backend_info()
-                log.msg(f"[启动] 推理后端: {_backend_status_text(_eff, _reason)}")
-            except Exception:
-                pass
+        if proc.plugin_errors:
+            for perr in proc.plugin_errors:
+                log.warn(f"[插件] {perr}")
 
-        # ── EQ ──
+        # ── EQ（垫片路由到链中的 eq 插件）──
         if state.config:
             gains = state.config.get("eq_current_gains", [0.0] * 61)
             if gains:
                 proc.set_eq_gains(gains)
 
-        # ── Mode ──
-        _MODES = {MODE_OFF: 0, MODE_DENOISE: 1, MODE_AEC: 2, MODE_TSE: 3}
-
-        # ── AGC / VAD（所有模式统一）──
-        _apply_agc_vad(proc, state.config, pre, mp)
+        # ── 加载插件链 ──
+        try:
+            proc.set_plugins(chain_cfg)
+        except Exception as e:
+            log.warn(f"[启动] 插件链加载失败: {e}")
 
         # ── 监听 ──
         # PipeWire 模式：监听是独立的输出流（已在 pw_ports[2]）；
@@ -1928,33 +1638,24 @@ def start_processing(state, log):
         if not use_pw and mp and state.config and state.config.get("monitor_enabled", False):
             mid = mp._get_monitor_id()
 
-        # ── TSE 参考音频：必须在启动音频线程前加载（首帧就需要，空参考会崩）──
-        # 无参考时不中止：先按降噪运行（TSE 模型仍加载），录音按钮可用——
-        # 录完参考自动切回 TSE（_do_record 里 set_mode(3)）。解决
-        # "不开 TSE 无法录音 / 不录音无法开 TSE" 的死锁。
-        proc_mode = _MODES[mode]
+        # ── TSE 参考音频：必须在启动音频线程前加载（首帧就需要）──
+        # 无参考时不中止：TSE 插件自动直通，录完参考后下次启动/重启生效。
         tse_pending_ref = False
-        if mode == MODE_TSE:
+        if _chain_enabled("tse"):
             wav = state.config.get(CFG_REF_WAV_PATH, "") if state.config else ""
             if wav and os.path.exists(wav) and load_tse_reference(proc, wav):
-                pass  # 参考就绪，直接 TSE
+                pass  # 参考就绪
             else:
                 tse_pending_ref = True
-                proc_mode = _MODES[MODE_DENOISE]
-                log.warn("TSE 暂无参考音频：先按降噪运行。请点「录音」录制参考语音，录完自动切换 TSE。")
-        proc.set_mode(proc_mode)
+                log.warn("TSE 暂无参考音频：该插件将直通。可在右侧「目标说话人 TSE」行点「参考音频…」录制。")
 
         # ── 启动日志 ──
-        labels = {MODE_OFF: "直通", MODE_DENOISE: "降噪", MODE_AEC: "AEC", MODE_TSE: "TSE"}
-        parts = [labels.get(mode, mode)]
+        active = [e.get("type") for e in chain_cfg if e.get("enabled", True)]
+        parts = ["+".join(active) if active else "空链"]
         if tse_pending_ref:
-            parts.append("待录参考（先降噪）")
+            parts.append("TSE 待录参考")
         if is_network:
             parts.append("网络输入")
-        if pre != 0:
-            parts.append(f"增益{pre:+.0f}dB")
-        if mid:
-            parts.append("监听中")
         ready_msg = " · ".join(parts)
 
         # ── 启动音频流 ──
@@ -2002,18 +1703,16 @@ def start_processing(state, log):
         state.is_processing = True
         _update_ui(state, True, log)
 
-        # ── 后续：AEC 扬声器采集 ──
-        if mode == MODE_AEC and state.processing_thread:
-            fac_sink = ""
-            if state.config:
+        # ── 后续：回声消除扬声器采集（链中启用了 echo_cancel 时）──
+        if _chain_enabled("echo_cancel") and state.processing_thread:
+            fac_sink = _chain_param("echo_cancel", "far_device", "")
+            if not fac_sink and state.config and mp:
                 fac_sink = state.config.get(mp._device_key("far"), "") or ""
-            if use_pw and hasattr(state.main_panel, '_monitor_combo'):
-                # 手动 far 端：下拉框当前选中值（AEC 模式下该行即 far 选择）
-                fac_sink = _combo_value(state.main_panel._monitor_combo) or fac_sink
             state.processing_thread.set_aec_far_sink(fac_sink)
+            state.processing_thread.processor.set_aec_enabled(True)
             if not state.processing_thread.set_aec_enabled(True):
                 QMessageBox.warning(None, "PureVox",
-                    "AEC 扬声器采集启动失败。\n\n请确认默认播放设备可用。")
+                    "回声消除扬声器采集启动失败。\n\n请确认所选参考输出设备可用。")
 
         register_tse_audio_hook(state.processing_thread, log)
 
@@ -2535,100 +2234,94 @@ class MainApp:
         mp = MainPanel(window, config, saver, on_api, on_dev, logger)
 
         from spectrum_histogram import SpectrumWidget
-        from dialog_eq import EQCurveWidget, EQ_FREQS, PRESETS
 
         spectrum = SpectrumWidget()
         _state.spectrum_widget = spectrum
 
         # 固定尺寸常量
-        _state._panel_w = 320   # 控制面板宽度
-        _state._spectrum_w = 551  # 频谱宽度 (L=28 + bars=511 + R=12)
-        _state._eq_h = 270      # EQ面板高度
-        _state._base_h = 350    # 基础高度（控制面板）
+        _state._panel_w = 320   # 左列宽度（设备/控制/VU/频谱）
+        _state._fx_w = 380      # 右列宽度（插件面板）
+        _state._spectrum_h = 150
 
-        # EQ曲线控件（动态高度：EQ面板总高 - 按钮区域高度）
-        eq_curve = EQCurveWidget()
-        eq_curve.gains_changed.connect(mp._on_eq_change)
-
-        # EQ按钮行容器（放在EQ曲线下方）
-        eq_btns_container = QWidget()
-        eq_btns_layout = QVBoxLayout(eq_btns_container)
-        eq_btns_layout.setContentsMargins(4, 0, 0, 4)
-        eq_btns_layout.setSpacing(4)
-
-        # EQ插槽按钮行
-        eq_btn_row = QHBoxLayout()
-        eq_btn_row.setSpacing(4)
-        lbl = QLabel("插槽"); lbl.setFixedWidth(40); lbl.setAlignment(Qt.AlignLeft | Qt.AlignVCenter); eq_btn_row.addWidget(lbl)
-        mp._eq_mbtns = {}
-        mp._eq_active_slot = 0
-        for i in range(8):
-            btn = QPushButton(f"S{i + 1}")
-            btn.setFixedHeight(24)
-            btn.setFixedWidth(80)
-            btn.clicked.connect(lambda *a, slot=i: mp._on_eq_slot(slot))
-            mp._eq_mbtns[i] = btn
-            eq_btn_row.addWidget(btn)
-        eq_btn_row.addStretch()
-        eq_btns_layout.addLayout(eq_btn_row)
-
-        # EQ内置预设按钮行
-        eq_preset_row = QHBoxLayout()
-        eq_preset_row.setSpacing(4)
-        lbl2 = QLabel("预设"); lbl2.setFixedWidth(40); lbl2.setAlignment(Qt.AlignLeft | Qt.AlignVCenter); eq_preset_row.addWidget(lbl2)
-        _PS = "font-size: 10pt; padding: 1px 8px; min-height: 18px; border: 1px solid palette(mid); border-radius: 3px; background: palette(button); color: palette(button-text);"
-        for name, gains in PRESETS.items():
-            btn = QPushButton(name)
-            btn.setFixedHeight(24)
-            btn.setFixedWidth(80)
-            btn.setStyleSheet(_PS)
-            btn.clicked.connect(lambda *a, n=name, g=gains: mp._on_eq_preset(n, g))
-            eq_preset_row.addWidget(btn)
-        eq_preset_row.addStretch()
-        eq_btns_layout.addLayout(eq_preset_row)
-
-        mp._eq_curve = eq_curve
-
-        # EQ面板（底部，整个宽度）：EQ曲线在上，按钮在下
-        eq_panel = QWidget()
-        eq_layout = QVBoxLayout(eq_panel)
-        eq_layout.setContentsMargins(0, 0, 0, 0)
-        eq_layout.setSpacing(4)
-        eq_layout.addWidget(eq_curve, 1)
-        eq_layout.addWidget(eq_btns_container, 0)
-
-        mp._eq_panel = eq_panel
-        mp._load_eq_config()
-        mp._update_eq_btns()
-
-        # 上层水平容器：左=控制面板，右=频谱
-        top_container = QWidget()
-        top_layout = QHBoxLayout(top_container)
-        top_layout.setContentsMargins(0, 0, 0, 0)
-        top_layout.setSpacing(0)
+        # ── 左列：控制面板 + 频谱（上下堆叠）──
+        left_col = QWidget()
+        left_lay = QVBoxLayout(left_col)
+        left_lay.setContentsMargins(0, 0, 0, 0)
+        left_lay.setSpacing(0)
         mp.setFixedWidth(_state._panel_w)
-        top_layout.addWidget(mp, 0)
-        spectrum.setFixedWidth(_state._spectrum_w)
-        top_layout.addWidget(spectrum, 0)
+        left_lay.addWidget(mp, 0)
+        spectrum.setFixedWidth(_state._panel_w)
+        spectrum.setMinimumHeight(_state._spectrum_h)
+        left_lay.addWidget(spectrum, 1)
 
-        # 主垂直容器：上=top_container，下=EQ面板
+        # ── 右列：插件处理链面板 ──
+        fxp = PluginPanel(config=config, saver=saver,
+                          get_processor=lambda: _state.processor,
+                          get_devices=lambda: [mp._output_combo.itemData(i) or mp._output_combo.itemText(i)
+                             for i in range(mp._output_combo.count())],
+                          logger=logger)
+
+        # 展开对话框路由：EQ → 曲线编辑器；TSE → 参考录音弹框
+        def open_eq_editor():
+            from dialog_eq import EQCurveWidget
+            gains = config.get("eq_current_gains", [0.0] * 61)
+            dlg = QDialog(mp)
+            dlg.setWindowTitle("均衡器")
+            lay = QVBoxLayout(dlg)
+            curve = EQCurveWidget()
+            curve.set_gains(list(gains))
+
+            def on_change(g):
+                config.set("eq_current_gains", list(g))
+                saver.request_save() if saver else config.save_config()
+                proc = _state.processor
+                if proc:
+                    try:
+                        proc.set_eq_gains(g)
+                    except Exception:
+                        pass
+
+            curve.gains_changed.connect(on_change)
+            lay.addWidget(curve, 1)
+            row = QHBoxLayout()
+            reset_btn = QPushButton("重置")
+
+            def on_reset():
+                curve.set_gains([0.0] * 61)
+
+            reset_btn.clicked.connect(on_reset)
+            row.addWidget(reset_btn)
+            row.addStretch()
+            ok_btn = QPushButton("确定")
+            ok_btn.clicked.connect(dlg.accept)
+            row.addWidget(ok_btn)
+            lay.addLayout(row)
+            dlg.resize(560, 320)
+            dlg.exec()
+
+        def open_tse_dialog():
+            mp._open_ref_dialog()
+
+        fxp._open_eq_editor = open_eq_editor
+        fxp._open_tse_dialog = open_tse_dialog
+
+        # ── 主容器：左=控制+频谱，右=插件链 ──
         main_container = QWidget()
-        main_layout = QVBoxLayout(main_container)
+        main_layout = QHBoxLayout(main_container)
         main_layout.setContentsMargins(0, 0, 0, 0)
         main_layout.setSpacing(0)
-        main_layout.setAlignment(Qt.AlignLeft | Qt.AlignTop)
-        main_layout.addWidget(top_container, 0)
-        # 分割线（EQ上方横贯）
+        main_layout.addWidget(left_col, 0)
         from PySide6.QtWidgets import QFrame
-        sep = QFrame()
-        sep.setFrameShape(QFrame.HLine)
-        sep.setFrameShadow(QFrame.Sunken)
-        sep.setFixedHeight(3)
-        main_layout.addWidget(sep)
-        main_layout.addWidget(eq_panel, 0)
+        vsep = QFrame()
+        vsep.setFrameShape(QFrame.VLine)
+        vsep.setFrameShadow(QFrame.Sunken)
+        main_layout.addWidget(vsep)
+        fxp.setFixedWidth(_state._fx_w)
+        main_layout.addWidget(fxp, 0)
 
         window.add_widget(main_container, stretch=0)
         _state.main_panel = mp
+        _state.fx_panel = fxp
         _state.vu_meter = mp._vu_panel
         mp.set_get_processing_thread_callback(lambda: _state.processing_thread)
 
@@ -2753,8 +2446,8 @@ class MainApp:
             _state.tray_icon = tray
 
         self._register_hotkey(logger)
-        # 初始尺寸：显示所有内容（控制面板+频谱+EQ）
-        window.setFixedSize(_state._panel_w + _state._spectrum_w, _state._base_h + _state._eq_h)
+        # 初始尺寸：左列（控制+频谱）+ 右列（插件面板）
+        window.setFixedSize(_state._panel_w + _state._fx_w + 20, 640)
 
 
         if config.get("auto_start", False):

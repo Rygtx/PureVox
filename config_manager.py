@@ -59,6 +59,11 @@ class ConfigDefaults:
     eq_preset_7: List[float] = field(default_factory=lambda: [0.0] * 61)
     eq_active_slot: int = 0
     eq_current_gains: List[float] = field(default_factory=lambda: [0.0] * 61)
+    # 插件链（右侧面板，全部处理以插件形式存在）：[{"type","enabled","params"}, ...]
+    plugin_chain: List[dict] = field(default_factory=lambda: [
+        {"type": "gain", "enabled": True, "params": {}},
+        {"type": "denoiser", "enabled": True, "params": {}},
+    ])
     # 接口
     api_type: int = field(default_factory=_default_api_type)
     NETWORK_input_url: str = "ws://0.0.0.0:59123/ws/audio"
@@ -211,6 +216,7 @@ class ConfigDefaults:
             "eq_preset_7": instance.eq_preset_7.copy(),
             "eq_active_slot": instance.eq_active_slot,
             "eq_current_gains": instance.eq_current_gains.copy(),
+            "plugin_chain": instance.plugin_chain,
         }
 
 
@@ -292,6 +298,7 @@ class ConfigManager:
         "eq_preset_0", "eq_preset_1", "eq_preset_2", "eq_preset_3",
         "eq_preset_4", "eq_preset_5", "eq_preset_6", "eq_preset_7",
         "eq_active_slot", "eq_current_gains",
+        "plugin_chain",
     ]
 
     def save_config(self) -> None:

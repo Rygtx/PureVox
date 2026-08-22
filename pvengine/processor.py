@@ -15,136 +15,167 @@
 #
 # SPDX-License-Identifier: GPL-3.0-or-later
 
-"""AudioProcessor——组件化引擎的门面。
+"""AudioProcessor——全链驱动门面。
 
-保持与旧 ctypes 版 aimic.AudioProcessor 完全一致的外部 API，
-内部改为 Pipeline 组件链（可按需增删组件）。
+整条管线 = 用户插件序列（pvengine.plugins 注册表），不再有固定模式。
+基础设施（可视化抽头 / 录制抽头 / 末端限幅）固定挂在首尾，不进插件列表。
 
-默认链路（对齐原 C audio_processor_process 顺序）：
-    增益(AGC/pre) → EQ → 限幅 → 降噪(v9) → AEC(aec9) → TSE(tse15)
-    → 压缩器 → 录制抽头 → 限幅 → VAD 门 → AGC 测量
+对外保留旧 API 兼容垫片（set_pre_gain/set_agc_enabled/set_eq_gains/
+set_aec_*/set_tse_reference/process_eq_only 等），内部按插件名路由到对应实例。
 """
-
-import math
 
 import numpy as np
 
-from pvengine.context import (FrameContext, HOP_LENGTH, SAMPLE_RATE,
-                              MODE_PASSTHROUGH, MODE_DENOISE, MODE_AEC, MODE_TSE)
+from pvengine.context import FrameContext, HOP_LENGTH, SAMPLE_RATE, MODE_DENOISE
 from pvengine.pipeline import Pipeline
-from pvengine.components.gain import GainStage, AgcMeterStage
-from pvengine.components.eq import EQ_BANDS, EQ_FREQS, EqStage
-from pvengine.components.misc import (BufferTapStage, ClipStage, CompressorStage,
-                                      RecorderTapStage, VadStage)
-from pvengine.components.aec import AecStage
-from pvengine.components.denoise import DenoiseStage
-from pvengine.components.tse import TseStage
+from pvengine.plugins import create_plugin, DEFAULT_CHAIN
+from pvengine.components.misc import BufferTapStage, ClipStage, RecorderTapStage
+
+_VIZ_CAP = 1 << 16
+
+
+class _EffectAdapter:
+    """FX Effect → Stage 协议适配（Pipeline 只认 accepts/process/reset）。"""
+
+    name = "fx"
+
+    def __init__(self, eff, enabled=True):
+        self.eff = eff
+        self.enabled = enabled
+
+    def accepts(self, ctx) -> bool:
+        return self.enabled
+
+    def process(self, frame, ctx):
+        return self.eff.process(frame.astype(np.float32, copy=False), ctx)
+
+    def reset(self):
+        self.eff.reset()
+
+    @property
+    def params(self):
+        return getattr(self.eff, "params", {})
 
 
 class AudioProcessor:
-    def __init__(self, pre_gain_db: float, denoise_model_path: str,
-                 tse_model_path: str = "", aec_model_path: str = ""):
-        self._mode = MODE_DENOISE
-        self._far_sample_rate = SAMPLE_RATE
-        self._far_rms_target = 0.05
-        self._io_in_sr = SAMPLE_RATE
-        self._io_out_sr = SAMPLE_RATE
+    """插件链音频处理器。链配置：[{"type","enabled","params"}, ...]，
+    顺序即信号流顺序；AI 插件模型引擎跨重建共享（不重复加载）。"""
 
-        self._gain = GainStage(pre_gain_db)
-        self._eq = EqStage()
-        self._clip = ClipStage()
-        self._denoise = DenoiseStage(denoise_model_path) if denoise_model_path else None
-        self._aec = AecStage(aec_model_path) if aec_model_path else None
-        self._stft = None
-        self._tse = TseStage(tse_model_path) if tse_model_path else None
-        if self._tse:
-            self._stft = self._tse.stft
-        self._compressor = CompressorStage()
-        self._recorder = RecorderTapStage()
-        self._vad = VadStage()
+    def __init__(self, pre_gain_db: float = 0.0, denoise_model_path: str = "",
+                 tse_model_path: str = "", aec_model_path: str = ""):
+        # 旧签名兼容：模型路径参数已由插件内部按 model_config 常量解析，忽略
+        del denoise_model_path, tse_model_path, aec_model_path
+
+        self._stage_cache = {}      # AI Stage 缓存（denoise/aec/tse）
         self._viz_in = BufferTapStage()
         self._viz_out = BufferTapStage()
-        self._viz_in.enabled = False   # 默认关闭：仅 process_pipeline 内临时开启
+        self._viz_in.enabled = False
         self._viz_out.enabled = False
+        self._recorder = RecorderTapStage()
+        self._clip = ClipStage()
+        self._far_sr = SAMPLE_RATE
 
-        # passthrough 模式无需组件：mode 不在其它组件 active_modes 内时全链旁路
-        self.pipeline = Pipeline([
-            self._viz_in,
-            self._gain,
-            self._eq,
-            self._clip,
-            self._denoise,
-            self._aec,
-            self._tse,
-            self._compressor,
-            self._recorder,
-            ClipStage(),
-            self._vad,
-            AgcMeterStage(self._gain.agc),
-            self._viz_out,
-        ])
+        self._typed = []            # [(type_str, obj)]，obj 为 Stage 或 EffectAdapter
+        self.pipeline = Pipeline([])
+        self.plugin_errors: list[str] = []
 
-    # ── 推理后端报告（纯 py 后由 onnxruntime 内部调度，恒报 AVX/OK）──
-    def backend_effective(self):
-        return 0  # BACKEND_AVX
+        cfg = [dict(e) for e in DEFAULT_CHAIN]
+        if pre_gain_db:
+            for e in cfg:
+                if e["type"] == "gain":
+                    e["params"] = {"gain_db": float(pre_gain_db)}
+        self.set_plugins(cfg)
+        self.set_mode(MODE_DENOISE)  # 兼容占位（模式概念已废弃）
 
-    def backend_reason(self):
-        return 0  # BACKEND_REASON_OK
+    # ── 链构建 ──
+    def set_plugins(self, chain_cfg):
+        """整体替换插件链。单项失败（如模型缺失）跳过并记入 plugin_errors。"""
+        stages = []
+        typed = []
+        self.plugin_errors = []
+        for item in (chain_cfg or []):
+            ptype = str(item.get("type", ""))
+            enabled = bool(item.get("enabled", True))
+            params = item.get("params") or {}
+            try:
+                obj = create_plugin(ptype, params, self._stage_cache)
+            except Exception as e:
+                self.plugin_errors.append(f"{ptype}: {e}")
+                continue
+            if obj is None:
+                continue
+            obj.enabled = enabled
+            if hasattr(obj, "accepts"):
+                stage = obj
+            else:
+                stage = _EffectAdapter(obj, enabled)
+            stages.append(stage)
+            typed.append((ptype, stage))
+        self._typed = typed
+        self.pipeline = Pipeline(
+            [self._viz_in] + stages + [self._recorder, self._clip, self._viz_out])
 
-    def backend_info(self):
-        return (self.backend_effective(), self.backend_reason())
+    def get_plugins(self) -> list:
+        out = []
+        for ptype, st in self._typed:
+            obj = getattr(st, "eff", st)
+            params = dict(getattr(obj, "params", {}) or {})
+            out.append({"type": ptype, "enabled": bool(st.enabled), "params": params})
+        return out
 
-    # ── 生命周期 ──
-    def cleanup(self):
-        self.pipeline.release()
+    def update_plugin_param(self, index: int, key: str, value):
+        if 0 <= index < len(self._typed):
+            _, st = self._typed[index]
+            obj = getattr(st, "eff", st)
+            if hasattr(obj, "set_params"):
+                obj.set_params({key: value})
 
-    def reset(self):
-        self.pipeline.reset()
+    def set_plugin_enabled(self, index: int, enabled: bool):
+        if 0 <= index < len(self._typed):
+            self._typed[index][1].enabled = bool(enabled)
 
-    # ── 基础控制 ──
-    def set_pre_gain(self, db: float):
-        self._gain.set_pre_gain_db(float(db))
+    def move_plugin(self, index: int, direction: int) -> bool:
+        j = index + direction
+        if not (0 <= index < len(self._typed) and 0 <= j < len(self._typed)):
+            return False
+        self._typed[index], self._typed[j] = self._typed[j], self._typed[index]
+        self.set_plugins([{"type": t,
+                           "enabled": s.enabled,
+                           "params": dict(getattr(getattr(s, "eff", s), "params", {}) or {})}
+                          for t, s in self._typed])
+        return True
 
-    def set_mode(self, mode: int):
-        """切模式：只复位 STFT/TSE 流式态（对齐原 C；降噪 RNN 态跨模式保留）。"""
-        self._mode = int(mode)
-        if self._stft:
-            self._stft.reset()
-        if self._tse:
-            self._tse.engine.reset()
+    def add_plugin(self, ptype: str, params: dict | None = None) -> bool:
+        cfg = self.get_plugins() + [{"type": ptype, "enabled": True,
+                                     "params": params or {}}]
+        before = len(self.plugin_errors)
+        self.set_plugins(cfg)
+        return len(self.plugin_errors) == before
 
-    def get_mode(self):
-        return self._mode
+    def remove_plugin(self, index: int):
+        cfg = self.get_plugins()
+        del cfg[index]
+        self.set_plugins(cfg)
 
-    def set_io_sample_rates(self, in_sr, out_sr):
-        self._io_in_sr, self._io_out_sr = int(in_sr), int(out_sr)
+    def _find(self, ptype: str):
+        """返回当前链中该类型的活动实例（未启用也返回，供开关切换）。"""
+        for t, st in self._typed:
+            if t == ptype:
+                return getattr(st, "eff", st)
+        return None
 
-    def set_viz_enabled(self, enabled: bool):
-        self._viz_in.enabled = bool(enabled)
-        self._viz_out.enabled = bool(enabled)
+    def needs_far_end(self) -> bool:
+        """链中是否存在启用的回声消除（线程需据此建立扬声器采集）。"""
+        return any(t == "echo_cancel" and st.enabled for t, st in self._typed)
 
-    # ── EQ ──
-    def set_eq_gains(self, gains):
-        if gains:
-            self._eq.set_gains(gains)
+    def tse_needs_reference(self) -> bool:
+        return any(t == "tse" and st.enabled and
+                   not getattr(getattr(st, "eff", st), "has_reference", True)
+                   for t, st in self._typed)
 
-    def get_eq_freqs(self):
-        return list(EQ_FREQS[:EQ_BANDS])
-
-    def get_eq_band_count(self):
-        return EQ_BANDS
-
-    def process_eq_only(self, in_samples):
-        """前置链预览（增益+EQ），入出等长；供频谱输入侧显示。"""
-        x = np.asarray(in_samples, dtype=np.float32).reshape(-1).copy()
-        g = self._gain.agc.tick() if self._gain.agc.enabled else self._gain.pre_gain
-        x *= np.float32(g)
-        x = self._eq.process(x, FrameContext())
-        return x.tolist()
-
-    # ── 主链路 ──
+    # ── 主处理 ──
     def _run_chain(self, mic: np.ndarray, far=None) -> np.ndarray:
-        ctx = FrameContext(mode=self._mode, far=far, far_sample_rate=self._far_sample_rate)
+        ctx = FrameContext(far=far, far_sample_rate=self._far_sr)
         return self.pipeline.process(mic, ctx)
 
     def process(self, mic):
@@ -167,14 +198,13 @@ class AudioProcessor:
         far = np.asarray(far_end, dtype=np.float32) if far_end is not None else None
         acc = np.asarray(raw_input, dtype=np.float32).reshape(-1)
         out_acc: list[float] = []
-        # viz 仅在网络管线采集（对齐原 C：本地路径不产生 viz 数据）
         self._viz_in.enabled = True
         self._viz_out.enabled = True
         try:
             while len(acc) >= HOP_LENGTH:
                 chunk, acc = acc[:HOP_LENGTH], acc[HOP_LENGTH:]
                 out_acc.extend(self._run_chain(chunk, far).tolist())
-            if len(acc) >= HOP_LENGTH * 3 // 4:      # 尾帧补零冲刷（对齐原 C）
+            if len(acc) >= HOP_LENGTH * 3 // 4:
                 orig = len(acc)
                 chunk = np.zeros(HOP_LENGTH, dtype=np.float32)
                 chunk[:orig] = acc
@@ -191,47 +221,102 @@ class AudioProcessor:
     def get_and_clear_viz_output(self):
         return self._viz_out.take()
 
-    # ── AEC ──
-    def set_aec_enabled(self, enabled: bool):
-        if enabled:
-            self.set_mode(MODE_AEC)
-        elif self._mode == MODE_AEC:
-            self.set_mode(MODE_PASSTHROUGH)
+    def set_viz_enabled(self, enabled: bool):
+        pass  # 抽头有界，无需暂停采集
 
+    # ── 兼容垫片：旧 setter/getter 按插件名路由 ──
+    def set_pre_gain(self, db: float):
+        g = self._find("gain")
+        if g is not None:
+            g.set_params({"gain_db": float(db)})
+
+    def set_mode(self, mode):
+        """已废弃：模式概念移除，插件链即全部行为。保留为 no-op 兼容旧调用。"""
+
+    def get_mode(self):
+        return MODE_DENOISE
+
+    def set_io_sample_rates(self, in_sr, out_sr):
+        pass
+
+    def set_agc_enabled(self, enabled: bool, initial_gain_db: float = 0.0):
+        a = self._find("agc")
+        if a is None:
+            return
+        a.enabled = bool(enabled)
+        if enabled:
+            a.agc.reset()
+            a.agc.set_enabled(True, float(initial_gain_db))
+
+    def set_vad_enabled(self, enabled: bool):
+        g = self._find("gate")
+        if g is not None:
+            g.enabled = bool(enabled)
+            if enabled:
+                g.reset()
+
+    def set_compressor_enabled(self, enabled: bool):
+        c = self._find("compressor")
+        if c is not None:
+            c.stage.enabled = bool(enabled)
+
+    def set_eq_gains(self, gains):
+        eq = self._find("eq")
+        if eq is not None and gains:
+            eq.set_gains(gains)
+
+    def process_eq_only(self, in_samples):
+        """前置预览（频谱输入侧）：依次过链中的 gain/eq 插件。"""
+        x = np.asarray(in_samples, dtype=np.float32).reshape(-1).copy()
+        for ptype in ("gain", "eq"):
+            p = self._find(ptype)
+            if p is not None and getattr(p, "enabled", True):
+                x = p.process(x, FrameContext()).astype(np.float32)
+        return x.tolist()
+
+    # ── AEC ──
     def is_aec_available(self):
-        return self._aec is not None
+        return "echo_cancel" in dict(self._typed)
+
+    def set_aec_enabled(self, enabled: bool):
+        a = self._find("echo_cancel")
+        if a is not None:
+            a.stage.enabled = bool(enabled)
 
     def set_aec_far_sample_rate(self, sr: int):
-        self._far_sample_rate = int(sr) if sr and sr > 0 else SAMPLE_RATE
-        if self._aec:
-            self._aec.set_far_sample_rate(self._far_sample_rate)
+        self._far_sr = int(sr) if sr and sr > 0 else SAMPLE_RATE
+        a = self._find("echo_cancel")
+        if a is not None and hasattr(a, "set_far_sample_rate"):
+            a.set_far_sample_rate(self._far_sr)
 
     def get_aec_far_sample_rate(self):
-        return self._far_sample_rate
+        return getattr(self, "_far_sr", SAMPLE_RATE)
 
-    def set_aec_far_rms_target(self, v: float):
-        self._far_rms_target = float(v) if v > 0.0 else 0.05
+    def set_aec_far_rms_target(self, v):
+        pass
 
     def get_aec_far_rms_target(self):
-        return self._far_rms_target
+        return 0.05
 
     # ── TSE ──
-    def set_tse_enabled(self, enabled: bool):
-        if enabled:
-            self.set_mode(MODE_TSE)
-        elif self._mode == MODE_TSE:
-            self.set_mode(MODE_PASSTHROUGH)
+    def is_tse_available(self):
+        return "tse" in dict(self._typed)
 
     def set_tse_reference(self, ref):
-        if not ref or not self._tse:
-            return
-        self._tse.set_reference(np.asarray(ref, dtype=np.float32))
+        for t, st in self._typed:
+            if t == "tse":
+                obj = getattr(st, "eff", st)
+                if ref:
+                    obj.set_reference(np.asarray(ref, dtype=np.float32))
 
     def is_tse_reference_loaded(self):
-        return bool(self._tse and self._tse.has_reference)
+        return any(t == "tse" and getattr(getattr(s, "eff", s), "has_reference", False)
+                   for t, s in self._typed)
 
-    def is_tse_available(self):
-        return self._tse is not None
+    def set_tse_enabled(self, enabled: bool):
+        for t, st in self._typed:
+            if t == "tse":
+                st.enabled = bool(enabled)
 
     def get_tse_recording_audio(self):
         return list(self._recorder.frame)
@@ -242,85 +327,21 @@ class AudioProcessor:
     def is_recording_enabled(self):
         return self._recorder.recording_enabled
 
-    # ── VAD ──
-    def set_vad_enabled(self, enabled: bool):
-        self._vad.set_enabled(bool(enabled))
+    # ── 后端报告（onnxruntime 内部调度，恒报 AVX/OK）──
+    def backend_effective(self):
+        return 0
 
-    def is_vad_enabled(self):
-        return self._vad.enabled
+    def backend_reason(self):
+        return 0
 
-    def is_vad_active(self):
-        return self._vad.active
+    def backend_info(self):
+        return (0, 0)
 
-    def set_vad_threshold(self, dbfs: float):
-        self._vad.threshold_linear = 10.0 ** (float(dbfs) / 20.0)
-
-    def get_vad_threshold(self):
-        return 20.0 * np.log10(max(self._vad.threshold_linear, 1e-300))
-
-    # ── AGC ──
-    def set_agc_enabled(self, enabled: bool, initial_gain_db: float = 0.0):
-        self._gain.set_agc_enabled(bool(enabled), float(initial_gain_db))
-
-    def is_agc_enabled(self):
-        return self._gain.agc.enabled
-
-    def is_agc_voice_active(self):
-        return self._gain.agc.voice_active
-
-    def get_agc_gain_db(self):
-        return self._gain.agc.gain_db
-
-    def set_agc_target(self, dbfs: float):
-        agc = self._gain.agc
-        agc.target_dbfs = float(dbfs)
-        agc.target_linear = 10.0 ** (agc.target_dbfs / 20.0)
-
-    def get_agc_target(self):
-        return self._gain.agc.target_dbfs
-
-    # ── 压缩器 ──
-    def set_compressor_enabled(self, enabled: bool):
-        self._compressor.enabled = bool(enabled)
-
-    def is_compressor_enabled(self):
-        return self._compressor.enabled
-
-    def set_compressor_threshold(self, db):
-        self._compressor.threshold_db = float(db)
-
-    def get_compressor_threshold(self):
-        return self._compressor.threshold_db
-
-    def set_compressor_ratio(self, r):
-        self._compressor.ratio = max(float(r), 1.0)
-
-    def get_compressor_ratio(self):
-        return self._compressor.ratio
-
-    def set_compressor_attack(self, ms):
-        self._compressor.det_attack_alpha = 1.0 - np.exp(-1.0 / (float(ms) * 0.001 * self._compressor.fs))
-
-    def get_compressor_attack(self):
-        return -math.log(1.0 - self._compressor.det_attack_alpha) / (self._compressor.fs * 0.001) \
-            if self._compressor.det_attack_alpha < 1.0 else 0.0
-
-    def set_compressor_release(self, ms):
-        self._compressor.det_release_alpha = 1.0 - np.exp(-1.0 / (float(ms) * 0.001 * self._compressor.fs))
-
-    def get_compressor_release(self):
-        import math
-        a = self._compressor.det_release_alpha
-        return -math.log(1.0 - a) / (self._compressor.fs * 0.001) if a < 1.0 else 0.0
-
-    def set_compressor_makeup(self, db):
-        self._compressor.makeup_db = float(db)
-
-    def get_compressor_makeup(self):
-        return self._compressor.makeup_db
-
-    def set_compressor_knee(self, db):
-        self._compressor.knee_db = float(db)
-
-    def get_compressor_knee(self):
-        return self._compressor.knee_db
+    # ── 生命周期 ──
+    def cleanup(self):
+        for st in self._stage_cache.values():
+            try:
+                st.release()
+            except Exception:
+                pass
+        self._stage_cache.clear()

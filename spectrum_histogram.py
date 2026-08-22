@@ -150,23 +150,24 @@ class SpectrumWidget(QWidget):
                 y = int(T + gh * (1.0 - (db - self.DB_MIN) / self.DB_RANGE))
                 p.drawLine(L, y, L + gw, y)
 
-            # 频率刻度线（硬编码像素偏移，无运行时计算）
+            # 频率刻度线（按可用宽度等比缩放，兼容任意面板宽度）
+            sx = gw / 512.0
             p.setFont(QFont("Microsoft YaHei", 5))
             p.setPen(QPen(grid, 0.5))
             for px_off, label in TICK_POSITIONS:
-                x = L + px_off
-                p.drawLine(x, T, x, T + gh)
+                x = L + px_off * sx
+                p.drawLine(int(x), T, int(x), T + gh)
             p.setPen(text_c)
             for px_off, label in TICK_POSITIONS:
-                x = L + px_off
+                x = L + px_off * sx
                 if label == "20":
                     p.drawText(QRectF(x - 20, T + gh + 1, 20, 12), Qt.AlignRight | Qt.AlignVCenter, label)
                 else:
                     p.drawText(QRectF(x - 12, T + gh + 1, 24, 12), Qt.AlignCenter, label)
 
-            # 绘制频谱条 — 固定 bar_w=3, gap=1, 从左到右排列 128 根
-            bar_w, gap = 3, 1
-            step = bar_w + gap  # 4px
+            # 绘制频谱条 — 步长随可用宽度自适应（128 根铺满 gw）
+            step = max(2.0, gw / NUM_BANDS)
+            bar_w = max(1.0, step - 1.0)
             p.setPen(Qt.NoPen)
 
             for i in range(NUM_BANDS):
