@@ -291,12 +291,18 @@ def _set_titlebar_theme(hwnd: int, dark: bool) -> None:
 
 
 # ═══════════════════════════════════════════════════════════════
-#  VU 表常量
+#  VU 表常量 & 全局 UI 状态
 # ═══════════════════════════════════════════════════════════════
 
 _VU_DB_MIN, _VU_DB_MAX = -60.0, 0.0
 _VU_DB_RNG = _VU_DB_MAX - _VU_DB_MIN
 _VU_PEAK_FALL = 20.0
+_VU_TICKS = [-60, -54, -48, -42, -36, -30, -24, -18, -12, -6, 0]
+_VU_GREEN = QColor("#00cc44")
+_VU_YELLOW = QColor("#cccc00")
+_VU_RED = QColor("#cc2200")
+
+_LAST_48K_WARN = 0.0  # 防重复弹框时间戳
 
 
 class VUBar(QWidget):
