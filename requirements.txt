@@ -12,11 +12,14 @@ protobuf
 # 注意：这里的 PySide6 是 GUI 栈依赖；onnxruntime 不经过 pip，见 setup.py 注释。
 # 纯 C 引擎（aimic.c / pipewire_client.c）由 gcc 直接构建，ctypes 加载，无 pybind11
 # 编译器依赖：Linux 用 pkg-config + libpipewire-0.3-dev + gcc
-PySide6>=6.8
-cryptography>=41.0.0
-zeroconf
-aiohttp>=3.9.0
-opuslib>=3.0
+# 版本下限对齐当前最新发布（2026-08-22 核对）：CI 无锁版，全新环境即装最新；
+# 唯一例外 onnxruntime==1.22.0 由构建脚本锁定——C 引擎捆绑的 SDK 就是 1.22.0，
+# 升级需同步重捆 packages/onnxruntime-*，勿单独改
+PySide6>=6.11
+cryptography>=50.0.0
+zeroconf>=0.150
+aiohttp>=3.14
+opuslib>=3.0.1
 zipp
 
 # Windows 专属依赖见 requirements-win.txt（pip install -r requirements.txt -r requirements-win.txt）
