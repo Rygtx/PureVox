@@ -146,6 +146,8 @@ def main() -> int:
     if "--real" in sys.argv:
         def t_real_start():
             assert in_dev and out_dev, "需要真实输入/输出设备"
+            # 模态弹框在无人值守测试中会永久阻塞：替换为记录式桩
+            ui._warn_48k = lambda *a, **k: log_lines.append("[48k] 设备被弹框拦截")
             config.set("plugin_chain", fxp.to_config())
             config.save_config()
             ui._state.config = config

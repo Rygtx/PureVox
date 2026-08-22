@@ -119,17 +119,49 @@ class SessionPlan:
 L4 在点击启动时调用 `from_chain`；`ok()` 为假则展示 problems 并中止，
 为真则把字段分发给 L2（AudioThread/PwBridge）与 L1（set_plugins）。
 
-## 5. 传输规范（L2）
+## 5. 传输层与后端插件（L2）
 
-- Linux：全部输入/输出走 pipewire-pulse（PwBridge）。
-  - 每路一条 pulsectl 连接 + 独立线程 + 独立环形缓冲（线程亲和性）。
-  - `read()` 实现混音不变量；`write()` 实现扇出不变量。
-- Windows：PortAudio。
-  - 主输入一条全双工流；**多输入当前取首个**（已知限制，TODO 混音）。
-  - 主输出 + N 路额外输出（extra_output_ids），回调写各自缓冲实现扇出。
-- 网络：remote_mic 经 HTTPS/WSS 服务器注入，等同一路 input；
-  输出侧与本地一致（Linux 走 PwBridge 扇出，Windows 走 extras）。
-- 监听概念已废除——「监听」就是一个 output 节点实例。
+### 5.1 TransportBackend 契约
+
+每个平台音频 API 是一个**可插拔后端**，与节点解耦：SessionPlan 只描述
+设备名列表，不关心由谁采集/播放。后端由注册表描述：
+
+```python
+@dataclass(frozen=True)
+class BackendSpec:
+    name: str                # "pipewire" / "wasapi" / "mme" / "network"
+    label: str               # 中文显示名
+    platforms: tuple         # ("linux",) / ("windows",) / ("windows","macos")
+    capabilities: frozenset  # {"multi_input","multi_output","loopback_far"}
+```
+
+后端数据面对象与 PwBridge 同形（这是既成事实的标准接口）：
+`open(inputs, outputs)` / `read(n)`（混音）/ `write(samples)`（扇出）/
+`close()` / `active()` / `last_error()` / `set_far(sink, enabled)` / `read_far(n)`。
+
+### 5.2 注册表与选择规则
+
+- 注册表唯一入口：`pvplatform/audio/backends.py` 的 `BACKENDS` 列表与
+  `probe_backends()` / `select_backend(required_caps)`。
+- 启动时按 **平台匹配 → probe() 可用 → 能力覆盖计划需求** 选出唯一后端，
+  结果写入启动日志（名称 + 能力 + 探测结果）。
+- 禁止在传输代码里散布 `if IS_LINUX` 平台分支——平台差异只允许存在于
+  后端实现与 probe 内部。
+
+### 5.3 各后端现状
+
+| 后端 | 平台 | 能力 | 实现状态 |
+|---|---|---|---|
+| pipewire | Linux | multi_input, multi_output, loopback_far | ✅ PwBridge 已完全类化 |
+| wasapi | Windows | loopback_far | ⚠️ 数据面内联于 AudioThread 回调，类化提取为 TODO v2 |
+| mme | Windows | （无 loopback；驱动自动重采样故 48k 检测宽松） | 同上 |
+| network | 全平台 | multi_input（作为一路输入注入） | 经服务器 RemoteAudioSource 注入，随会话建立 |
+
+### 5.4 其他传输规范
+
+- 「监听」概念已废除——监听就是一个 output 节点实例。
+- 网络：remote_mic 节点经 HTTPS/WSS 服务器注入，等同一路 input；
+  输出侧与本地一致（Linux 扇出走 PwBridge，Windows extras 回调）。
 
 ## 6. 错误处理与降级
 

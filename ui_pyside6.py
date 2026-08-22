@@ -1211,7 +1211,23 @@ def start_processing(state, log):
         is_network = remote is not None
         api_type = API_TYPE_NETWORK if is_network else default_api_type()
 
-        use_pw = IS_LINUX
+        # ── 传输后端选择（DESIGN.md §5）：平台→探测→能力，取代散布的 IS_LINUX ──
+        from pvplatform.audio.backends import select_backend
+        required = set()
+        if not is_network and len(in_nodes) > 1:
+            required.add("multi_input")
+        if len(out_nodes) > 1:
+            required.add("multi_output")
+        if _chain_enabled("echo_cancel"):
+            required.add("loopback_far")
+        backend = select_backend(frozenset(required))
+        if backend is None:
+            log.err("当前平台没有可用的音频传输后端（探测失败或能力不足）")
+            return
+        log.msg(f"[后端] {backend.label} ({backend.name}) "
+                f"能力: {', '.join(sorted(backend.capabilities)) or '—'}")
+
+        use_pw = backend.name == "pipewire"
         pw_ports: Tuple[List[str], List[str]] = ([], [])
         inp = None
         out = None
@@ -1222,9 +1238,10 @@ def start_processing(state, log):
                     f"{', '.join(pw_ports[0]) or '(网络)'} | "
                     f"输出x{len(pw_ports[1])}: {', '.join(pw_ports[1])}")
         else:
-            # Windows：首个输入为主输入；首个输出为主输出，其余为额外输出扇出
+            # 回调型后端（WASAPI/MME）：首个输入为主输入；
+            # 首个输出为主输出，其余为额外输出扇出
             if len(in_nodes) > 1:
-                log.warn("[多输入] Windows 暂只取第一个输入节点")
+                log.warn("[多输入] 该后端暂只取第一个输入节点")
             inp = get_device_id(in_nodes[0], True, api_type=api_type)
             ids = [get_device_id(n, False, api_type=api_type) for n in out_nodes]
             out = ids[0]
@@ -1358,11 +1375,11 @@ def start_processing(state, log):
         if is_network:
             server = _ensure_network_server(state, log)
             state.processing_thread = start_audio_stream(
-                None, None if IS_LINUX else out, proc, HOP_LENGTH,
+                None, None if use_pw else out, proc, HOP_LENGTH,
                 network_source=server.audio_source,
                 api_type=api_type, ready_msg=ready_msg,
-                extra_output_ids=[] if IS_LINUX else extra_out,
-                pw_ports=pw_ports if IS_LINUX else ([], []))
+                extra_output_ids=[] if use_pw else extra_out,
+                pw_ports=pw_ports if use_pw else ([], []))
         elif use_pw:
             log.msg(f"[启动] PipeWire 输入x{len(pw_ports[0])} → 处理链 → "
                     f"输出x{len(pw_ports[1])}（多入混音/多出扇出，48kHz 单声道）")

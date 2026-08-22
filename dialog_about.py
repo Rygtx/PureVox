@@ -361,6 +361,17 @@ AGC、VAD，31 段均衡器在菜单「设置 → 均衡器」打开。</p>
 
 CHANGELOG_TEXT = """# 更新日志
 
+## 2026-08-23 — 传输后端插件化（架构升级 · 第一阶段）
+
+- **平台音频 API 成为可插拔后端**：新增 pvplatform/audio/backends.py——
+  BackendSpec（名称/显示名/平台/能力集/优先级）+ 探测 + 选择器；
+  内置 pipewire / wasapi / mme 三个后端，能力声明
+  （multi_input/multi_output/loopback_far）取代隐式平台假设
+- 启动流程按「平台→探测→能力覆盖」自动选择唯一后端并写入启动日志；
+  能力不足时明确报错（如 Windows 上启用两个输入节点会提示该后端不支持多输入）
+- DESIGN.md §5 重写为传输后端规范：数据面契约与 PwBridge 同形，
+  禁止传输代码散布 if IS_LINUX；Windows 回调数据面的完整类化提取为 TODO v2
+
 ## 2026-08-23 — 启动闪退修复 + 全组件压测工具（稳定性）
 
 - **修复启动即闪退**：历史重构误删的模块常量（_VU_TICKS / _VU_GREEN / _VU_YELLOW /
