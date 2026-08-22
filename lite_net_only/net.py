@@ -26,9 +26,9 @@ CERT_PATH = os.path.join(CERT_DIR, "net_lite_cert.pem")
 KEY_PATH = os.path.join(CERT_DIR, "net_lite_key.pem")
 
 # ---------------------------------------------------------------------------
-# 本机 IP 枚举（TUN 规避）：VPN/隧道虚拟网卡（TUN/TAP/WireGuard/Clash 等）会
-# 抢占默认路由，导致 mDNS/显示选到客户端连不通的地址。这里按接口类型 +
-# 名称关键词过滤，只留物理网卡上的可广播 IPv4。
+# 本机 IP 枚举：列出全部 Up 状态网卡的 IPv4 端点（物理口在前、TUN/VPN 在后）。
+# TUN/VPN 虚拟网卡不再从列表剔除（用户可在下拉里显式选择），只在
+# auto_lan_ip 自动选择时规避——避免 VPN 抢占默认路由时选到连不通的地址。
 # ---------------------------------------------------------------------------
 _TUN_IF_TYPES = {53, 131}  # PPP, TunnelEncapsulation
 _TUN_NAME_HINTS = (
@@ -42,17 +42,14 @@ def _is_tun_name(name):
     return any(h in n for h in _TUN_NAME_HINTS)
 
 def list_lan_ips():
-    """返回 [(ipv4, if_name), ...]，已剔除 TUN/VPN 虚拟网卡与回环，物理口在前"""
-    out = []
+    """返回 [(ipv4, if_name), ...]，全部 Up 网卡（剔除回环/链路本地），
+    物理口在前、隧道/虚拟口在后"""
+    out = []  # (ip, name, iftype)
     if sys_platform_win():
         for ip, name, iftype, oper in _win_adapters():
-            if iftype in _TUN_IF_TYPES:
+            if oper != 1:  # IfOperStatusUp：未连接的网卡没有可用端点
                 continue
-            if oper != 1:  # IfOperStatusUp
-                continue
-            if _is_tun_name(name):
-                continue
-            out.append((ip, name))
+            out.append((ip, name, iftype))
     else:
         try:
             import fcntl
@@ -68,28 +65,37 @@ def list_lan_ips():
             for i in range(0, size, 40):
                 name = data[i:i+16].split(b"\0")[0].decode("utf-8", "replace")
                 ip = ".".join(str(b) for b in data[i+20:i+24])
-                if not _is_tun_name(name):
-                    out.append((ip, name))
+                out.append((ip, name, None))
         except Exception:
             pass
-    # 过滤回环/链路本地，物理名优先排序
+
+    # 过滤回环/链路本地；排序：非 TUN 名 > 接口类型物理口(6=以太网/71=Wi-Fi) > IP。
+    # 隧道类型（PPP/TunnelEncapsulation 等）与虚拟口即使名字不带 TUN 特征也沉底，
+    # 避免通用名隧道口（如"以太网 2"）抢占自动选择
     def rank(item):
-        ip, name = item
-        bad = _is_tun_name(name)
-        return (1 if bad else 0, 0 if name.lower().startswith(("eth", "en", "以太网", "wi-fi")) else 1, ip)
-    out = [(ip, n) for ip, n in out if ip and not ip.startswith(("127.", "169.254."))]
+        ip, name, iftype = item
+        tun = _is_tun_name(name) or (iftype is not None and iftype in _TUN_IF_TYPES)
+        phys = 0 if iftype in (6, 71) else 1
+        return (1 if tun else 0, phys, ip)
+
+    out = [(ip, n, t) for ip, n, t in out if ip and not ip.startswith(("127.", "169.254."))]
     seen = set()
     uniq = []
-    for ip, n in sorted(out, key=rank):
+    for ip, n, _t in sorted(out, key=rank):
         if ip not in seen:
             seen.add(ip)
             uniq.append((ip, n))
     return uniq
 
-def best_lan_ip():
-    ips = list_lan_ips()
-    if ips:
-        return ips[0][0]
+def best_lan_ip(ips=None):
+    """自动选择最优网卡 IP：首个非 TUN/VPN 物理口（列表已按物理口优先排序）；
+    全是虚拟口时取首项，再兜底 UDP 出口路由（可能被 TUN 抢走，仅最后手段）"""
+    pairs = ips if ips is not None else list_lan_ips()
+    for ip, name in pairs:
+        if not _is_tun_name(name):
+            return ip
+    if pairs:
+        return pairs[0][0]
     # 兜底：UDP 出口路由（可能被 TUN 抢走，仅最后手段）
     try:
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -191,8 +197,31 @@ def _win_adapters():
 # ---------------------------------------------------------------------------
 # 自签证书（cryptography 生成一次，~/.purevox 复用）
 # ---------------------------------------------------------------------------
+def cert_covers_current_ips():
+    """现有证书 SAN 是否已覆盖全部当前网卡 IP（切换网络后需重签）"""
+    if not (os.path.isfile(CERT_PATH) and os.path.isfile(KEY_PATH)):
+        return False
+    try:
+        import ipaddress
+        from cryptography import x509
+        with open(CERT_PATH, "rb") as f:
+            cert = x509.load_pem_x509_certificate(f.read())
+        try:
+            san = cert.extensions.get_extension_for_class(x509.SubjectAlternativeName).value
+        except x509.ExtensionNotFound:
+            return False
+        # 显式遍历（新版本 cryptography 的 get_values_for_type 对 IPv4 实测返回空）
+        have = {str(g.value) for g in san
+                if isinstance(g, x509.IPAddress) and isinstance(g.value, ipaddress.IPv4Address)}
+        need = {ip for ip, _n in list_lan_ips()}
+        return need.issubset(have)
+    except Exception:
+        return False
+
+
 def ensure_tls_cert():
-    if os.path.isfile(CERT_PATH) and os.path.isfile(KEY_PATH):
+    """证书缺失或 SAN 未覆盖当前网卡 IP 时（重新）生成，否则复用"""
+    if cert_covers_current_ips():
         return True, ""
     try:
         import datetime
@@ -350,6 +379,7 @@ class NetServer:
         self._last_clients = 0
         self._loop = None
         self._server = None
+        self._ctx = None
         self._thread = None
         self._stop_evt = threading.Event()
 
@@ -366,6 +396,14 @@ class NetServer:
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
 
+    def restart(self):
+        """手动重启 WSS 服务（UI 重启按钮）：停旧监听 → 清连接状态 → 重开"""
+        self.stop()
+        self._conns.clear()
+        self._last_clients = 0
+        self._stop_evt.clear()
+        self.start()
+
     def stop(self):
         self._stop_evt.set()
         if self._loop and self._server:
@@ -377,6 +415,16 @@ class NetServer:
                 fut.result(timeout=3)
             except Exception:
                 pass
+
+    def reload_cert(self):
+        """重签证书后热加载（load_cert_chain 可重复调用替换证书链，
+        只影响新握手，已有连接不断）。可在任意线程调用。"""
+        if not self._loop or not self._ctx:
+            return
+        try:
+            self._loop.call_soon_threadsafe(self._ctx.load_cert_chain, CERT_PATH, KEY_PATH)
+        except Exception:
+            pass
 
     def _run(self):
         try:
@@ -394,6 +442,7 @@ class NetServer:
         self._loop = asyncio.get_running_loop()
         ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
         ctx.load_cert_chain(CERT_PATH, KEY_PATH)
+        self._ctx = ctx
 
         # ---- 同端口 HTTP：/api/status + html/ 静态页（浏览器客户端同源接入）----
         _CTYPES = {
@@ -531,7 +580,7 @@ class MdnsPublisher:
         except Exception:
             return False
         try:
-            ips = [self.addr] if self.addr else [a for a, _n in list_lan_ips()]
+            ips = [self.addr] if self.addr else [a for a, n in list_lan_ips() if not _is_tun_name(n)]
             addrs = [socket.inet_aton(a) for a in ips if a]
             if not addrs:
                 return False

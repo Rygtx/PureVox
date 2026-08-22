@@ -32,7 +32,7 @@ if ($LASTEXITCODE -ne 0) { Write-Host "WARN: pyaudio install failed" }
 # --- Syntax check + smoke import ---
 & $PY -m compileall -q lite_net_only
 if ($LASTEXITCODE -ne 0) { throw "compileall failed" }
-& $PY -c "import lite_net_only.config, lite_net_only.audio, lite_net_only.engine, lite_net_only.net, lite_net_only.ui, lite_net_only.fw; print('import OK')"
+& $PY -c "import lite_net_only.config, lite_net_only.audio, lite_net_only.engine, lite_net_only.net, lite_net_only.ui; print('import OK')"
 if ($LASTEXITCODE -ne 0) { throw "smoke import failed" }
 
 # --- Icon: pixel P from bundled font (same as denoiser lite) ---

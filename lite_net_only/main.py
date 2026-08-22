@@ -32,9 +32,10 @@ def ensure_single_instance():
         except Exception:
             return None
     else:
+        import os
         import fcntl
-        path = sys.os.path.join(sys.os.path.expanduser("~"), ".purevox", "purevox.lock")
-        sys.os.makedirs(sys.os.path.dirname(path), exist_ok=True)
+        path = os.path.join(os.path.expanduser("~"), ".purevox", "purevox.lock")
+        os.makedirs(os.path.dirname(path), exist_ok=True)
         fp = open(path, "w")
         try:
             fcntl.flock(fp, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -46,12 +47,13 @@ def ensure_single_instance():
 def set_autostart(enable):
     if sys.platform.startswith("win"):
         try:
+            import os
             import winreg
             key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\Microsoft\Windows\CurrentVersion\Run", 0, winreg.KEY_SET_VALUE | winreg.KEY_QUERY_VALUE)
             name = "PureVox"
             if enable:
                 exe = sys.executable
-                script = sys.os.path.join(sys.os.path.dirname(__file__), "main.py")
+                script = os.path.join(os.path.dirname(__file__), "main.py")
                 cmd = f'"{exe}" "{script}"'
                 winreg.SetValueEx(key, name, 0, winreg.REG_SZ, cmd)
             else:
@@ -76,17 +78,6 @@ def _die(msgbox_title, msg):
     sys.exit(1)
 
 def main():
-    # 提权子进程：仅安装防火墙规则后立即退出
-    # 必须在单实例互斥之前处理（主程序已持锁，UAC 子进程不能再抢）
-    if len(sys.argv) >= 2 and sys.argv[1] == "--fw-install":
-        import os
-        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-        import fw as _fw
-        port = int(sys.argv[2]) if len(sys.argv) > 2 else 8765
-        ip = sys.argv[3] if len(sys.argv) > 3 and sys.argv[3] else None
-        _fw._apply(port, ip)
-        sys.exit(0)
-
     ensure_single_instance()
     import os
     sys.path.insert(0, os.path.dirname(__file__))
@@ -180,56 +171,16 @@ def main():
     except Exception as e:
         _die("网络服务启动失败", str(e))
         return
-    # 默认广播网卡：配置保存值 > 首个物理网卡
+    # 默认广播网卡：配置保存值 > 自动选择（首个非 TUN 物理口）
     networks = netmod.list_lan_ips()
-    mdns.addr = cfg.get("net_ip") if cfg.get("net_ip") in [i for i, _n in networks] else (networks[0][0] if networks else None)
+    sel = cfg.get("net_ip")
+    mdns.addr = sel if sel in [i for i, _n in networks] else netmod.best_lan_ip(networks)
     mdns.start()
-    # 防火墙（免管理员路径）：WSS 监听后系统会自动弹「Windows 安全中心警报」，
-    # 用户点「允许访问」即由系统生成规则；这里只轮询检测并在 UI 上提示状态
     import threading as _th
     import time as _time
-    import fw as fwmod
 
-    def start_fw_watch():
-        def _watch():
-            ui = ui_holder.get("ui")
-            deadline = _time.time() + 180
-            hint1 = "未放行：点允许安全警报"
-            hint2 = "未放行：控制面板→允许应用"
-            while _time.time() < deadline:
-                if fwmod.rules_present(port, mdns.addr):
-                    u = ui_holder.get("ui")
-                    if u:
-                        try:
-                            u.root.after(0, lambda: u.set_fw_hint(None))
-                        except Exception:
-                            pass
-                    return
-                u = ui_holder.get("ui")
-                if u:
-                    h = hint1 if _time.time() < deadline - 60 else hint2
-                    try:
-                        u.root.after(0, lambda hh=h: u.set_fw_hint(hh))
-                    except Exception:
-                        pass
-                _time.sleep(5)
-        _th.Thread(target=_watch, daemon=True).start()
-
-    if not fwmod.rules_present(port, mdns.addr):
-        start_fw_watch()
-
-    def on_fw_manual():
-        # 手动申请：UAC 提权安装最小规则（与自动等待系统警报互补）
-        def _run():
-            ok, err = fwmod.manual_install(port, mdns.addr)
-            u = ui_holder.get("ui")
-            if u:
-                msg = None if ok else f"手动申请失败：{err}"
-                try:
-                    u.root.after(0, lambda: u.set_fw_hint(msg))
-                except Exception:
-                    pass
-        _th.Thread(target=_run, daemon=True).start()
+    # 防火墙零逻辑：WSS 开始监听即触发系统「安全中心警报」，点允许即放行；
+    # 「重启」按钮重开监听会再次触发，无需任何主动检查/安装代码
 
     def on_gain(which, val):
         iv = int(val)
@@ -257,27 +208,24 @@ def main():
         save(cfg)
         start_stream()
 
-    def on_network(ip):
-        # 切换网卡：保存选择 + mDNS 换接口重注册 + 防火墙自动重新申请。
-        # IP 变了旧规则必不匹配，且系统警报不会因 exe 已有规则再弹——
-        # 所以这里直接走手动路径（UAC 提权装最小规则），失败由提示兜底
+    def apply_network(ip):
+        """切网统一路径（用户下拉切换与自动跟随共用）：
+        保存选择 → 证书 SAN 未覆盖当前网卡时重签并热加载 → mDNS 换接口重注册"""
         cfg["net_ip"] = ip
         save(cfg)
+        try:
+            if netmod.ensure_tls_cert():
+                server.reload_cert()
+        except Exception:
+            pass
         try:
             mdns.restart(ip)
         except Exception:
             pass
 
-        def _reapply():
-            ok, err = fwmod.manual_install(port, ip)
-            u = ui_holder.get("ui")
-            if u:
-                msg = None if ok else ("申请取消" if "取消" in (err or "") else "申请失败")
-                try:
-                    u.root.after(0, lambda: u.set_fw_hint(msg))
-                except Exception:
-                    pass
-        _th.Thread(target=_reapply, daemon=True).start()
+    def on_network(ip):
+        # 用户手动切换网卡：mDNS/证书跟随即可
+        apply_network(ip)
 
     def on_autostart(enable):
         cfg["autostart"] = bool(enable)
@@ -303,9 +251,63 @@ def main():
 
     ui = LiteUI(cfg, outs, on_gain, on_output, on_autostart, on_close=_do_close, on_minimize=_do_close,
                 networks=networks, on_network=on_network)
-    ui.on_fw_manual = on_fw_manual
     ui.set_server_state(server.clients, "")
     ui_holder["ui"] = ui
+
+    # 网卡自动跟随：低频轮询本机 IPv4，网卡集合或选中 IP 变化时
+    # 自动跟随（证书/mDNS/二维码统一走 apply_network）并刷新下拉列表
+    def start_net_watch():
+        state = {"prev": None}
+
+        def _watch():
+            while True:
+                _time.sleep(5)
+                try:
+                    nets = netmod.list_lan_ips()
+                except Exception:
+                    continue
+                ips = [i for i, _n in nets]
+                cur = frozenset(ips)
+                if cur == state["prev"]:
+                    continue
+                state["prev"] = cur
+                sel = cfg.get("net_ip")
+                # 选中 IP 仍有效则不动（启动时 mDNS 已按其注册），失效才自动改选
+                want = sel if sel in ips else netmod.best_lan_ip(nets)
+                if want and want != sel:
+                    apply_network(want)
+                u = ui_holder.get("ui")
+                if u:
+                    try:
+                        u.root.after(0, lambda nn=nets: u.set_networks(nn))
+                    except Exception:
+                        pass
+        _th.Thread(target=_watch, daemon=True).start()
+
+    start_net_watch()
+
+    def on_restart():
+        # 手动重启：WSS 重开监听 + mDNS 重注册 + 下拉/状态刷新（异常恢复路径）
+        def _run():
+            err = ""
+            try:
+                server.restart()
+            except Exception as e:
+                err = str(e)
+            try:
+                mdns.restart(cfg.get("net_ip"))
+            except Exception:
+                pass
+            u = ui_holder.get("ui")
+            if u:
+                try:
+                    u.root.after(0, lambda: (u.set_networks(netmod.list_lan_ips()),
+                                             u.set_server_state(server.clients, err)))
+                except Exception:
+                    pass
+        _th.Thread(target=_run, daemon=True).start()
+
+    ui.on_restart = on_restart
 
     # 系统托盘（pystray，与 lite_denoise_only 同构）
     tray = None

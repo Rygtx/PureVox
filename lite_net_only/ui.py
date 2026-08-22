@@ -611,12 +611,6 @@ class LiteUI:
         self.lbl_server = tk.Label(row1, text="启动中…", bg=PANEL_BG, fg=FG, bd=1, relief=tk.FLAT,
                                    highlightbackground=BORDER, padx=S["pad_md"], font=self.fonts["body"])
         self.lbl_server.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=S["pad_md"])
-        # 防火墙手动申请按钮（自动路径=等系统安全中心警报，见 main 的后台轮询）
-        self.btn_fw = tk.Button(row1, text="防火墙", bg=BTN_BG, fg=FG, bd=0, relief=tk.FLAT,
-                                padx=S["pad_md"], font=self.fonts["body"],
-                                activebackground=HOVER_BG, activeforeground=FG,
-                                command=self._fw_clicked)
-        self.btn_fw.pack(side=tk.RIGHT)
 
         # 行3：输出设备（仅 WASAPI）
         row2 = tk.Frame(self._col, bg=BG)
@@ -641,6 +635,13 @@ class LiteUI:
         self.lbl_qr = tk.Label(qr_card, bg=ENTRY_BG, bd=0)
         self.lbl_qr.pack(side=tk.LEFT)
         self.lbl_qr.bind("<Button-1>", lambda e: self.refresh_qr())
+        # 重启按钮（二维码左侧）：手动恢复统一路径（WSS 重开 + mDNS 重注册 + 刷新）。
+        # side=RIGHT 先打包者最靠右：qr_card 已先打包，本按钮落其左侧并撑满两行高
+        self.btn_restart = tk.Button(row_gains, text="重启", bg=BTN_BG2, fg=FG, bd=0, relief=tk.FLAT,
+                                     font=self.fonts["bold"], justify="center",
+                                     activebackground=HOVER_BG, activeforeground=FG,
+                                     command=self._restart_clicked)
+        self.btn_restart.pack(side=tk.RIGHT, fill=tk.Y, padx=S["pad_sm"])
 
         row3 = tk.Frame(gains_left, bg=BG)
         row3.pack(fill=tk.X, pady=S["pad_md"])
@@ -941,21 +942,11 @@ class LiteUI:
     def _output_changed(self):
         self.on_output(self.out_var.get())
 
-    def _fw_clicked(self):
-        fn = getattr(self, "on_fw_manual", None)
+    def _restart_clicked(self):
+        fn = getattr(self, "on_restart", None)
         if fn:
             fn()
-
-    def set_fw_hint(self, text):
-        """防火墙提示（None=已放行清除提示）；由后台线程经 after 调用"""
-        self._fw_hint = text
-        # 触发服务状态行重绘
-        try:
-            clients = getattr(self, "_last_clients", 0)
-            note = getattr(self, "_last_note", "")
-            self.set_server_state(clients, note)
-        except Exception:
-            pass
+        self.set_server_state(getattr(self, "_last_clients", 0), "重启中…")
 
     def set_server_state(self, clients, note):
         """网络服务状态回调（线程安全：after 投递回主线程）"""
@@ -963,7 +954,6 @@ class LiteUI:
         self._last_note = note
         def _apply():
             try:
-                hint = getattr(self, "_fw_hint", None)
                 if note:
                     txt = f"异常 · {note}"
                     fgc = "#C62828"
@@ -975,10 +965,7 @@ class LiteUI:
                     port = int(self.cfg.get("port", 8765))
                     txt = f"wss://{ip}:{port} · {clients} 客户端"
                     fgc = "#2E7D32" if clients else FG
-                if hint:
-                    txt = f"{txt} · {hint}"
-                    fgc = "#EF6C00"
-                # 硬截断：提示再长也不能把右侧「防火墙」按钮挤出窗口
+                # 硬截断：提示再长也不能把内容挤出窗口
                 if len(txt) > 42:
                     txt = txt[:41] + "…"
                 self.lbl_server.configure(text=txt, fg=fgc)
