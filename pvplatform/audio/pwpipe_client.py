@@ -277,9 +277,6 @@ class _PlayThread(threading.Thread):
 HOP = 1024
 
 
-HOP = 1024
-
-
 class _Ring:
     """轻量 FIFO（满丢最旧 / 读不足返回 None）。"""
 
@@ -304,22 +301,20 @@ class _Ring:
 
 
 class PwBridge:
-    """PureVox 纯 Python 音频桥：input 采集 + output 播放 + 可选 monitor/far。
+    """PureVox 纯 Python 音频桥：N 路输入采集（自动混音）+ M 路输出播放（扇出）+ 可选 AEC far。
 
     所有流以 F32 单声道 48000Hz 协商，PipeWire 负责重采样与声道转换。
-    Python 线程 read()/write() 经内部缓冲搬运。
+    read() 对全部输入环取平均（缺席的路跳过）；write() 把同一份降噪音频
+    推进每一路输出环。Python 线程 read()/write() 经内部缓冲搬运。
     """
 
     def __init__(self):
-        self._in_thread = None
-        self._out_thread = None
-        self._mon_thread = None
-        self._far_thread = None
-        self._in_ring = _Ring(HOP * 8)       # 输入环 ~170ms
+        self._in_threads: List[_RecordThread] = []
+        self._in_rings: List[_Ring] = []
+        self._out_threads: List[_PlayThread] = []
+        self._out_rings: List[_Ring] = []
+        self._far_thread: Optional[_RecordThread] = None
         self._far_ring = _Ring(HOP * 8)
-        self._mon_ring = _Ring(48000)        # 监听缓冲 1s
-        self._play_ring = _Ring(48000)       # 播放缓冲 1s
-        self._monitor_name: str = ""
         self._error: str = ""
 
     @property
@@ -327,48 +322,59 @@ class PwBridge:
         return pw_available()
 
     # ── 连接管理 ──
-    def open(self, input_name: str, output_name: str, monitor_name: str = "") -> bool:
+
+    def open(self, inputs: List[str], outputs: List[str]) -> bool:
+        """打开 N 路采集 + M 路播放（node.name 列表，空串项忽略）。"""
         if not self.available:
             self._error = "pulsectl 不可用（pip install pulsectl）"
             return False
-        ok = False
-        if input_name:
-            self._in_thread = _RecordThread("in", input_name, self._in_ring)
-            self._in_thread.start()
-            ok = True
-        if output_name:
-            self._out_thread = _PlayThread("out", output_name, self._play_ring)
-            self._out_thread.start()
-            ok = True
-        if monitor_name:
-            self._monitor_name = monitor_name
-            self._mon_thread = _RecordThread("mon", monitor_name, self._mon_ring)
-            self._mon_thread.start()
+        inputs = [s for s in (inputs or []) if s]
+        outputs = [s for s in (outputs or []) if s]
+        for i, name in enumerate(inputs):
+            ring = _Ring(HOP * 8)
+            t = _RecordThread(f"in{i}", name, ring)
+            self._in_threads.append(t)
+            self._in_rings.append(ring)
+            t.start()
+        for i, name in enumerate(outputs):
+            tag = "out" if i == 0 else f"out{i}"
+            ring = _Ring(48000)          # 每路独立 1s 缓冲
+            t = _PlayThread(tag, name, ring)
+            self._out_threads.append(t)
+            self._out_rings.append(ring)
+            t.start()
+        if not (self._in_threads or self._out_threads):
+            self._error = "未指定任何输入/输出节点"
+            return False
         # 等各流就绪或报错
         deadline = time.time() + 3.0
-        for t in filter(None, (self._in_thread, self._out_thread, self._mon_thread)):
+        for t in (*self._in_threads, *self._out_threads):
             while not t.ready.is_set() and time.time() < deadline:
                 time.sleep(0.02)
             if t.error:
                 self._error = t.error
                 return False
-        return ok
+        return True
 
     def close(self) -> None:
-        for t in filter(None, (self._in_thread, self._out_thread,
-                               self._mon_thread, self._far_thread)):
+        threads = [*self._in_threads, *self._out_threads]
+        if self._far_thread is not None:
+            threads.append(self._far_thread)
+        for t in threads:
             t.stop()
-        for t in filter(None, (self._in_thread, self._out_thread,
-                               self._mon_thread, self._far_thread)):
+        for t in threads:
             t.join(timeout=1.0)
-        self._in_thread = self._out_thread = None
-        self._mon_thread = self._far_thread = None
+        self._in_threads = []
+        self._in_rings = []
+        self._out_threads = []
+        self._out_rings = []
+        self._far_thread = None
 
     def active(self) -> bool:
-        for t in filter(None, (self._in_thread, self._out_thread)):
-            if not t.is_alive():
-                return False
-        return bool(self._in_thread or self._out_thread)
+        started = [t for t in (*self._in_threads, *self._out_threads)]
+        if not started:
+            return False
+        return all(t.is_alive() for t in started)
 
     def last_error(self) -> str:
         return self._error or "未知错误"
@@ -377,33 +383,36 @@ class PwBridge:
         return 48000 if self.active() else 0
 
     # ── 数据面 ──
+
     def read(self, n: int) -> Optional[List[float]]:
+        """读取并混合全部输入路（等权平均；无数据返回 None）。"""
         if not self.available:
             return None
-        return self._in_ring.read(n)
+        chunks = []
+        for ring in self._in_rings:
+            got = ring.read(n)
+            if got is not None:
+                chunks.append(got)
+        if not chunks:
+            return None
+        if len(chunks) == 1:
+            return chunks[0]
+        acc = [0.0] * len(chunks[0])
+        for c in chunks:
+            for i, v in enumerate(c):
+                acc[i] += v
+        k = 1.0 / len(chunks)
+        return [v * k for v in acc]
 
     def write(self, samples) -> None:
-        if self.available and samples:
-            self._play_ring.write(samples)
-
-    def set_monitor(self, monitor_name: str, enabled: bool) -> None:
-        """运行时开关监听流（与输出同一路降噪音频）。"""
-        if not self.available:
+        """把降噪后的音频扇出到全部输出路。"""
+        if not (self.available and samples):
             return
-        if enabled and monitor_name:
-            if self._mon_thread is not None:
-                self._mon_thread.stop()
-            self._monitor_name = monitor_name
-            self._mon_thread = _RecordThread("mon", monitor_name, self._mon_ring)
-            self._mon_thread.start()
-        elif not enabled:
-            if self._mon_thread is not None:
-                self._mon_thread.stop()
-            self._mon_thread = None
-            self._monitor_name = ""
+        for ring in self._out_rings:
+            ring.write(samples)
 
     def set_far(self, sink_name: str, enabled: bool) -> bool:
-        """运行时开关 AEC far 采集流（监听 <sink>.monitor）。"""
+        """运行时开关 AEC far 采集流（监听 <sink>.monitor 源）。"""
         if not self.available:
             return False
         if enabled and sink_name:

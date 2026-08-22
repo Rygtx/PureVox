@@ -361,6 +361,22 @@ AGC、VAD，31 段均衡器在菜单「设置 → 均衡器」打开。</p>
 
 CHANGELOG_TEXT = """# 更新日志
 
+## 2026-08-23 — 顶层设计规范落地：节点注册表统一 + 会话计划层（架构升级）
+
+- **DESIGN.md 新增**：分层架构（L0 平台 → L1 引擎 → L2 传输 → L3 会话 → L4 UI）、
+  节点模型规范、数据流不变量（F32 单声道 48k / 等权混音 / 扇出互不拖累 / viz 只读旁路）、
+  SessionPlan 契约、错误降级矩阵、扩展清单——实现与规范的冲突以 DESIGN.md 为准
+- **节点注册表统一**：pvengine/plugins.py 引入 `NodeSpec`（name/label/kind/tier/params），
+  fx 插件由类属性自动派生，系统节点显式注册；发现入口收敛为
+  `all_specs()/get_spec(name)`，UI 与会话计划禁止自建类型清单
+- **新增 session_plan.py（L3）**：`SessionPlan.from_chain()` 纯函数把链文档校验为
+  可执行计划（inputs/outputs/remote_url/viz/fx_chain + 阻断 problems/非阻断 warnings）；
+  启动流程不再内联解析链配置
+- **修复**：PluginPanel 保存调用不存在的 `DebouncedSaver.schedule` → 统一为
+  `request_save`；remote_mic 行体分支顺序错误导致 URL 输入框不可达 → 修正优先级；
+  viz 控件注入引用失效布局 → 改持卡片布局引用
+- 清理死代码：`_combo_value`/`restart`/`stop_processing_for_update` 及 MainPanel 残留
+
 ## 2026-08-22 — 全插件化音频链 + 主界面双栏重构（重大更新）
 
 - **固定模式取消，全部处理插件化**：直通/降噪/AEC/TSE 四档模式选择器移除，

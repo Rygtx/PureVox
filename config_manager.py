@@ -61,8 +61,11 @@ class ConfigDefaults:
     eq_current_gains: List[float] = field(default_factory=lambda: [0.0] * 61)
     # 插件链（右侧面板，全部处理以插件形式存在）：[{"type","enabled","params"}, ...]
     plugin_chain: List[dict] = field(default_factory=lambda: [
-        {"type": "gain", "enabled": True, "params": {}},
+        {"type": "audio_input", "enabled": True, "params": {"device": ""}},
         {"type": "denoiser", "enabled": True, "params": {}},
+        {"type": "audio_output", "enabled": True, "params": {"device": ""}},
+        {"type": "vu_meter", "enabled": True, "params": {}},
+        {"type": "spectrum", "enabled": True, "params": {}},
     ])
     # 接口
     api_type: int = field(default_factory=_default_api_type)

@@ -76,6 +76,7 @@ class AudioProcessor:
         self._far_sr = SAMPLE_RATE
 
         self._typed = []            # [(type_str, obj)]，obj 为 Stage 或 EffectAdapter
+        self._entries = []          # [(type, stage|None, params, enabled)] 与 UI 行 1:1
         self.pipeline = Pipeline([])
         self.plugin_errors: list[str] = []
 
@@ -89,9 +90,14 @@ class AudioProcessor:
 
     # ── 链构建 ──
     def set_plugins(self, chain_cfg):
-        """整体替换插件链。单项失败（如模型缺失）跳过并记入 plugin_errors。"""
+        """整体替换插件链。单项失败（如模型缺失）跳过并记入 plugin_errors。
+
+        系统节点（输入/输出/可视化）不入管线，但保留占位——
+        _entries 与 UI 节点行索引 1:1 对齐，行级操作按此路由。
+        """
         stages = []
         typed = []
+        entries = []
         self.plugin_errors = []
         for item in (chain_cfg or []):
             ptype = str(item.get("type", ""))
@@ -101,8 +107,9 @@ class AudioProcessor:
                 obj = create_plugin(ptype, params, self._stage_cache)
             except Exception as e:
                 self.plugin_errors.append(f"{ptype}: {e}")
-                continue
+                obj = None
             if obj is None:
+                entries.append((ptype, None, dict(params), enabled))
                 continue
             obj.enabled = enabled
             if hasattr(obj, "accepts"):
@@ -111,9 +118,16 @@ class AudioProcessor:
                 stage = _EffectAdapter(obj, enabled)
             stages.append(stage)
             typed.append((ptype, stage))
+            entries.append((ptype, stage, dict(params), enabled))
+        self._entries = entries
         self._typed = typed
         self.pipeline = Pipeline(
             [self._viz_in] + stages + [self._recorder, self._clip, self._viz_out])
+
+    def _entries_cfg(self) -> list:
+        """全量链配置（含系统节点占位），顺序与 UI 行一致。"""
+        return [{"type": t, "enabled": en, "params": dict(p)}
+                for t, _s, p, en in self._entries]
 
     def get_plugins(self) -> list:
         out = []
@@ -124,37 +138,40 @@ class AudioProcessor:
         return out
 
     def update_plugin_param(self, index: int, key: str, value):
-        if 0 <= index < len(self._typed):
-            _, st = self._typed[index]
-            obj = getattr(st, "eff", st)
-            if hasattr(obj, "set_params"):
-                obj.set_params({key: value})
+        if 0 <= index < len(self._entries):
+            t, st, p, _en = self._entries[index]
+            p[key] = value
+            if st is not None:
+                obj = getattr(st, "eff", st)
+                if hasattr(obj, "set_params"):
+                    obj.set_params({key: value})
 
     def set_plugin_enabled(self, index: int, enabled: bool):
-        if 0 <= index < len(self._typed):
-            self._typed[index][1].enabled = bool(enabled)
+        if 0 <= index < len(self._entries):
+            t, st, p, _en = self._entries[index]
+            self._entries[index] = (t, st, p, bool(enabled))
+            if st is not None:
+                st.enabled = bool(enabled)
 
     def move_plugin(self, index: int, direction: int) -> bool:
         j = index + direction
-        if not (0 <= index < len(self._typed) and 0 <= j < len(self._typed)):
+        if not (0 <= index < len(self._entries) and 0 <= j < len(self._entries)):
             return False
-        self._typed[index], self._typed[j] = self._typed[j], self._typed[index]
-        self.set_plugins([{"type": t,
-                           "enabled": s.enabled,
-                           "params": dict(getattr(getattr(s, "eff", s), "params", {}) or {})}
-                          for t, s in self._typed])
+        self._entries[index], self._entries[j] = self._entries[j], self._entries[index]
+        self.set_plugins(self._entries_cfg())
         return True
 
     def add_plugin(self, ptype: str, params: dict | None = None) -> bool:
-        cfg = self.get_plugins() + [{"type": ptype, "enabled": True,
-                                     "params": params or {}}]
+        cfg = self._entries_cfg() + [{"type": ptype, "enabled": True,
+                                      "params": params or {}}]
         before = len(self.plugin_errors)
         self.set_plugins(cfg)
         return len(self.plugin_errors) == before
 
     def remove_plugin(self, index: int):
-        cfg = self.get_plugins()
-        del cfg[index]
+        cfg = self._entries_cfg()
+        if 0 <= index < len(cfg):
+            del cfg[index]
         self.set_plugins(cfg)
 
     def _find(self, ptype: str):

@@ -189,11 +189,11 @@ class AudioThread(threading.Thread):
     def __init__(self, input_id: Optional[int], output_id: int,
                  process_frame: Callable[[List[float]], List[float]],
                  hop_length: int,
-                 monitor_id: Optional[int] = None,
                  processor: object = None,
                  network_source = None,
                  api_type: int = 13,
-                 ready_msg: str = "") -> None:
+                 ready_msg: str = "",
+                 extra_output_ids=None) -> None:
         super().__init__(name='AudioProcessor', daemon=True)
         self._ready_msg: str = ready_msg
         self._api_type: int = api_type
@@ -204,15 +204,18 @@ class AudioThread(threading.Thread):
         # PipeWire 负责重采样与声道转换（模型永远拿 48k 单声道）。
         self._use_pw = False
         self._pw_bridge: Optional[_PwBridge] = None
-        self._pw_ports: Tuple[str, str, str] = ("", "", "")  # (input, output, monitor)
+        self._pw_ports: Tuple[List[str], List[str]] = ([], [])  # (输入列表, 输出列表)
         self._channels: int = 1                     # 设备通道数，在 _create_stream 中确定
         self._output_buffer = None  # L3:网络输出缓冲 (aimic.RingBuffer 或 None)
         self._output_stream: Optional[Any] = None
         self._out_channels: int = 1
         self._accum: List[float] = []  # 回调帧累积（frame_count→hop_length）
-        self._monitor_ch: int = 1
-        self._monitor_debug_printed: bool = False
-        self._monitor_id: Optional[int] = monitor_id
+        # 多输出扇出（原「监听」机制的泛化）：主输出之外的全部播放设备
+        self._extra_out_ids: List[int] = [i for i in (extra_output_ids or [])
+                                          if i is not None]
+        self._extra_out_streams: List[Any] = []
+        self._extra_out_buffers: List[Any] = []
+        self._extra_out_chs: List[int] = []
         self._process_frame: Callable[[List[float]], List[float]] = process_frame
         self._hop_length: int = hop_length
         self._stop_event: threading.Event = threading.Event()
@@ -221,8 +224,6 @@ class AudioThread(threading.Thread):
         self._start_error: Optional[str] = None
         self._p: Optional[Any] = None
         self._stream: Optional[Any] = None
-        self._monitor_stream: Optional[Any] = None
-        self._monitor_buffer = aimic.RingBuffer(SAMPLE_RATE // 5)   # 200ms  L2:监听桥接
         self._vu_peak: float = 0.0  # L4:VU峰值快照（最新帧dBFS）
         self._spectrum_in: RingBuffer = RingBuffer(SAMPLE_RATE * 2)   # L4:频谱输入 2s
         self._spectrum_out: RingBuffer = RingBuffer(SAMPLE_RATE * 2)  # L4:频谱输出 2s
@@ -240,14 +241,14 @@ class AudioThread(threading.Thread):
         self._aec_warmup_frames: int = 0  # AEC 启动预填充计数器，>0 时喂静音积累远端缓冲
         self._aec_far_gain: float = 0.5623  # -5dB 固定衰减，防止远端回声过强
 
-    def set_pw_ports(self, input_name: str, output_name: str,
-                     monitor_name: str = "") -> None:
-        """设置 Linux PipeWire 输入/输出/监听节点名（node.name）。
+    def set_pw_ports(self, input_names: List[str], output_names: List[str]) -> None:
+        """设置 Linux PipeWire 输入/输出节点名列表（node.name）。
 
-        须在 run() 之前调用；start_audio_stream 会据此选择原生 PipeWire 后端。
+        多输入自动混音，多输出扇出同一路降噪音频。须在 run() 之前调用；
+        start_audio_stream 会据此选择原生 PipeWire 后端。
         """
-        self._use_pw = bool(input_name or output_name) and IS_LINUX
-        self._pw_ports = (input_name or "", output_name or "", monitor_name or "")
+        self._use_pw = bool(input_names or output_names) and IS_LINUX
+        self._pw_ports = (list(input_names or []), list(output_names or []))
 
     def set_aec_far_sink(self, sink_name: str) -> bool:
         """运行时切换 AEC far 端扬声器 sink（Linux PipeWire，capture.sink 重挂）。
@@ -291,9 +292,8 @@ class AudioThread(threading.Thread):
         if enabled:
             try:
                 if IS_LINUX and self._use_pw:
-                    # Linux：AEC far 走原生 PipeWire（capture.sink 监听扬声器输出）
-                    # far 端方向优先用手动选择（_aec_far_sink），否则跟监听端口。
-                    far_sink = self._aec_far_sink or self._pw_ports[2]
+                    # Linux：AEC far 走原生 PipeWire（监听扬声器 sink 的 monitor 源）
+                    far_sink = self._aec_far_sink
                     self._speaker_capture = SpeakerCapture(
                         on_device_changed=self._on_speaker_device_changed,
                         pw_bridge=self._pw_bridge,
@@ -395,10 +395,10 @@ class AudioThread(threading.Thread):
             self._last_output_frame = [0.0] * HOP_LENGTH
             self._output_buffer = aimic.RingBuffer(SAMPLE_RATE)
             self._output_stream = None
-            self._monitor_stream = None
-            in_name, out_name, mon_name = self._pw_ports
+            self._extra_out_streams = []
+            in_names, out_names = self._pw_ports
             bridge = _PwBridge()
-            if not bridge.open(in_name, out_name, mon_name):
+            if not bridge.open(in_names, out_names):
                 err = bridge.last_error()
                 bridge.close()
                 raise OSError(f"PipeWire 连接失败: {err}")
@@ -407,8 +407,8 @@ class AudioThread(threading.Thread):
                 bridge.close()
                 raise OSError(f"PipeWire 协商采样率为 {sr}Hz（应为 {SAMPLE_RATE}Hz）")
             self._pw_bridge = bridge
-            _module_log(f"[PipeWire] 输入: {in_name or '(未选)'}  输出: {out_name or '(未选)'}"
-                        + (f"  监听: {mon_name}" if mon_name else ""))
+            _module_log(f"[PipeWire] 输入x{len(in_names)}: {','.join(in_names) or '(未选)'}  "
+                        f"输出x{len(out_names)}: {','.join(out_names) or '(未选)'}")
             _module_log("[PipeWire] F32 单声道 48000Hz 协商（PipeWire 负责重采样/声道转换）")
             return
 
@@ -422,9 +422,12 @@ class AudioThread(threading.Thread):
 
         in_id = self._input_id
         out_id = self._validate_and_fix_device(self._output_id, want_input=False)
-        monitor_id = self._monitor_id
-        if monitor_id is not None:
-            monitor_id = self._validate_and_fix_device(monitor_id, want_input=False)
+        fixed_extras = []
+        for dev in self._extra_out_ids:
+            fixed = self._validate_and_fix_device(dev, want_input=False)
+            if fixed is not None and fixed != out_id:
+                fixed_extras.append(fixed)
+        self._extra_out_ids = fixed_extras
 
         if out_id is not None:
             try:
@@ -462,7 +465,7 @@ class AudioThread(threading.Thread):
                     last_err = e
             else:
                 raise OSError(f"无法打开输出流: {last_err}")
-            self._monitor_stream = self._create_monitor_stream()
+            self._create_extra_outputs()
             return
 
         in_id = self._validate_and_fix_device(self._input_id, want_input=True)
@@ -520,7 +523,7 @@ class AudioThread(threading.Thread):
             err_msg = str(last_err).split(']')[-1].strip() if last_err else "采样率不匹配"
             raise OSError(f"无法以 48kHz 全双工打开音频流 ({err_msg})")
 
-        self._monitor_stream = self._create_monitor_stream()
+        self._create_extra_outputs()
 
     def _get_full_duplex_callback(self) -> Callable:
         """全双工模式的音频回调（输入+输出同流）。"""
@@ -596,12 +599,8 @@ class AudioThread(threading.Thread):
                             self._tse_hook(list(pre_tse))
                     except Exception:
                         pass
-                if self._monitor_id is not None:
-                    self._monitor_buffer.write(list(denoised_48k))
-                    # 首次写入时打印调试信息
-                    if not getattr(self, '_monitor_debug_printed', False):
-                        self._monitor_debug_printed = True
-                        # Monitor buffer debug info suppressed
+                for buf in self._extra_out_buffers:
+                    buf.write(list(denoised_48k))
                 # VU 峰值快照（避免缓存整段波形）
                 self._vu_peak = max(abs(x) for x in denoised_48k) if denoised_48k else 0.0
                 # 写入频谱缓冲 (输入=pre_gain+EQ后, 输出=降噪后)
@@ -668,31 +667,31 @@ class AudioThread(threading.Thread):
 
         return callback
 
-    def _get_monitor_callback(self) -> Callable:
-        """获取监听流回调函数。"""
+    def _get_extra_callback(self, idx: int, ch: int) -> Callable:
+        """额外输出流回调：从对应缓冲读取降噪音频 → 上混 → 输出。"""
         def callback(in_data: bytes, frame_count: int, time_info, status) -> Tuple[bytes, int]:
             if self._stop_event.is_set():
                 return (None, pyaudio.paComplete)
 
             try:
-                mono_data = self._monitor_buffer.read(frame_count)
+                buf = self._extra_out_buffers[idx]
+                mono_data = buf.read(frame_count) if buf else None
                 if not mono_data:
                     mono_data = [0.0] * frame_count
 
-                # 上混为多声道
-                if self._monitor_ch > 1:
-                    out_data = [0.0] * (frame_count * self._monitor_ch)
+                if ch > 1:
+                    out_data = [0.0] * (frame_count * ch)
                     for i in range(frame_count):
-                        for ch in range(self._monitor_ch):
-                            out_data[i * self._monitor_ch + ch] = mono_data[i]
+                        for c in range(ch):
+                            out_data[i * ch + c] = mono_data[i]
                 else:
                     out_data = mono_data
 
                 return (struct.pack(f'{len(out_data)}f', *out_data), pyaudio.paContinue)
             except Exception as e:
-                _module_log(f"[音频] 监听回调异常: {e}")
-                return (struct.pack(f'{frame_count * self._monitor_ch}f',
-                       *([0.0] * frame_count * self._monitor_ch)), pyaudio.paContinue)
+                _module_log(f"[音频] 输出回调异常: {e}")
+                return (struct.pack(f'{frame_count * ch}f',
+                       *([0.0] * frame_count * ch)), pyaudio.paContinue)
 
         return callback
 
@@ -705,44 +704,36 @@ class AudioThread(threading.Thread):
             except Exception as e:
                 print(f"[WARN] Error closing {stream_name}: {e}")
 
-    def _create_monitor_stream(self) -> Optional[Any]:
-        if self._monitor_id is None or self._monitor_id < 0:
-            return None
-
-        # 查询监控设备自己的格式（不跟随主流的采样率）
-        try:
-            mon_info = self._p.get_device_info_by_index(self._monitor_id)
-            mon_sr = int(mon_info.get('defaultSampleRate', SAMPLE_RATE))
-            mon_ch = max(1, int(mon_info.get('maxOutputChannels', 1)))
-            if mon_sr <= 0:
-                mon_sr = SAMPLE_RATE
-        except Exception:
-            # 监控设备不可用，直接跳过
-            self._monitor_id = None
-            return None
-
-        # 监听：48kHz 统一
-        self._monitor_sr = SAMPLE_RATE
-        try:
-            mon_ch = max(1, int(mon_info.get('maxOutputChannels', 1)))
-        except Exception:
-            mon_ch = 1
-        self._monitor_ch = mon_ch
-
-        try:
-            monitor_stream = self._p.open(
-                format=pyaudio.paFloat32,
-                channels=mon_ch,
-                rate=SAMPLE_RATE,
-                output=True,
-                output_device_index=self._monitor_id,
-                frames_per_buffer=HOP_LENGTH,
-                stream_callback=self._get_monitor_callback())
-            monitor_stream.start_stream()
-            return monitor_stream
-        except (OSError, ValueError) as e:
-            self._monitor_id = None
-            return None
+    def _create_extra_outputs(self) -> None:
+        """创建全部额外输出流（多输出扇出）。失败设备静默跳过。"""
+        self._extra_out_streams = []
+        self._extra_out_buffers = []
+        self._extra_out_chs = []
+        for dev_id in self._extra_out_ids:
+            if dev_id is None or dev_id < 0 or dev_id == self._output_id:
+                continue
+            try:
+                info = self._p.get_device_info_by_index(dev_id)
+                ch = max(1, int(info.get('maxOutputChannels', 1)))
+            except Exception:
+                continue
+            try:
+                s = self._p.open(
+                    format=pyaudio.paFloat32,
+                    channels=ch,
+                    rate=SAMPLE_RATE,
+                    output=True,
+                    output_device_index=dev_id,
+                    frames_per_buffer=HOP_LENGTH,
+                    stream_callback=self._get_extra_callback(
+                        len(self._extra_out_streams), ch))
+                s.start_stream()
+                self._extra_out_streams.append(s)
+                self._extra_out_buffers.append(aimic.RingBuffer(SAMPLE_RATE // 5))
+                self._extra_out_chs.append(ch)
+                _module_log(f"[多输出] 已连接额外输出设备 #{dev_id} ({ch}ch)")
+            except (OSError, ValueError) as e:
+                _module_log(f"[多输出] 设备 #{dev_id} 打开失败: {e}")
 
     def run(self) -> None:
         """运行音频处理线程。"""
@@ -864,6 +855,8 @@ class AudioThread(threading.Thread):
                         self._pw_bridge.write(out)
                     else:
                         self._output_buffer.write(out)
+                        for buf in self._extra_out_buffers:
+                            buf.write(list(out))
                         # ── 速率补偿：输出缓冲过大时主动丢帧，防止延迟膨胀 ──
                         obuf_avail = self._output_buffer.available()
                         if obuf_avail > TARGET_OBUF * 2:
@@ -996,10 +989,10 @@ class AudioThread(threading.Thread):
                 except OSError:
                     out_active = True  # 网络模式下才有 _output_stream
                 try:
-                    monitor_active = (self._monitor_stream is None or
-                                      self._monitor_stream.is_active())
+                    extras_active = all(
+                        s is None or s.is_active() for s in self._extra_out_streams)
                 except OSError:
-                    monitor_active = False
+                    extras_active = False
 
             if not stream_active:
                 main_fail += 1
@@ -1017,22 +1010,26 @@ class AudioThread(threading.Thread):
             else:
                 out_fail = 0
 
-            if not monitor_active and self._monitor_stream is not None:
+            if not extras_active and self._extra_out_streams:
                 monitor_fail += 1
                 if monitor_fail >= MAX_CONSECUTIVE_FAILS:
-                    _module_log("[音频] 监听流已断开，尝试重连...")
+                    _module_log("[音频] 额外输出流已断开，尝试重建...")
                     monitor_fail = 0
                     monitor_retry_count += 1
                     if monitor_retry_count <= MAX_MONITOR_RETRIES:
                         with self._lock:
-                            self._close_stream_safely(self._monitor_stream, "monitor stream")
-                            self._monitor_stream = self._create_monitor_stream()
-                        if self._monitor_stream is not None:
-                            _module_log("[音频] 监听流已重连")
+                            for s in self._extra_out_streams:
+                                self._close_stream_safely(s, "extra output stream")
+                            self._create_extra_outputs()
+                        if any(s is not None and s.is_active()
+                               for s in self._extra_out_streams):
+                            _module_log("[音频] 额外输出流已重连")
                             monitor_retry_count = 0
                     else:
-                        _module_log("[音频] 监听流重连次数用尽")
-                        self._monitor_stream = None
+                        _module_log("[音频] 额外输出流重连次数用尽")
+                        for s in self._extra_out_streams:
+                            self._close_stream_safely(s, "extra output stream")
+                        self._extra_out_streams = []
             else:
                 monitor_fail = 0
 
@@ -1042,7 +1039,8 @@ class AudioThread(threading.Thread):
 
         self._close_stream_safely(self._stream, "main stream")
         self._close_stream_safely(self._output_stream, "output stream")
-        self._close_stream_safely(self._monitor_stream, "monitor stream")
+        for s in self._extra_out_streams:
+            self._close_stream_safely(s, "extra output stream")
 
         # Wait for PortAudio callbacks to finish executing.
         # stream.stop_stream() only prevents *new* callbacks; any callback
@@ -1064,8 +1062,10 @@ class AudioThread(threading.Thread):
         self._close_stream_safely(self._output_stream, "output stream")
         self._output_stream = None
         self._output_buffer = None
-        self._close_stream_safely(self._monitor_stream, "monitor stream")
-        self._monitor_stream = None
+        for s in self._extra_out_streams:
+            self._close_stream_safely(s, "extra output stream")
+        self._extra_out_streams = []
+        self._extra_out_buffers = []
 
         # PipeWire 桥接：关闭流（断开全部连接）
         if self._pw_bridge is not None:
@@ -1081,49 +1081,6 @@ class AudioThread(threading.Thread):
             except Exception as e:
                 _module_log(f"[音频] _cleanup() PortAudio 终止异常: {e}")
             self._p = None
-
-    def set_monitor_enabled(self, enabled: bool, monitor_id: Optional[int] = None) -> bool:
-        """动态启用或禁用监听输出。
-        
-        Args:
-            enabled: True 启用监听，False 禁用
-            monitor_id: 监听设备 ID（启用时必填）
-            
-        Returns:
-            成功返回 True，否则返回 False
-        """
-        with self._lock:
-            if enabled:
-                if monitor_id is None:
-                    _module_log("监听设备未选择")
-                    return False
-                
-                if self._monitor_stream is not None and self._monitor_id == monitor_id:
-                    return True
-                
-                self._close_stream_safely(self._monitor_stream, "monitor stream")
-                self._monitor_stream = None
-
-                self._monitor_id = monitor_id
-                self._monitor_stream = self._create_monitor_stream()
-                if self._monitor_stream is None:
-                    self._monitor_id = None
-                    return False
-                return True
-            else:
-                self._close_stream_safely(self._monitor_stream, "monitor stream")
-                self._monitor_stream = None
-                self._monitor_id = None
-                return True
-
-    def set_monitor_port(self, node: str, enabled: bool) -> bool:
-        """PipeWire 模式动态开关监听流（与输出同一路降噪音频）。"""
-        if not (IS_LINUX and self._use_pw):
-            return False
-        if self._pw_bridge is None:
-            return False
-        self._pw_bridge.set_monitor(node, enabled)
-        return True
 
     def set_tse_audio_hook(self, hook: Optional[Callable[[List[float]], None]]) -> None:
         """设置 TSE 音频钩子回调函数"""
@@ -1428,11 +1385,11 @@ def create_audio_processor(pre_gain_db: float,
 
 def start_audio_stream(input_id: Optional[int], output_id: int,
                        processor: object, hop_length: Optional[int] = None,
-                       monitor_id: Optional[int] = None,
                        network_source = None,
                        api_type: int = 13,
                        ready_msg: str = "",
-                       pw_ports: Tuple[str, str, str] = ()) -> AudioThread:
+                       extra_output_ids=None,
+                       pw_ports: Tuple[List[str], List[str]] = ([], [])) -> AudioThread:
     """启动音频流并返回线程实例。
 
     参数:
@@ -1440,19 +1397,21 @@ def start_audio_stream(input_id: Optional[int], output_id: int,
         output_id: 输出设备 ID。
         processor: aimic.AudioProcessor 实例（处理器，直接使用）。
         hop_length: 处理 hop 长度（默认 1024）。
-        monitor_id: 监听设备 ID（可选）。
         network_source: 网络输入模式下的 RemoteAudioSource（可选）。
         ready_msg: 音频流就绪后由 AudioThread 记录的日志消息。
-        pw_ports: Linux PipeWire 模式的 (input_name, output_name, monitor_name)
-            节点名三元组；非空时输入/输出/监听全走原生 PipeWire。
+        extra_output_ids: 额外输出设备 ID 列表（仅 Windows PortAudio 路径，
+            多输出扇出同一路降噪音频）。
+        pw_ports: Linux PipeWire 模式的 (输入节点列表, 输出节点列表)；
+            多输入自动混音、多输出扇出同一路降噪音频。
     """
     if hop_length is None:
         hop_length = HOP_LENGTH
     thread = AudioThread(input_id, output_id, processor.process, hop_length,
-                         monitor_id, processor, network_source=network_source,
-                         api_type=api_type, ready_msg=ready_msg)
-    if pw_ports and (pw_ports[0] or pw_ports[1]):
-        thread.set_pw_ports(pw_ports[0], pw_ports[1], pw_ports[2])
+                         processor, network_source=network_source,
+                         api_type=api_type, ready_msg=ready_msg,
+                         extra_output_ids=extra_output_ids)
+    if any(pw_ports[0]) or any(pw_ports[1]):
+        thread.set_pw_ports(pw_ports[0], pw_ports[1])
     thread.start()
     return thread
 

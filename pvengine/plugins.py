@@ -15,14 +15,23 @@
 #
 # SPDX-License-Identifier: GPL-3.0-or-later
 
-"""统一插件注册表——整条音频管线全部由这里的插件构成。
+"""节点注册表——一切用户可见音频组件的唯一规范来源。
 
-核心处理（增益/AGC/噪声门/EQ/压缩器/AI 三件套）与 FX 音效共用同一插件接口，
-UI 的右侧面板按 CATALOG 顺序展示「添加」菜单；管线 = 用户排列的插件实例序列。
+规范见 DESIGN.md §2：NodeSpec 描述每个节点（名称/显示名/类别/UI 形态/参数模式），
+四类 kind：
+    input  采集源，处理链之前，可多实例（混音）
+    output 播放汇，处理链之后，可多实例（扇出）
+    fx     引擎 Stage 处理级，按用户排列串接
+    viz    可视化旁路（tap），只读
+
+发现入口只有两个：all_specs() 与 get_spec(name)。
+UI 渲染与会话计划（session_plan.py）禁止自建类型清单。
 
 engine_cache：AudioProcessor 持有的 dict，AI 插件共享模型 Stage，
 链重建不重复加载模型。
 """
+
+from dataclasses import dataclass, field
 
 from pvengine.components.core_plugins import (
     GainPlugin, AgcPlugin, GatePlugin, EqPlugin, CompressorPlugin,
@@ -30,7 +39,18 @@ from pvengine.components.core_plugins import (
 )
 from pvengine.components.fx import EFFECT_TYPES as _FX_TYPES
 
-# 目录顺序：核心在前（信号流惯例顺序），FX 在后
+
+@dataclass(frozen=True)
+class NodeSpec:
+    """节点描述符（DESIGN.md §2.1）。"""
+    name: str          # 全局唯一稳定 id
+    label: str         # 中文显示名
+    kind: str          # input | output | fx | viz
+    tier: str = "toggle"   # UI 三级形态：toggle | inline | expand
+    params: dict = field(default_factory=dict)  # 滑杆模式 {key: (label,lo,hi,default,step)}
+
+
+# ── fx 目录顺序：核心在前（信号流惯例顺序），FX 在后 ──
 CATALOG: list[type] = [
     GainPlugin,
     DenoiserPlugin,
@@ -65,24 +85,62 @@ EXPAND_TITLES = {
     "tse": "参考音频",
 }
 
+# ── 系统节点显式注册（input/output/viz；fx 由插件类派生）──
+_SYSTEM_SPECS = [
+    NodeSpec("audio_input", "音频输入", "input"),
+    NodeSpec("remote_mic", "远程推流输入", "input"),
+    NodeSpec("audio_output", "音频输出", "output"),
+    NodeSpec("vu_meter", "VU 电平表", "viz"),
+    NodeSpec("spectrum", "频谱图", "viz"),
+]
+
+_SPEC_CACHE: list[NodeSpec] | None = None
+
+
+def all_specs() -> list[NodeSpec]:
+    """全部节点描述（系统节点在前，fx 在后）；首次调用构建并缓存。"""
+    global _SPEC_CACHE
+    if _SPEC_CACHE is None:
+        specs = list(_SYSTEM_SPECS)
+        for cls in CATALOG:
+            specs.append(NodeSpec(
+                name=cls.NAME,
+                label=cls.LABEL,
+                kind="fx",
+                tier=ui_tier(cls.NAME),
+                params=dict(cls.PARAMS),
+            ))
+        _SPEC_CACHE = specs
+    return list(_SPEC_CACHE)
+
+
+def get_spec(name: str) -> NodeSpec | None:
+    for s in all_specs():
+        if s.name == name:
+            return s
+    return None
+
 
 def ui_tier(ptype: str) -> str:
-    """插件 UI 层级：未显式声明时，有参数=inline，无参数=toggle。"""
+    """节点 UI 层级：未显式声明时，有滑杆参数=inline，无参数=toggle。"""
     if ptype in UI_TIERS:
         return UI_TIERS[ptype]
     cls = PLUGIN_TYPES.get(ptype)
     return "inline" if (cls and cls.PARAMS) else "toggle"
 
-# 全新配置的默认链（对齐旧默认行为：降噪开启，其余按需添加）
+# 全新配置的默认链：输入 → 降噪 → 输出 + 可视化
 DEFAULT_CHAIN = [
-    {"type": "gain", "enabled": True, "params": {}},
+    {"type": "audio_input", "enabled": True, "params": {"device": ""}},
     {"type": "denoiser", "enabled": True, "params": {}},
+    {"type": "audio_output", "enabled": True, "params": {"device": ""}},
+    {"type": "vu_meter", "enabled": True, "params": {}},
+    {"type": "spectrum", "enabled": True, "params": {}},
 ]
 
 
 def create_plugin(ptype: str, params: dict | None = None,
                   stage_cache: dict | None = None):
-    """按注册名实例化插件；未知类型返回 None（向前兼容旧配置）。
+    """按注册名实例化 fx 插件；未知/系统类型返回 None（向前兼容旧配置）。
 
     stage_cache：AudioProcessor 持有的 AI Stage 缓存，链重建不重复加载模型。
     """
@@ -93,8 +151,3 @@ def create_plugin(ptype: str, params: dict | None = None,
         return cls(params, stage_cache=stage_cache)
     except TypeError:
         return cls(params)
-
-
-def label_of(ptype: str) -> str:
-    cls = PLUGIN_TYPES.get(ptype)
-    return cls.LABEL if cls else ptype

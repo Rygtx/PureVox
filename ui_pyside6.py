@@ -60,6 +60,7 @@ from audio_processor import (
     register_tse_audio_hook, _recorder,
     _samples_to_wav_bytes, CFG_REF_WAV_PATH,
 )
+from session_plan import SessionPlan
 try:
     import pyaudio  # noqa: E402
 except ImportError:
@@ -126,16 +127,6 @@ def _jack_default_far() -> str:
     return speaker_sink_name()
 
 
-def _combo_value(combo) -> str:
-    """取下拉框选中值：Linux PipeWire 模式用 userData（真实 node.name），
-    其余平台用显示文本。"""
-    if IS_LINUX and combo is not None and combo.count():
-        d = combo.currentData()
-        if d:
-            return str(d)
-    return combo.currentText() if combo is not None else ""
-
-
 # 推理后端（自动选择）：实际生效后端 + NPU 未生效原因 → 中文状态文本
 _BACKEND_LABELS = {0: "AVX", 1: "SSE", 2: "NPU"}
 _BACKEND_REASON_NOTES = {
@@ -180,7 +171,7 @@ class DebouncedSaver:
 
 @dataclass
 class AppState:
-    main_panel: Optional['MainPanel'] = None
+    fx_panel: Optional['PluginPanel'] = None
     model_path: str = ""
     processor: Optional[Any] = None
     processing_thread: Optional[Any] = None
@@ -483,10 +474,11 @@ class VUPanel(QWidget):
 # ═══════════════════════════════════════════════════════════════
 
 class PluginRow(QWidget):
-    """插件行——三级 UI：
-    toggle  仅开关（无参数插件，如 AI 智能降噪）
-    inline  开关 + 行内参数滑杆（或特殊控件：AEC 的 far 设备下拉）
-    expand  行内控制 + 「展开…」按钮弹出独立 UI（EQ 曲线 / TSE 参考录音）
+    """节点行——kind 决定形态：
+    fx      处理插件，三级 UI（toggle / inline / expand）
+    input   音频输入节点：行内设备下拉（remote_mic 为地址输入框）
+    output  音频输出节点：行内设备下拉
+    viz     可视化节点：开关 + 行内嵌实时控件（set_body 注入）
     """
 
     changed = Signal(int, str, object)      # (row_index, key, value) 参数微调
@@ -494,15 +486,19 @@ class PluginRow(QWidget):
     actionRequested = Signal(str, int, int) # (remove|move, row_index, direction)
     expandRequested = Signal(str)           # 展开独立 UI（携带 ptype）
 
-    def __init__(self, index, plugin_type, label, params_spec, params, enabled,
-                 devices=None, parent=None):
+    def __init__(self, index, plugin_type, label, kind, params_spec, params,
+                 enabled, devices=None, parent=None):
         super().__init__(parent)
         from pvengine.plugins import ui_tier
         self.row_index = index
         self.plugin_type = plugin_type
+        self.kind = kind
         self.params_spec = params_spec
-        self.tier = ui_tier(plugin_type)
-        self._devices = list(devices or [])
+        self.tier = "toggle" if kind == "viz" else (
+            ui_tier(plugin_type) if kind == "fx" else "inline")
+        self._devices = dict(devices or {})
+        self._body_widget = None
+        self._card_lay = None
 
         card = QFrame()
         card.setFrameShape(QFrame.StyledPanel)
@@ -523,31 +519,63 @@ class PluginRow(QWidget):
             eb.setFixedHeight(20)
             eb.clicked.connect(lambda: self.expandRequested.emit(self.plugin_type))
             head.addWidget(eb)
-        for sym, tip, fn in (("↑", "上移", lambda: self._move(-1)),
-                             ("↓", "下移", lambda: self._move(1)),
-                             ("✕", "删除", self._remove)):
-            b = QPushButton(sym)
-            b.setFixedSize(20, 20)
+        from PySide6.QtWidgets import QStyle
+        st = self.style()
+        for std, tip, fn in ((QStyle.SP_ArrowUp, "上移", lambda: self._move(-1)),
+                             (QStyle.SP_ArrowDown, "下移", lambda: self._move(1)),
+                             (QStyle.SP_DialogCloseButton, "删除", self._remove)):
+            b = QPushButton()
+            b.setIcon(st.standardIcon(std))
+            b.setFixedSize(22, 22)
+            b.setIconSize(QSize(12, 12))
             b.setToolTip(tip)
             b.clicked.connect(fn)
             head.addWidget(b)
+        self._card_lay = lay
         lay.addLayout(head)
 
-        if self.tier == "inline":
+        # ── 行体 ──
+        if plugin_type == "remote_mic":
+            h = QHBoxLayout()
+            h.setSpacing(4)
+            gl = QLabel("地址")
+            gl.setStyleSheet("color: palette(mid); font-size: 8pt;")
+            h.addWidget(gl)
+            self.url_edit = QLineEdit()
+            self.url_edit.setPlaceholderText("https://192.168.1.100:59123")
+            self.url_edit.setText(str(params.get("url", "")))
+            self.url_edit.setToolTip(
+                "远程推流输入 — 手机/网页推流到本机的地址。格式: https://本机IP:端口")
+            self.url_edit.editingFinished.connect(self._on_url_done)
+            h.addWidget(self.url_edit, 1)
+            lay.addLayout(h)
+        elif kind in ("input", "output"):
+            h = QHBoxLayout()
+            h.setSpacing(4)
+            gl = QLabel("设备")
+            gl.setStyleSheet("color: palette(mid); font-size: 8pt;")
+            h.addWidget(gl)
+            self.dev_combo = QComboBox()
+            self._fill_devices(params.get("device", ""))
+            self.dev_combo.currentTextChanged.connect(self._on_dev_changed)
+            h.addWidget(self.dev_combo, 1)
+            lay.addLayout(h)
+        elif self.tier == "inline":
             grid = QGridLayout()
             grid.setSpacing(2)
             grid.setColumnStretch(1, 1)
             r = 0
             self._sliders = {}
             if plugin_type == "echo_cancel":
-                # 特殊控件：far 端扬声器下拉（回声参考设备）
                 gl = QLabel("回声参考设备")
                 gl.setStyleSheet("color: palette(mid); font-size: 8pt;")
                 grid.addWidget(gl, r, 0)
                 self.dev_combo = QComboBox()
-                self._fill_devices(params.get("far_device", ""))
+                self._fill_devices(params.get("far_device", ""), echo=True)
                 self.dev_combo.currentTextChanged.connect(
-                    lambda txt: self.changed.emit(self.row_index, "far_device", txt))
+                    lambda _t: self.changed.emit(
+                        self.row_index, "far_device",
+                        self.dev_combo.currentData() or ""))
                 self.dev_combo.setToolTip(
                     "回声消除需要采集正在出声的扬声器作参考。\n"
                     "选「自动」时使用系统默认物理扬声器。")
@@ -580,8 +608,14 @@ class PluginRow(QWidget):
         outer.setContentsMargins(0, 0, 0, 0)
         outer.addWidget(card)
 
-    def _fill_devices(self, current: str):
-        items = [("自动（默认物理扬声器）", "")] + [(d, d) for d in self._devices]
+    # ── 设备下拉（input/output/echo_cancel）──
+    def _fill_devices(self, current: str, echo: bool = False):
+        if echo:
+            items = [("自动（默认物理扬声器）", "")] + list(
+                self._devices.get("outputs", []))
+        else:
+            key = "inputs" if self.kind == "input" else "outputs"
+            items = list(self._devices.get(key, []))
         self.dev_combo.blockSignals(True)
         self.dev_combo.clear()
         for text, data in items:
@@ -590,19 +624,37 @@ class PluginRow(QWidget):
         self.dev_combo.setCurrentIndex(idx if idx >= 0 else 0)
         self.dev_combo.blockSignals(False)
 
+    def _on_dev_changed(self, _txt):
+        self.changed.emit(self.row_index, "device",
+                          self.dev_combo.currentData() or "")
+
     def set_devices(self, devices):
-        """外部刷新输出设备列表（echo_cancel 行的下拉随之更新）。"""
-        self._devices = list(devices or [])
+        """外部刷新设备列表（input/output/echo_cancel 行的下拉随之更新）。"""
+        self._devices = dict(devices or {})
         if hasattr(self, "dev_combo"):
             cur = self.dev_combo.currentData()
-            self._fill_devices(cur or "")
+            self._fill_devices(cur or "",
+                               echo=(self.plugin_type == "echo_cancel"))
+
+    def _on_url_done(self):
+        self.changed.emit(self.row_index, "url", self.url_edit.text().strip())
+
+    def set_body(self, w):
+        """注入可视化实时控件（viz 节点）。"""
+        self._body_widget = w
+        if self._card_lay is not None:
+            self._card_lay.addWidget(w)
 
     def to_params(self) -> dict:
         """行内当前参数（含特殊控件值）。"""
-        out = {k: sl.value() / 10.0 for k, sl in self._sliders.items()} \
-            if hasattr(self, "_sliders") else {}
-        if self.plugin_type == "echo_cancel" and hasattr(self, "dev_combo"):
-            out["far_device"] = self.dev_combo.currentData() or ""
+        out = {}
+        if hasattr(self, "_sliders"):
+            out.update({k: sl.value() / 10.0 for k, sl in self._sliders.items()})
+        if hasattr(self, "dev_combo"):
+            key = "far_device" if self.plugin_type == "echo_cancel" else "device"
+            out[key] = self.dev_combo.currentData() or ""
+        if hasattr(self, "url_edit"):
+            out["url"] = self.url_edit.text().strip()
         return out
 
     @staticmethod
@@ -621,7 +673,7 @@ class PluginRow(QWidget):
 
 
 class PluginPanel(QWidget):
-    """右侧插件面板：全部音频处理以插件行呈现，可添加/删除/排序/实时调参。"""
+    """统一节点面板：输入/处理/输出/可视化全部以可增删排序的行呈现。"""
 
     chainChanged = Signal(list)
 
@@ -631,7 +683,8 @@ class PluginPanel(QWidget):
         self._config = config
         self._saver = saver
         self._get_processor = get_processor or (lambda: None)
-        self._get_devices = get_devices or (lambda: [])
+        # 返回 {"inputs": [(text,data)...], "outputs": [(text,data)...]}
+        self._get_devices = get_devices or (lambda: {"inputs": [], "outputs": []})
         self._log = logger or get_logger()
 
         root = QVBoxLayout(self)
@@ -640,14 +693,14 @@ class PluginPanel(QWidget):
 
         head = QHBoxLayout()
         head.setSpacing(4)
-        title = QLabel("处理链")
+        title = QLabel("节点链")
         title.setStyleSheet("font-weight: bold;")
         head.addWidget(title)
         head.addStretch()
         self._add_combo = QComboBox()
-        from pvengine.plugins import CATALOG
-        for cls in CATALOG:
-            self._add_combo.addItem(cls.LABEL, cls.NAME)
+        from pvengine.plugins import all_specs
+        for sp in all_specs():
+            self._add_combo.addItem(sp.label, sp.name)
         head.addWidget(self._add_combo, 1)
         add_btn = QPushButton("+ 添加")
         add_btn.setFixedHeight(22)
@@ -655,7 +708,7 @@ class PluginPanel(QWidget):
         head.addWidget(add_btn)
         clear_btn = QPushButton("清空")
         clear_btn.setFixedHeight(22)
-        clear_btn.setToolTip("清空处理链")
+        clear_btn.setToolTip("清空节点链")
         clear_btn.clicked.connect(lambda: self.load_chain([]))
         head.addWidget(clear_btn)
         root.addLayout(head)
@@ -680,14 +733,15 @@ class PluginPanel(QWidget):
             w = item.widget()
             if w:
                 w.deleteLater()
-        from pvengine.plugins import PLUGIN_TYPES
+        from pvengine.plugins import get_spec
         self._rows = []
         for item in chain_cfg:
             t = str(item.get("type", ""))
-            cls = PLUGIN_TYPES.get(t)
-            if not cls:
+            spec = get_spec(t)
+            if spec is None:
                 continue
-            row = PluginRow(len(self._rows), t, cls.LABEL, cls.PARAMS,
+            row = PluginRow(len(self._rows), t, spec.label, spec.kind,
+                            dict(spec.params),
                             item.get("params", {}), bool(item.get("enabled", True)),
                             devices=self._get_devices())
             row.changed.connect(self._on_param)
@@ -696,11 +750,20 @@ class PluginPanel(QWidget):
             row.expandRequested.connect(self._on_expand)
             self._rows.append(row)
             self._rows_lay.insertWidget(self._rows_lay.count() - 1, row)
+            if spec.kind == "viz" and row.cb_on.isChecked():
+                if t == "vu_meter":
+                    row.set_body(VUPanel())
+                elif t == "spectrum":
+                    from spectrum_histogram import SpectrumWidget
+                    sw = SpectrumWidget()
+                    sw.setMinimumHeight(120)
+                    row.set_body(sw)
         self._renumber()
 
     def refresh_devices(self):
+        devs = self._get_devices()
         for r in self._rows:
-            r.set_devices(self._get_devices())
+            r.set_devices(devs)
 
     def to_config(self):
         return [{"type": r.plugin_type, "enabled": r.cb_on.isChecked(),
@@ -710,6 +773,36 @@ class PluginPanel(QWidget):
         for i, r in enumerate(self._rows):
             r.row_index = i
 
+    # ── 启动流程访问器 ──
+    def _enabled_rows_of(self, ptype):
+        return [r for r in self._rows
+                if r.plugin_type == ptype and r.cb_on.isChecked()]
+
+    def enabled_inputs(self):
+        """启用的本地音频输入设备列表；未选具体设备用 None 占位（运行时取默认）。"""
+        return [r.to_params().get("device") or None
+                for r in self._enabled_rows_of("audio_input")]
+
+    def enabled_outputs(self):
+        """启用的音频输出设备列表。"""
+        return [r.to_params().get("device") or None
+                for r in self._enabled_rows_of("audio_output")]
+
+    def remote_url(self):
+        """启用的远程推流地址；未启用返回 None。"""
+        rows = self._enabled_rows_of("remote_mic")
+        if not rows:
+            return None
+        return rows[0].to_params().get("url", "") or ""
+
+    def vu_widget(self):
+        rows = self._enabled_rows_of("vu_meter")
+        return rows[0]._body_widget if rows else None
+
+    def spectrum_widget(self):
+        rows = self._enabled_rows_of("spectrum")
+        return rows[0]._body_widget if rows else None
+
     # ── 变更处理 ──
     def _save_and_apply(self):
         cfg = self.to_config()
@@ -718,13 +811,13 @@ class PluginPanel(QWidget):
         except Exception:
             pass
         if self._saver:
-            self._saver.schedule()
+            self._saver.request_save()
         proc = self._get_processor()
         if proc is not None:
             try:
                 proc.set_plugins(cfg)
             except Exception as e:
-                self._log.warn(f"[插件链] 应用失败: {e}")
+                self._log.warn(f"[节点链] 应用失败: {e}")
         self.chainChanged.emit(cfg)
 
     def _on_param(self, row_index, key, value):
@@ -739,7 +832,7 @@ class PluginPanel(QWidget):
         except Exception:
             pass
         if self._saver:
-            self._saver.schedule()
+            self._saver.request_save()
 
     def _on_row_toggle(self, row_index, on):
         proc = self._get_processor()
@@ -755,10 +848,19 @@ class PluginPanel(QWidget):
         if not t:
             return
         cfg = self.to_config()
-        from pvengine.plugins import PLUGIN_TYPES
-        cls = PLUGIN_TYPES[t]
-        cfg.append({"type": t, "enabled": True,
-                    "params": {k: spec[3] for k, spec in cls.PARAMS.items()}})
+        from pvengine.plugins import get_spec
+        sp = get_spec(t)
+        if sp is None:
+            return
+        if t == "remote_mic":
+            defaults = {"url": self._config.get("NETWORK_input_url", "")}
+        elif sp.kind == "viz":
+            defaults = {}
+        elif sp.kind == "fx":
+            defaults = {k: v[3] for k, v in sp.params.items()}
+        else:
+            defaults = {"device": ""}
+        cfg.append({"type": t, "enabled": True, "params": dict(defaults)})
         self.load_chain(cfg)
         self._save_and_apply()
 
@@ -780,448 +882,6 @@ class PluginPanel(QWidget):
             self._open_tse_dialog()
         elif ptype == "eq" and hasattr(self, "_open_eq_editor"):
             self._open_eq_editor()
-
-
-class MainPanel(QWidget):
-    # 仅 Windows 有虚拟声卡概念；Linux/macOS 直接选真实输出设备
-    DEFAULT_OUTPUT_DEVICE = "" if not IS_WINDOWS else "CABLE Input"
-
-    def __init__(self, parent, config, debounced_saver=None,
-                 on_api_changed=None, on_device_changed=None,
-                 logger=None, **kwargs):
-        super().__init__(parent)
-        self._config = config
-        self._saver = debounced_saver
-        self._on_api_changed = on_api_changed
-        self._on_device_changed = on_device_changed
-        self._monitor_changed_cb = None
-        self._get_thread = None
-        self._log = logger or get_logger()
-
-        self._api_type = default_api_type()
-        self._api_opts = get_platform_api_options()
-
-        self._pre_gain = config.get("pre_gain_db", 0.0)
-
-        self._build_ui()
-        self._load_config()
-        # AGC 初始状态：如果已启用，启动轮询定时器
-    def changeEvent(self, event):
-        from PySide6.QtCore import QEvent
-        super().changeEvent(event)
-
-    def _build_ui(self):
-        self.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
-        root = QVBoxLayout(self)
-        root.setSpacing(4)
-        root.setContentsMargins(4, 4, 4, 4)
-
-        # ── 第4行：设备（扁平） ──
-        dev_grid = QGridLayout()
-        dev_grid.setSpacing(4)
-        dev_grid.setContentsMargins(0, 0, 0, 0)
-
-        dev_grid.setColumnMinimumWidth(0, 56)
-        dev_grid.setColumnStretch(1, 1)
-
-        lbl_api = QLabel("音频接口")
-        lbl_api.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
-        lbl_api.setToolTip(_api_tooltip())
-        dev_grid.addWidget(lbl_api, 0, 0)
-        self._api_combo = QComboBox()
-        self._api_combo.addItems([o[0] for o in self._api_opts])
-        self._api_combo.currentTextChanged.connect(self._handle_api_changed)
-        dev_grid.addWidget(self._api_combo, 0, 1)
-
-        self._lbl_in = QLabel("输入设备")
-        self._lbl_in.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
-        self._lbl_in.setToolTip(
-            "输入设备 — 你的物理麦克风\n"
-            "选择你正在使用的麦克风，\n"
-            "例如 Realtek Audio、USB 麦克风等。")
-        dev_grid.addWidget(self._lbl_in, 1, 0)
-        self._input_combo = QComboBox()
-        self._input_combo.currentTextChanged.connect(lambda: self._on_dev_changed(True))
-        dev_grid.addWidget(self._input_combo, 1, 1)
-        self._input_url = QLineEdit()
-        self._input_url.setPlaceholderText("https://192.168.1.100:59123")
-        self._input_url.setToolTip(
-            "API网址 — 手机/网页推流到本机的 WebSocket 地址\n"
-            "格式: https://本机IP:端口\n"
-            "例如: https://192.168.1.100:59123")
-        self._input_url.returnPressed.connect(self._on_url_changed)
-        self._input_url.hide()
-        dev_grid.addWidget(self._input_url, 1, 1)
-
-        lbl_out = QLabel("输出设备")
-        lbl_out.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
-        lbl_out.setToolTip(_output_tooltip())
-        dev_grid.addWidget(lbl_out, 2, 0)
-        self._output_combo = QComboBox()
-        self._output_combo.currentTextChanged.connect(lambda: self._on_dev_changed(False))
-        dev_grid.addWidget(self._output_combo, 2, 1)
-
-        self._monitor_cb = QCheckBox("监听")
-        self._monitor_cb.toggled.connect(self._on_monitor_toggled)
-        self._monitor_cb.setToolTip(
-            "监听（耳返）：\n"
-            "将处理后的声音实时回放到指定设备，\n"
-            "让你能听到自己说话的效果。\n"
-            "右侧下拉框选择监听用的设备，\n"
-            "通常是你的耳机。")
-        dev_grid.addWidget(self._monitor_cb, 3, 0)
-        self._monitor_combo = QComboBox()
-        self._monitor_combo.currentTextChanged.connect(self._handle_monitor_changed)
-        dev_grid.addWidget(self._monitor_combo, 3, 1)
-
-        root.addLayout(dev_grid)
-
-        # ── VU 电平表 ──
-        self._vu_panel = VUPanel()
-        root.addWidget(self._vu_panel)
-
-        # ── 第5行：启动/退出 ──
-        btn_row = QHBoxLayout()
-        btn_row.setSpacing(4)
-        btn_row.setContentsMargins(0, 0, 0, 0)
-        self._start_btn = QPushButton("启动音频处理")
-        self._start_btn.setFixedHeight(38)
-        self._start_btn.setObjectName("startBtn")
-        self._start_btn.clicked.connect(self._on_start_stop)
-        self._start_btn.setToolTip(
-            "启动/停止音频处理引擎。\n"
-            "首次启动会加载 AI 模型（约 1~2 秒），\n"
-            "之后即可实时处理麦克风音频。\n"
-            "快捷键: 右 Alt + >")
-        btn_row.addWidget(self._start_btn)
-        self._quit_btn = QPushButton("退出")
-        self._quit_btn.setFixedHeight(38)
-        self._quit_btn.setObjectName("quitBtn")
-        self._quit_btn.clicked.connect(lambda: quit_app(_state.root))
-        btn_row.addWidget(self._quit_btn)
-        root.addLayout(btn_row)
-
-    def _save(self):
-        if self._saver:
-            self._saver.request_save()
-        else:
-            self._config.save_config()
-
-    def _load_config(self):
-        api = self._config.get("api_type", default_api_type())
-        # 平台感知：配置值可能来自其它平台（如 Windows 配置 WASAPI=13），
-        # 若不在当前平台可选 API 中则回退到平台默认。
-        if api not in [o[1] for o in self._api_opts]:
-            api = default_api_type()
-            self._config.set("api_type", api)
-        self._api_type = api
-        name = next((o[0] for o in self._api_opts if o[1] == api), self._api_opts[0][0])
-        self._api_combo.setCurrentText(name)
-        self._update_devices()
-
-        self._pre_gain = self._config.get("pre_gain_db", 0.0)
-
-    def _handle_api_changed(self, text):
-        try:
-            self._api_type = next(o[1] for o in self._api_opts if o[0] == text)
-            self._config.set("api_type", self._api_type)
-            self._log.dev(f"接口: {text}")
-            self._update_api_ui()
-            if self._api_type != API_TYPE_NETWORK:
-                self._update_devices()
-            else:
-                port = self._config.get("server_port", 59123)
-                lan_ip = get_local_lan_ip()
-                url = f"https://{lan_ip}:{port}"
-                self._input_url.setText(url)
-                self._config.set("NETWORK_input_url", url)
-            self._save()
-            if self._on_api_changed:
-                self._on_api_changed(self._api_type)
-        except Exception as e:
-            self._log.err(f"接口切换失败: {e}")
-
-    def _on_dev_changed(self, is_input):
-        try:
-            name = _combo_value(self._input_combo if is_input else self._output_combo)
-            self._config.set(self._device_key("input" if is_input else "output"), name)
-            self._save()
-            # 切换输出设备时，若监听与输出相同则自动关闭
-            if (not is_input
-                    and self._monitor_cb.isChecked() and self._is_monitor_same_as_output()):
-                self._monitor_cb.setChecked(False)
-                self._log.dev("监听与输出设备相同，已关闭监听")
-            if self._on_device_changed:
-                self._on_device_changed(is_input, name)
-        except Exception as e:
-            self._log.err(f"设备切换失败: {e}")
-
-    def _handle_monitor_changed(self):
-        try:
-            name = _combo_value(self._monitor_combo)
-            self._config.set(self._device_key("monitor"), name)
-            self._save()
-            if self._monitor_cb.isChecked() and self._get_thread:
-                th = self._get_thread()
-                if th:
-                    if IS_LINUX:
-                        th.set_monitor_port(name, True)
-                    else:
-                        mid = self._get_monitor_id()
-                        if mid:
-                            th.set_monitor_enabled(True, mid)
-        except Exception as e:
-            self._log.err(f"监听切换失败: {e}")
-
-    def _is_monitor_same_as_output(self):
-        """检查监听设备是否和输出设备相同"""
-        m = _combo_value(self._monitor_combo)
-        o = _combo_value(self._output_combo)
-        return bool(m and o and m == o)
-
-    def _on_monitor_toggled(self, on):
-        try:
-            if on and not _combo_value(self._monitor_combo):
-                self._monitor_cb.setChecked(False)
-                self._log.dev("请先选择监听设备")
-                return
-            if on and self._is_monitor_same_as_output():
-                self._monitor_cb.setChecked(False)
-                self._log.dev("监听与输出设备相同，已关闭监听")
-                return
-            self._config.set("monitor_enabled", on)
-            self._save()
-            if self._get_thread:
-                th = self._get_thread()
-                if th:
-                    if IS_LINUX:
-                        th.set_monitor_port(_combo_value(self._monitor_combo), on)
-                    else:
-                        th.set_monitor_enabled(on, self._get_monitor_id() if on else None)
-            if self._monitor_changed_cb:
-                self._monitor_changed_cb(on, self._get_monitor_id() if on else None)
-        except Exception as e:
-            self._log.err(f"监听切换失败: {e}")
-
-    # ── TSE 参考音频弹框 ──
-
-    def _open_ref_dialog(self):
-        """打开 TSE 参考音频弹框（录音/播放/文件信息）。"""
-        from dialog_tse_reference import TseReferenceDialog
-        dlg = TseReferenceDialog(self._config, self._log, parent=self)
-        dlg.exec()
-
-
-
-    # ── 公共接口 ──
-
-    def set_get_processing_thread_callback(self, cb):
-        self._get_thread = cb
-
-    def set_monitor_changed_callback(self, cb):
-        self._monitor_changed_cb = cb
-
-    def suspend_ui_timers(self):
-        pass  # AGC 轮询已随插件化移除
-    def resume_ui_timers(self):
-        pass
-
-    def _update_devices(self):
-        try:
-            is_network = self._api_type == API_TYPE_NETWORK
-            if is_network:
-                url = self._config.get("NETWORK_input_url", "")
-                if not url or "127.0.0.1" in url:
-                    port = self._config.get("server_port", 59123)
-                    lan_ip = get_local_lan_ip()
-                    url = f"https://{lan_ip}:{port}"
-                    self._config.set("NETWORK_input_url", url)
-                self._input_url.setText(url)
-                enum_api = default_api_type()
-            else:
-                enum_api = self._api_type
-
-            inp, out = get_device_names(api_type=enum_api)
-            si = self._config.get(self._device_key("input"))
-            so = self._config.get(self._device_key("output"))
-            sm = self._config.get(self._device_key("monitor"))
-
-            self._input_combo.blockSignals(True)
-            self._output_combo.blockSignals(True)
-            self._monitor_combo.blockSignals(True)
-
-            # Linux：PipeWire 用 node.name（显示职责标记），存 userData；
-            # 下拉框显示文本、选中取 userData。
-            if IS_LINUX:
-                from pvplatform.audio.pwpipe_client import source_label, dest_label
-                in_ports = [(source_label(p), p) for p in inp] if not is_network else []
-                out_ports = [(dest_label(p), p) for p in out]
-                self._input_combo.clear()
-                for text, data in in_ports:
-                    self._input_combo.addItem(text, data)
-                self._output_combo.clear()
-                for text, data in out_ports:
-                    self._output_combo.addItem(text, data)
-                self._monitor_combo.clear()
-                for text, data in out_ports:
-                    self._monitor_combo.addItem(text, data)
-            else:
-                self._input_combo.clear()
-                self._input_combo.addItems(inp if not is_network else [])
-                self._output_combo.clear()
-                self._output_combo.addItems(out)
-                self._monitor_combo.clear()
-                self._monitor_combo.addItems(out)
-
-            self._output_combo.setEnabled(True)
-            self._output_combo.setToolTip(_output_tooltip())
-
-            def _set_by_port(combo, port):
-                """按端口（userData）选中项；找不到返回 False。"""
-                idx = combo.findData(port) if port else -1
-                if idx >= 0:
-                    combo.setCurrentIndex(idx)
-                    return True
-                return False
-
-            # 输入选择（配置存的是描述名，不匹配时强制回退枚举列表第一个并写回）
-            if not is_network:
-                if IS_LINUX:
-                    if not si or not _set_by_port(self._input_combo, si):
-                        _set_by_port(self._input_combo, _jack_default_mic() if inp else "")
-                        if self._input_combo.currentIndex() < 0 and inp:
-                            self._input_combo.setCurrentIndex(0)
-                        if self._input_combo.currentIndex() >= 0:
-                            self._config.set(self._device_key("input"),
-                                             _combo_value(self._input_combo))
-                elif si in inp:
-                    self._input_combo.setCurrentText(si)
-                elif inp:
-                    self._input_combo.setCurrentText(inp[0])
-                    self._config.set(self._device_key("input"), inp[0])
-
-            # 输出选择：Linux 一律按 node.name（userData）选
-            if IS_LINUX:
-                if not so or not _set_by_port(self._output_combo, so):
-                    _set_by_port(self._output_combo, _jack_default_sink() if out else "")
-                    if self._output_combo.currentIndex() < 0 and out:
-                        self._output_combo.setCurrentIndex(0)
-                    if self._output_combo.currentIndex() >= 0:
-                        self._config.set(self._device_key("output"),
-                                         _combo_value(self._output_combo))
-            elif so in out:
-                self._output_combo.setCurrentText(so)
-            elif out:
-                self._output_combo.setCurrentText(out[0])
-                self._config.set(self._device_key("output"), out[0])
-
-            # 监听设备：Linux 按 node.name（userData）选，其余按文本选
-            if sm:
-                if not _set_by_port(self._monitor_combo, sm):
-                    self._monitor_combo.setCurrentText(sm)
-
-        except Exception as e:
-            self._log.err(f"设备枚举失败: {e}")
-
-    def get_device_ids(self):
-        try:
-            if self._api_type == API_TYPE_NETWORK:
-                # 网络模式：无本地输入设备，输出设备用平台默认 API 查找
-                return (
-                    None,
-                    get_device_id(_combo_value(self._output_combo), False, api_type=default_api_type())
-                )
-            return (
-                get_device_id(_combo_value(self._input_combo), True, api_type=self._api_type),
-                get_device_id(_combo_value(self._output_combo), False, api_type=self._api_type)
-            )
-        except Exception as e:
-            self._log.err(f"获取设备ID失败: {e}")
-            return None, None
-
-    def _get_monitor_id(self):
-        try:
-            m = _combo_value(self._monitor_combo)
-            api = default_api_type() if self._api_type == API_TYPE_NETWORK else self._api_type
-            return get_device_id(m, False, api_type=api) if m else None
-        except:
-            return None
-
-    def get_api_type(self):
-        return self._api_type
-
-    def get_pre_gain(self):
-        return self._pre_gain
-
-
-    def _get_root(self):
-        return self.window()
-
-    def _device_key(self, kind: str) -> str:
-        """当前接口对应的设备配置键（kind: input/output/monitor/far）。
-
-        设备名按接口隔离存储（如 input_device_wasapi / input_device_mme），
-        因为 WASAPI 与 MME（以及 Linux 各接口）的设备名完全不一致。
-        monitor（监听设备）与 far（AEC 回声参考 sink）是不同概念，各自独立
-        存键：monitor_device_<接口> 与 aec_far_sink_<接口>。
-        网络模式没有本地输入，输出/监听/AEC far 用平台默认接口的键。
-        """
-        api = self._api_type
-        if api == API_TYPE_NETWORK:
-            api = default_api_type()
-        if kind == "far":
-            return f"aec_far_sink_{device_config_suffix(api)}"
-        return f"{kind}_device_{device_config_suffix(api)}"
-
-    def _on_url_changed(self):
-        self._save_url()
-
-    def _save_url(self):
-        url = self._input_url.text().strip()
-        self._config.set("NETWORK_input_url", url)
-        import re
-        m = re.search(r":(\d+)", url)
-        if m:
-            port = int(m.group(1))
-            self._config.set("server_port", port)
-        self._save()
-        if self._log:
-            self._log.dev(f"API网址: {url}")
-
-    def _update_api_ui(self):
-        is_network = self._api_type == API_TYPE_NETWORK
-        self._lbl_in.setText("API网址" if is_network else "输入设备")
-        self._lbl_in.setToolTip(
-            "API网址 — 手机/网页推流到本机的地址\n格式: https://本机IP:端口\n例如: https://192.168.1.100:59123"
-            if is_network else
-            ("输入设备 — PipeWire 音频源节点（48kHz 单声道）\n"
-             "例如 alsa_input.pci-…Mic1__source，\n"
-             "选中后 PureVox 输入流自动接管该节点。"
-             if IS_LINUX else
-             "输入设备 — 你的物理麦克风\n选择你正在使用的麦克风，\n例如 Realtek Audio、USB 麦克风等。")
-        )
-        self._input_combo.setVisible(not is_network)
-        self._input_url.setVisible(is_network)
-
-    def refresh_devices(self):
-        self._update_devices()
-
-    def _on_start_stop(self):
-        toggle_processing(_state, self._log)
-
-    def update_start_button(self, running):
-        from theme_colors import current_colors
-        tc = current_colors()
-        if running:
-            self._start_btn.setText("停止音频处理")
-            self._start_btn.setStyleSheet(
-                f"#startBtn {{ background-color: {tc.stop_btn_bg}; color: white; border-radius: 4px; font-size: 11pt; font-weight: bold; padding: 4px 16px; }}"
-                f"#startBtn:hover {{ background-color: {tc.stop_btn_hover}; }}")
-        else:
-            self._start_btn.setText("启动音频处理")
-            self._start_btn.setStyleSheet(
-                f"#startBtn {{ background-color: {tc.start_btn_bg}; color: white; border-radius: 4px; font-size: 11pt; font-weight: bold; padding: 4px 16px; }}"
-                f"#startBtn:hover {{ background-color: {tc.start_btn_hover}; }}")
 
 
 class MainWindow(QMainWindow):
@@ -1310,9 +970,8 @@ class MainWindow(QMainWindow):
 
     def _wake_restart_step1(self):
         """唤醒恢复第1步：刷新设备列表。"""
-        mp = _state.main_panel
-        if mp:
-            mp.refresh_devices()
+        if _state.fx_panel:
+            _state.fx_panel.refresh_devices()
         QTimer.singleShot(2000, self._wake_restart_step2)
 
     def _wake_restart_step2(self):
@@ -1342,9 +1001,8 @@ class MainWindow(QMainWindow):
 
     def _restart_after_crash(self):
         """守护触发的恢复：刷新设备后启动（失败不重试，避免弹框循环）"""
-        mp = _state.main_panel
-        if mp:
-            mp.refresh_devices()
+        if _state.fx_panel:
+            _state.fx_panel.refresh_devices()
         start_processing(_state, _state.logger or get_logger())
 
     def _on_theme_changed(self):
@@ -1358,6 +1016,50 @@ class MainWindow(QMainWindow):
 # ═══════════════════════════════════════════════════════════════
 #  全局函数
 # ═══════════════════════════════════════════════════════════════
+
+
+def _enum_io_devices():
+    """枚举输入/输出设备 → {"inputs": [(显示文本, 存储值)], "outputs": [...]}。
+
+    Linux 返回 PipeWire node.name，Windows 返回 PortAudio 设备名。
+    """
+    if IS_LINUX:
+        from pvplatform.audio.pwpipe_client import (
+            list_sources, list_destinations, source_label, dest_label)
+        return {
+            "inputs": [(source_label(p), p) for p in list_sources()],
+            "outputs": [(dest_label(p), p) for p in list_destinations()],
+        }
+    inp, out = get_device_names(api_type=default_api_type())
+    return {"inputs": [(n, n) for n in inp], "outputs": [(n, n) for n in out]}
+
+
+def _style_start_button(btn, running):
+    """启动按钮文案与配色随运行状态切换。"""
+    if btn is None:
+        return
+    from theme_colors import current_colors
+    tc = current_colors()
+    if running:
+        btn.setText("停止音频处理")
+        btn.setStyleSheet(
+            f"#startBtn {{ background-color: {tc.stop_btn_bg}; color: white; "
+            f"border-radius: 4px; font-size: 11pt; font-weight: bold; padding: 4px 16px; }}"
+            f"#startBtn:hover {{ background-color: {tc.stop_btn_hover}; }}")
+    else:
+        btn.setText("启动音频处理")
+        btn.setStyleSheet(
+            f"#startBtn {{ background-color: {tc.start_btn_bg}; color: white; "
+            f"border-radius: 4px; font-size: 11pt; font-weight: bold; padding: 4px 16px; }}"
+            f"#startBtn:hover {{ background-color: {tc.start_btn_hover}; }}")
+
+
+def _open_tse_dialog_for(state):
+    """TSE 参考录音弹框（节点行「参考音频…」入口）。"""
+    from dialog_tse_reference import TseReferenceDialog
+    dlg = TseReferenceDialog(state.config, state.logger or get_logger(),
+                             parent=state.root)
+    dlg.exec()
 
 
 def _warn_48k(failed_in, failed_out, failed_mon, failed_aec,
@@ -1468,7 +1170,6 @@ def start_processing(state, log):
         return
     start_processing._lock = True
     try:
-        mp = state.main_panel
         if state.processor:
             try:
                 if hasattr(state.processor, 'cleanup'):
@@ -1490,28 +1191,38 @@ def start_processing(state, log):
                     return (e.get("params") or {}).get(key, default)
             return default
 
-        # ── 设备检测 ──
-        inp, out, api_type = _get_ids(state)
-        is_network = api_type == API_TYPE_NETWORK
+        # ── L3 会话计划：链文档 → 可执行计划（DESIGN.md §4）──
+        plan = SessionPlan.from_chain(chain_cfg)
+        for w in plan.warnings:
+            log.warn(f"[节点] {w}")
+        if not plan.ok():
+            log.err("；".join(plan.problems))
+            QMessageBox.warning(None, "PureVox", "\n".join(plan.problems))
+            return
+        in_nodes = list(plan.inputs)
+        out_nodes = list(plan.outputs)
+        remote = plan.remote_url
+        is_network = remote is not None
+        api_type = API_TYPE_NETWORK if is_network else default_api_type()
 
-        # Linux：输入/输出/监听是原生 PipeWire node.name，
-        # 下拉框选中即接管。PortAudio 不参与本地输入/输出。
-        pw_ports = ("", "", "")
-        use_pw = IS_LINUX and not is_network
+        use_pw = IS_LINUX
+        pw_ports: Tuple[List[str], List[str]] = ([], [])
+        inp = None
+        out = None
+        extra_out: List[int] = []
         if use_pw:
-            mp_in = _combo_value(state.main_panel._input_combo) if hasattr(state.main_panel, '_input_combo') else ""
-            mp_out = _combo_value(state.main_panel._output_combo) if hasattr(state.main_panel, '_output_combo') else ""
-            mp_mon = _combo_value(state.main_panel._monitor_combo) if hasattr(state.main_panel, '_monitor_combo') else ""
-            mon_on = (state.main_panel._monitor_cb.isChecked()
-                      if hasattr(state.main_panel, '_monitor_cb') else False)
-            pw_ports = (mp_in, mp_out, mp_mon if mon_on else "")
-            if not mp_in or not mp_out:
-                log.err("请选择 PipeWire 输入与输出节点")
-                return
-            inp = None
-            out = None
-            log.msg(f"[启动] PipeWire 输入: {mp_in}\n[启动] PipeWire 输出: {mp_out}"
-                    + (f"\n[启动] PipeWire 监听: {mp_mon}" if mp_mon else ""))
+            pw_ports = (list(in_nodes), list(out_nodes))
+            log.msg(f"[启动] PipeWire 输入x{len(pw_ports[0])}: "
+                    f"{', '.join(pw_ports[0]) or '(网络)'} | "
+                    f"输出x{len(pw_ports[1])}: {', '.join(pw_ports[1])}")
+        else:
+            # Windows：首个输入为主输入；首个输出为主输出，其余为额外输出扇出
+            if len(in_nodes) > 1:
+                log.warn("[多输入] Windows 暂只取第一个输入节点")
+            inp = get_device_id(in_nodes[0], True, api_type=api_type)
+            ids = [get_device_id(n, False, api_type=api_type) for n in out_nodes]
+            out = ids[0]
+            extra_out = [d for d in ids[1:] if d is not None]
 
         def _try_open_48k(_p, device_id, is_input):
             """尝试以 48kHz 打开设备流（共用 PyAudio 实例），成功返回 True。
@@ -1558,58 +1269,44 @@ def start_processing(state, log):
                          f"{detail} 原因: {e}")
                 return False
 
-        # 检测输入/输出/监听设备（共用 PyAudio 避免频繁创建）。
-        # PipeWire 模式跳过 PortAudio 检测：格式协商已固定 48kHz 单声道，
-        # 重采样/声道转换由 PipeWire 处理，_create_stream 会校验协商采样率。
-        failed_in = False   # 输入（录制）设备
-        failed_out = False  # 输出（播放）设备
-        failed_mon = False
-        failed_aec = False
-        in_name = out_name = mon_name = aec_name = ""
+        # Windows PortAudio：逐设备 48k 检测（多输入/多输出全部检查）。
+        # Linux PipeWire 跳过：格式协商已固定 48kHz 单声道，PipeWire 负责重采样。
+        failed_names: List[str] = []
         if not is_network and not use_pw:
             _p = pyaudio.PyAudio()
             try:
-                in_name = mp._input_combo.currentText() if mp else ""
-                out_name = mp._output_combo.currentText() if mp else ""
-                mon_id = mp._get_monitor_id() if mp else None
-                mon_checked = mp._monitor_cb.isChecked() if mp else False
-
-                if not _try_open_48k(_p, inp, True):
-                    failed_in = True
-                if not _try_open_48k(_p, out, False):
-                    failed_out = True
-                if mon_checked and mon_id is not None:
-                    mon_name = mp._monitor_combo.currentText() if mp else ""
-                    if not _try_open_48k(_p, mon_id, False):
-                        failed_mon = True
+                checks = [(True, n) for n in in_nodes] + \
+                         [(False, n) for n in out_nodes]
+                results = []
+                for is_input, name in checks:
+                    dev_id = get_device_id(name, is_input, api_type=api_type)
+                    disp = name or "系统默认"
+                    ok = _try_open_48k(_p, dev_id, is_input)
+                    results.append(f"{disp}={'OK' if ok else 'FAIL'}")
+                    if not ok:
+                        failed_names.append(disp)
                 # AEC speaker 检测：启用回声消除时检测 far 参考输出（默认播放设备）
                 if _chain_enabled("echo_cancel"):
                     try:
                         aec_dev = _p.get_default_output_device_info()
-                        aec_id = aec_dev['index']
-                        aec_name = aec_dev['name']
-                        if not _try_open_48k(_p, aec_id, False):
-                            failed_aec = True
+                        aec_ok = _try_open_48k(_p, aec_dev['index'], False)
+                        results.append("AEC=%s" % ("OK" if aec_ok else "FAIL"))
+                        if not aec_ok:
+                            failed_names.append(str(aec_dev.get('name', 'AEC参考')))
                     except Exception:
                         pass
-                log.msg(
-                    "[48k检测] 输入=%s 输出=%s 监听=%s AEC=%s"
-                    % ("OK" if not failed_in else "FAIL",
-                       "OK" if not failed_out else "FAIL",
-                       "OK" if not failed_mon else "FAIL",
-                       "OK" if not failed_aec else ("FAIL" if _chain_enabled("echo_cancel") else "跳过")))
+                log.msg("[48k检测] " + " ".join(results))
             finally:
                 _p.terminate()
 
-        if failed_in or failed_out or failed_mon or failed_aec:
-            _names = [n for n in (in_name, out_name, mon_name, aec_name) if n]
+        if failed_names:
             log.err("[48k检测] 存在不支持 48kHz 的设备，已弹框阻止启动: %s"
-                    % ("、".join(_names) if _names else "（设备名读取失败）"))
-            _warn_48k(failed_in, failed_out, failed_mon, failed_aec,
-                      in_name, out_name, mon_name, aec_name, log)
+                    % "、".join(failed_names))
+            _warn_48k(True, True, False, False,
+                      "、".join(failed_names), "", "", "", log)
             return
 
-        pre = mp.get_pre_gain() if mp else 0
+        pre = state.config.get("pre_gain_db", 0.0) if state.config else 0.0
 
         # ── 创建处理器（模型由插件内部按需解析加载）──
         log.msg(f"[启动] 创建音频处理器 (pre={pre})...")
@@ -1630,13 +1327,6 @@ def start_processing(state, log):
             proc.set_plugins(chain_cfg)
         except Exception as e:
             log.warn(f"[启动] 插件链加载失败: {e}")
-
-        # ── 监听 ──
-        # PipeWire 模式：监听是独立的输出流（已在 pw_ports[2]）；
-        # 其余平台用 PortAudio 监听流。
-        mid = None
-        if not use_pw and mp and state.config and state.config.get("monitor_enabled", False):
-            mid = mp._get_monitor_id()
 
         # ── TSE 参考音频：必须在启动音频线程前加载（首帧就需要）──
         # 无参考时不中止：TSE 插件自动直通，录完参考后下次启动/重启生效。
@@ -1660,31 +1350,29 @@ def start_processing(state, log):
 
         # ── 启动音频流 ──
         if is_network:
-            if mp and hasattr(mp, '_save_url'):
-                mp._save_url()
             server = _ensure_network_server(state, log)
-            # Linux 网络模式：输出同样走 PipeWire（输出下拉框即目标节点）
-            net_pw = ("", "", "")
-            if IS_LINUX and mp:
-                net_pw = ("", _combo_value(mp._output_combo) if hasattr(mp, '_output_combo') else "", "")
             state.processing_thread = start_audio_stream(
-                None, None if IS_LINUX else out, proc, HOP_LENGTH, mid,
+                None, None if IS_LINUX else out, proc, HOP_LENGTH,
                 network_source=server.audio_source,
-                api_type=api_type,
-                ready_msg=ready_msg,
-                pw_ports=net_pw if IS_LINUX else ())
-        else:
-            api_name = get_api_name_by_type(api_type)
-            in_dev = mp._input_combo.currentText() if mp else ""
-            out_dev = mp._output_combo.currentText() if mp else ""
-            if use_pw:
-                log.msg(f"[启动] PipeWire: {in_dev} → PureVox → {out_dev}（48kHz 单声道）")
-            else:
-                log.msg(f"[启动] {api_name} 输入#{inp} ({in_dev}) → 输出#{out} ({out_dev})")
-            state.processing_thread = start_audio_stream(
-                inp, out, proc, HOP_LENGTH, mid,
                 api_type=api_type, ready_msg=ready_msg,
-                pw_ports=pw_ports if use_pw else ())
+                extra_output_ids=[] if IS_LINUX else extra_out,
+                pw_ports=pw_ports if IS_LINUX else ([], []))
+        elif use_pw:
+            log.msg(f"[启动] PipeWire 输入x{len(pw_ports[0])} → 处理链 → "
+                    f"输出x{len(pw_ports[1])}（多入混音/多出扇出，48kHz 单声道）")
+            state.processing_thread = start_audio_stream(
+                None, None, proc, HOP_LENGTH,
+                api_type=api_type, ready_msg=ready_msg, pw_ports=pw_ports)
+        else:
+            in_dev = in_nodes[0] if in_nodes else "(默认)"
+            out_dev = out_nodes[0] if out_nodes else "(默认)"
+            log.msg(f"[启动] {get_api_name_by_type(api_type)} "
+                    f"输入#{inp} ({in_dev}) → 输出#{out} ({out_dev})"
+                    + (f" +额外输出x{len(extra_out)}" if extra_out else ""))
+            state.processing_thread = start_audio_stream(
+                inp, out, proc, HOP_LENGTH,
+                api_type=api_type, ready_msg=ready_msg,
+                extra_output_ids=extra_out, pw_ports=([], []))
 
         # 等待音频流创建结果（_create_stream 在子线程异步执行）
         if state.processing_thread:
@@ -1706,8 +1394,6 @@ def start_processing(state, log):
         # ── 后续：回声消除扬声器采集（链中启用了 echo_cancel 时）──
         if _chain_enabled("echo_cancel") and state.processing_thread:
             fac_sink = _chain_param("echo_cancel", "far_device", "")
-            if not fac_sink and state.config and mp:
-                fac_sink = state.config.get(mp._device_key("far"), "") or ""
             state.processing_thread.set_aec_far_sink(fac_sink)
             state.processing_thread.processor.set_aec_enabled(True)
             if not state.processing_thread.set_aec_enabled(True):
@@ -1803,11 +1489,6 @@ def stop_processing(state, log):
         return
     log.msg("[停止] 停止音频处理... (关闭流 + 清理处理器)")
     try:
-        # 停止 AGC 轮询定时器
-        mp = state.main_panel
-        if mp and hasattr(mp, '_agc_poll_timer'):
-            mp._agc_poll_timer.stop()
-
         # 注意：网络服务器保持运行 — 不在此处停止，避免手机断开。
         # 服务器仅在切换 API 类型离开网络模式时、或退出应用时停止。
 
@@ -1828,31 +1509,16 @@ def stop_processing(state, log):
         _update_ui(state, False, log)
         log.msg("[停止] 音频处理已停止")
 
-        if state.main_panel:
-            state.main_panel.refresh_devices()
+        if state.fx_panel:
+            state.fx_panel.refresh_devices()
     except Exception as e:
         import traceback as _tb
         log.err(f"停止失败: {e}")
         log.err(_tb.format_exc())
 
 
-def _get_ids(state):
-    if not state.main_panel:
-        return None, None, None
-    mp = state.main_panel
-    api_type = mp.get_api_type()
-    if api_type == API_TYPE_NETWORK:
-        url = state.config.get("NETWORK_input_url", "") if state.config else ""
-        inp_id = ("NETWORK", url)
-        out_id = get_device_id(_combo_value(mp._output_combo), False, api_type=default_api_type())
-    else:
-        inp_id, out_id = mp.get_device_ids()
-    return inp_id, out_id, api_type
-
-
 def _update_ui(state, running, log):
-    if state.main_panel:
-        state.main_panel.update_start_button(running)
+    _style_start_button(getattr(state, "start_button", None), running)
     icon_path = state.icon_on_path if running else state.icon_off_path
     if icon_path and os.path.exists(icon_path):
         icon = QIcon(icon_path)
@@ -1882,13 +1548,16 @@ def _feed_visualizer(state):
     import traceback as _tb
     try:
         th = state.processing_thread
-        # VU 电平表（峰值快照）
-        if hasattr(state, 'vu_meter') and state.vu_meter:
+        fxp = getattr(state, "fx_panel", None)
+        # VU 电平表（峰值快照，控件来自 vu_meter 节点行）
+        vu = fxp.vu_widget() if fxp else None
+        if vu is not None:
             peak = getattr(th, '_vu_peak', 0.0)
             if peak > 0:
-                state.vu_meter.update_level_db(20.0 * _math.log10(max(peak, 1e-10)))
-        # 频谱直方图（只在可见时更新，防止后台浪费资源）
-        if hasattr(state, 'spectrum_widget') and state.spectrum_widget and state.spectrum_widget.isVisible():
+                vu.update_level_db(20.0 * _math.log10(max(peak, 1e-10)))
+        # 频谱直方图（只在可见时更新；控件来自 spectrum 节点行）
+        spec = fxp.spectrum_widget() if fxp else None
+        if spec is not None and spec.isVisible():
             in_buf = getattr(th, '_spectrum_in', None)
             out_buf = getattr(th, '_spectrum_out', None)
             in_data = in_buf.read_latest(min(2048, in_buf.available())) if in_buf and hasattr(in_buf, 'read_latest') and in_buf.available() > 0 else None
@@ -1899,7 +1568,7 @@ def _feed_visualizer(state):
             if isinstance(out_data, list) and len(out_data) == 0:
                 out_data = None
             if in_data or out_data:
-                state.spectrum_widget.update_spectrum(in_data, out_data)
+                spec.update_spectrum(in_data, out_data)
     except Exception:
         _log = state.logger or get_logger()
         _log.err(f"[频谱] _feed_visualizer 异常: {_tb.format_exc()}")
@@ -1909,8 +1578,6 @@ def _suspend_ui_timers(state):
     """窗口隐藏到托盘时暂停 UI 刷新定时器（省 CPU）"""
     if hasattr(state, '_viz_timer'):
         state._viz_timer.stop()
-    if state.main_panel and hasattr(state.main_panel, 'suspend_ui_timers'):
-        state.main_panel.suspend_ui_timers()
     # 暂停 VU/频谱数据采集
     if state.processing_thread:
         state.processing_thread.set_viz_enabled(False)
@@ -1920,8 +1587,6 @@ def _resume_ui_timers(state):
     """窗口从托盘恢复时重启 UI 刷新定时器"""
     if hasattr(state, '_viz_timer') and state.is_processing:
         state._viz_timer.start()
-    if state.main_panel and hasattr(state.main_panel, 'resume_ui_timers'):
-        state.main_panel.resume_ui_timers()
     # 恢复 VU/频谱数据采集
     if state.processing_thread:
         state.processing_thread.set_viz_enabled(True)
@@ -1942,10 +1607,9 @@ def _virtual_mic_dialog(logger, window=None):
     Windows 为 VB-CABLE 检测弹框。"""
     if IS_LINUX:
         from dialog_virtual_mic_linux import show_virtual_mic_dialog
-        refresh = (lambda: _state.main_panel.refresh_devices()
-                   if _state.main_panel else None)
-        api_type = _state.main_panel.get_api_type() if _state.main_panel else 0
-        show_virtual_mic_dialog(logger, refresh_devices=refresh, api_type=api_type)
+        refresh = (lambda: _state.fx_panel.refresh_devices()
+                   if _state.fx_panel else None)
+        show_virtual_mic_dialog(logger, refresh_devices=refresh)
     elif IS_WINDOWS:
         from dialog_vbcable_check import show_vbcable_dialog
         show_vbcable_dialog(_state.config)
@@ -2217,55 +1881,37 @@ class MainApp:
         show_about_dialog(window)
 
     def _create_ui(self, window, config, saver, logger):
-        def on_api(api):
-            # 进入网络模式时立即启动服务器（不等点击"启动处理"）
-            if api == API_TYPE_NETWORK:
-                _ensure_network_server(_state, logger)
-            else:
-                _stop_network_server(_state, logger)
-            stop_processing_for_update(_state, logger)
+        # ── 顶部控制条：启动/退出 ──
+        header = QWidget()
+        hl = QHBoxLayout(header)
+        hl.setContentsMargins(6, 6, 6, 2)
+        hl.setSpacing(6)
+        start_btn = QPushButton("启动音频处理")
+        start_btn.setObjectName("startBtn")
+        start_btn.setFixedHeight(34)
+        start_btn.clicked.connect(lambda: toggle_processing(_state, logger))
+        start_btn.setToolTip(
+            "启动/停止音频处理引擎。\n"
+            "首次启动会加载 AI 模型（约 1~2 秒），\n"
+            "之后即可实时处理麦克风音频。\n"
+            "快捷键: 右 Alt + >")
+        hl.addWidget(start_btn, 1)
+        quit_btn = QPushButton("退出")
+        quit_btn.setFixedHeight(34)
+        quit_btn.clicked.connect(lambda: quit_app(window))
+        hl.addWidget(quit_btn)
 
-        def on_dev(is_input, name):
-            if _state.processing_thread and _state.is_processing:
-                # 延迟重启：先让 UI 响应设备切换，再后台重启处理，
-                # 避免主线程同步 stop+start 阻塞（设备枚举/打开可能耗时）
-                QTimer.singleShot(150, lambda: restart(_state, logger))
-
-        mp = MainPanel(window, config, saver, on_api, on_dev, logger)
-
-        from spectrum_histogram import SpectrumWidget
-
-        spectrum = SpectrumWidget()
-        _state.spectrum_widget = spectrum
-
-        # 固定尺寸常量
-        _state._panel_w = 320   # 左列宽度（设备/控制/VU/频谱）
-        _state._fx_w = 380      # 右列宽度（插件面板）
-        _state._spectrum_h = 150
-
-        # ── 左列：控制面板 + 频谱（上下堆叠）──
-        left_col = QWidget()
-        left_lay = QVBoxLayout(left_col)
-        left_lay.setContentsMargins(0, 0, 0, 0)
-        left_lay.setSpacing(0)
-        mp.setFixedWidth(_state._panel_w)
-        left_lay.addWidget(mp, 0)
-        spectrum.setFixedWidth(_state._panel_w)
-        spectrum.setMinimumHeight(_state._spectrum_h)
-        left_lay.addWidget(spectrum, 1)
-
-        # ── 右列：插件处理链面板 ──
+        # ── 节点链面板：输入/处理/输出/可视化 全部可增删排序 ──
         fxp = PluginPanel(config=config, saver=saver,
                           get_processor=lambda: _state.processor,
-                          get_devices=lambda: [mp._output_combo.itemData(i) or mp._output_combo.itemText(i)
-                             for i in range(mp._output_combo.count())],
+                          get_devices=_enum_io_devices,
                           logger=logger)
 
         # 展开对话框路由：EQ → 曲线编辑器；TSE → 参考录音弹框
         def open_eq_editor():
             from dialog_eq import EQCurveWidget
             gains = config.get("eq_current_gains", [0.0] * 61)
-            dlg = QDialog(mp)
+            dlg = QDialog(window)
             dlg.setWindowTitle("均衡器")
             lay = QVBoxLayout(dlg)
             curve = EQCurveWidget()
@@ -2273,7 +1919,10 @@ class MainApp:
 
             def on_change(g):
                 config.set("eq_current_gains", list(g))
-                saver.request_save() if saver else config.save_config()
+                if saver:
+                    saver.request_save()
+                else:
+                    config.save_config()
                 proc = _state.processor
                 if proc:
                     try:
@@ -2299,31 +1948,13 @@ class MainApp:
             dlg.resize(560, 320)
             dlg.exec()
 
-        def open_tse_dialog():
-            mp._open_ref_dialog()
-
         fxp._open_eq_editor = open_eq_editor
-        fxp._open_tse_dialog = open_tse_dialog
+        fxp._open_tse_dialog = lambda: _open_tse_dialog_for(_state)
 
-        # ── 主容器：左=控制+频谱，右=插件链 ──
-        main_container = QWidget()
-        main_layout = QHBoxLayout(main_container)
-        main_layout.setContentsMargins(0, 0, 0, 0)
-        main_layout.setSpacing(0)
-        main_layout.addWidget(left_col, 0)
-        from PySide6.QtWidgets import QFrame
-        vsep = QFrame()
-        vsep.setFrameShape(QFrame.VLine)
-        vsep.setFrameShadow(QFrame.Sunken)
-        main_layout.addWidget(vsep)
-        fxp.setFixedWidth(_state._fx_w)
-        main_layout.addWidget(fxp, 0)
-
-        window.add_widget(main_container, stretch=0)
-        _state.main_panel = mp
+        window.add_widget(header, stretch=0)
+        window.add_widget(fxp, stretch=1)
         _state.fx_panel = fxp
-        _state.vu_meter = mp._vu_panel
-        mp.set_get_processing_thread_callback(lambda: _state.processing_thread)
+        _state.start_button = start_btn
 
         import audio_processor
         audio_processor.set_module_log(logger)
@@ -2356,8 +1987,8 @@ class MainApp:
         if vbcable_installed():
             return
         show_vbcable_dialog(_state.config)
-        QTimer.singleShot(1000, lambda: _state.main_panel.refresh_devices()
-                          if _state.main_panel else None)
+        QTimer.singleShot(1000, lambda: _state.fx_panel.refresh_devices()
+                          if _state.fx_panel else None)
 
     def _register_hotkey(self, logger):
         """通过原生事件过滤器注册全局热键（右Alt + >，仅 Windows；其它平台跳过）。"""
@@ -2446,8 +2077,8 @@ class MainApp:
             _state.tray_icon = tray
 
         self._register_hotkey(logger)
-        # 初始尺寸：左列（控制+频谱）+ 右列（插件面板）
-        window.setFixedSize(_state._panel_w + _state._fx_w + 20, 640)
+        # 初始尺寸：单列节点链面板
+        window.setFixedSize(420, 700)
 
 
         if config.get("auto_start", False):
@@ -2486,22 +2117,6 @@ def toggle_hotkey(config, logger):
 
 def open_sound_panel(logger):
     _sys_open_sound_panel(logger)
-
-def stop_processing_for_update(state, logger):
-    if state.is_processing:
-        logger.msg("配置更新，停止处理...")
-        stop_processing(state, logger)
-
-def restart(state, logger):
-    if getattr(restart, '_pending', False):
-        return
-    restart._pending = True
-    try:
-        if state.is_processing:
-            stop_processing(state, logger)
-            start_processing(state, logger)
-    finally:
-        restart._pending = False
 
 def add_firewall_rule(logger):
     return _sys_add_firewall(logger)

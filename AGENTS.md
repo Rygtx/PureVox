@@ -163,13 +163,17 @@ cd android
 
 ## 架构
 
+> **顶层设计与规范见 `DESIGN.md`**（分层架构/节点模型/数据流不变量/SessionPlan 契约/
+> 扩展指南）。本节是模块速查；实现与 DESIGN.md 冲突时以 DESIGN.md 为准。
+
 ### 桌面端 (Python)
 
 | 模块 | 职责 |
 |---|---|
 | `run_pyside6.py` | 单实例锁、启动入口，导入 `ui_pyside6.run_app` |
-| `ui_pyside6.py` | 主 UI（PySide6）——面板布局、设备选择、模式切换、48kHz 检测弹框 |
-| `audio_processor.py` | 核心音频线程 —— `AudioThread`(全双工流/PipeWire 循环/网络循环)、`SpeakerCapture`(AEC loopback)、`RingBuffer`、设备枚举、TSE 参考录音工具(`_recorder`/`load_tse_reference`/`_wsola_time_stretch`) |
+| `ui_pyside6.py` | 主 UI（PySide6）——**单列节点面板**：顶部 启动/退出控制条 + PluginPanel（输入/处理/输出/可视化全部为可增删排序的节点行，三级形态 toggle/inline/expand，viz 行内嵌实时控件）；48kHz 检测弹框保留。设备选择在 input/output 节点行内（Linux 存 node.name） |
+| `session_plan.py` | **L3 会话层**——`SessionPlan.from_chain(chain_cfg)` 纯函数：链文档 → 校验后的可执行计划（inputs/outputs/remote_url/viz/fx_chain/problems/warnings）。UI 启动流程只消费计划，不做内联解析 |
+| `audio_processor.py` | 核心音频线程 —— `AudioThread`(全双工流/PipeWire 循环/网络循环/**多输入混音+多输出扇出**[Windows extras 回调])、`SpeakerCapture`(AEC loopback)、`RingBuffer`、设备枚举、TSE 参考录音工具(`_recorder`/`load_tse_reference`/`_wsola_time_stretch`) |
 | `pvengine/` | **纯 Python 组件化音频引擎**——Stage 接口（process/reset/release）是唯一契约；`components/`(denoise/aec/tse/gain/eq/vad/agc/compressor/clip/recorder/tap) 每文件一个组件、按 active_modes 声明生效模式；`dsp/`(窗/STFT/环形缓冲/重采样/Mel 频谱/ONNX 会话) 可独立复用；`pipeline.py` 按序执行+模式旁路；`processor.py` 是 AudioProcessor 门面（保持旧 API）。模型：v9 降噪（spec [1,1025,1,2] + enc/dec/tfa/inter 四态）、aec9、tse15，全部 numpy + onnxruntime 实现 |
 | `aimic.py` | 兼容垫片 —— re-export pvengine（AudioProcessor/RingBuffer/Resampler/compute_spectrum 等），旧调用方零改动；新代码请直接用 pvengine |
 | `pvplatform/` | 平台抽象层 —— `audio/`(SpeakerCapture 三端、device_api、pwpipe_client[纯 py pulsectl 桥])、`system/`(单实例/自启动/防火墙/虚拟麦克风，win+posix) |
