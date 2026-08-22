@@ -24,16 +24,12 @@ if (Test-Path $embeddedPy) {
     $PY = "python"
 }
 
-# 1. Build the C shared library (aimic.dll)
-& $PY setup.py build_ext --inplace --force
-if ($LASTEXITCODE -ne 0) { throw "build_ext failed" }
-
-# 2. Generate version stamp (shown in the window title)
+# 1. Generate version stamp (shown in the window title)
 #    -NoNewline is PowerShell 6+/7 only; Win7 ships PS 5.1, so write without it
 #    (a trailing newline in _build_version.py is harmless).
 Set-Content _build_version.py "BUILD_DATE = `"$date`"" -Encoding UTF8
 
-# 3. PyInstaller packaging
+# 2. PyInstaller packaging
 #    lazy-imported modules must be hidden-import (function-level `from xx import` is not
 #    discovered statically)
 & $PY -m PyInstaller --clean --name PureVox --noconsole --icon=audio_icon_on.ico `
@@ -49,20 +45,17 @@ Set-Content _build_version.py "BUILD_DATE = `"$date`"" -Encoding UTF8
     --add-data="*.onnx;." `
     --add-data="audio_icon_on.ico;." `
     --add-data="audio_icon_off.ico;." `
-    --add-data="aimic.dll;." `
     --add-data="html\*.html;html\" `
     --add-data="html\css\*.css;html\css\" `
     --add-data="html\js\*.js;html\js\" `
     --add-data="html\wasm\*;html\wasm\" `
     --add-data="server\*.py;server\" `
     --add-data="server\opus.dll;server\" `
-    --add-data="packages\onnxruntime-win-x64-1.22.0\lib\onnxruntime.dll;." `
-    --add-data="packages\onnxruntime-win-x64-1.22.0\lib\onnxruntime_providers_shared.dll;." `
-    --exclude-module=pandas,scipy,matplotlib,unittest,tensorflow,torch,PIL `
+    --exclude-module=pandas,matplotlib,unittest,tensorflow,torch `
     -y run_pyside6.py
 if ($LASTEXITCODE -ne 0) { throw "PyInstaller failed" }
 
-# 4. Remove unused files (~46MB: tcl/tk + unused PySide6 modules)
+# 3. Remove unused files (~46MB: tcl/tk + unused PySide6 modules)
 #    WARNING: Qt6Qml.dll / Qt6Quick.dll must NEVER be removed here. pyside6.abi3.dll
 #    (the PySide6 core library every Qt*.pyd links) hard-imports Qt6Qml.dll; deleting
 #    it makes `import QtWidgets` fail on Win7 with "DLL load failed ... specified module not found"

@@ -11,10 +11,10 @@
 #   /usr/share/applications/purevox.desktop
 #   /usr/share/icons/hicolor/256x256/apps/purevox.png
 #
-# Depends: pipewire, libasound2（原生 C 运行库，名称跨发行版较一致）；
-#          onnxruntime 捆绑预编译 1.22.0
+# Depends: pipewire（音频走 pipewire-pulse 兼容层，pulsectl 经 ctypes 调系统 libpulse）；
+#          numpy/onnxruntime/scipy 等 Python 依赖已捆绑进内嵌 python312。
 # Python 依赖全部捆绑进 python312（与 AppImage 同一实现路径），不依赖系统
-# python 及发行版 python 包名，故 Depends 只留原生 C 运行库，不再写任何 Python 依赖。
+# python 及发行版 python 包名，故 Depends 只留 PipeWire，不再写任何 Python 依赖。
 # 内嵌 python 由 GCC 15 编译（3.12.11），在新发行版（如 Debian 13）
 # 需补 libcrypt.so.2 软链指向系统 libcrypt.so.1（libxcrypt ABI 兼容）才能加载。
 
@@ -38,12 +38,6 @@ STAGE="${TMPDIR:-/tmp}/purevox_deb_build"
 ROOT="$STAGE/root"
 CONTROL="$ROOT/DEBIAN/control"
 
-echo "==> 构建纯 C 共享库 (libaimic.so + libpvpipe.so + libpvalsa.so)"
-python3 setup.py build_ext --inplace --force >/dev/null
-[ -f "libaimic.so" ] || { echo "缺少 libaimic.so"; exit 1; }
-[ -f "libpvpipe.so" ] || { echo "缺少 libpvpipe.so"; exit 1; }
-[ -f "libpvalsa.so" ] || { echo "缺少 libpvalsa.so"; exit 1; }
-
 echo "==> 准备打包目录 $STAGE"
 rm -rf "$STAGE"
 mkdir -p "$ROOT/opt/purevox" \
@@ -58,17 +52,11 @@ for f in \
     model_config.py run_pyside6.py spectrum_histogram.py theme_colors.py \
     dialog_tse_reference.py dialog_virtual_mic_linux.py ui_pyside6.py \
     user_paths.py wav_io.py \
-    aimic.py pvpipe.py pvalsa.py \
+    aimic.py \
     aec9_ep0544.onnx tse15_stream_ep_0673.onnx v9_fft2048_band256_epoch_261.onnx \
     audio_icon_off.ico audio_icon_on.ico; do
     cp "$f" "$ROOT/opt/purevox/"
 done
-cp "libaimic.so" "$ROOT/opt/purevox/"
-cp "libpvpipe.so" "$ROOT/opt/purevox/"
-cp "libpvalsa.so" "$ROOT/opt/purevox/"
-
-echo "==> 拷贝捆绑的 onnxruntime 1.22.0 动态库（aimic 链接 libonnxruntime.so.1.22.0）"
-cp packages/onnxruntime-linux-x64-1.22.0/lib/libonnxruntime.so* "$ROOT/opt/purevox/"
 
 echo "==> 捆绑内嵌 Python 3.12（packages/python312，含 PySide6 等全部 Python 依赖）"
 # 与 pack_appimage.sh 一致：若内嵌 python 未编译则先引导（幂等）。CI 的
@@ -97,8 +85,9 @@ echo "==> 拷贝 server/（剔除 Windows opus.dll）"
 mkdir -p "$ROOT/opt/purevox/server"
 cp server/*.py "$ROOT/opt/purevox/server/"
 
-echo "==> 拷贝 pvplatform/"
+echo "==> 拷贝 pvplatform/ 与 pvengine/"
 cp -r pvplatform "$ROOT/opt/purevox/"
+cp -r pvengine "$ROOT/opt/purevox/"
 find "$ROOT/opt/purevox" -name "__pycache__" -type d -exec rm -rf {} + 2>/dev/null || true
 
 echo "==> 生成版本戳 _build_version.py（窗口标题，与文件名/包版本同源）"
@@ -111,10 +100,8 @@ echo "==> /usr/bin/purevox 启动脚本"
 cat > "$ROOT/usr/bin/purevox" <<'EOF'
 #!/bin/sh
 # PureVox — AI 麦克风降噪
-# 使用捆绑的内嵌 Python 3.12（/opt/purevox/python312，PySide6 等全部依赖已随包携带），
-# 与系统 Python/发行版包名完全隔离。aimic.so 链捆绑的预编译 onnxruntime 提前注入
-# LD_LIBRARY_PATH；内嵌 python 的 lib 目录同理（含 libcrypt.so.2 软链）。
-export LD_LIBRARY_PATH="/opt/purevox:/opt/purevox/python312/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+# 使用捆绑的内嵌 Python 3.12（/opt/purevox/python312，PySide6/numpy/onnxruntime
+# 等全部依赖已随包携带），与系统 Python/发行版包名完全隔离。
 export PYTHONHOME="/opt/purevox/python312"
 export PATH="/opt/purevox/python312/bin:$PATH"
 cd /opt/purevox || exit 1
@@ -159,7 +146,7 @@ Section: sound
 Priority: optional
 Architecture: $ARCH
 Maintainer: a2heng <752848283@qq.com>
-Depends: pipewire, libasound2
+Depends: pipewire
 Description: PureVox — Real-time AI microphone noise reduction
  Real-time AI audio denoising / target speech extraction / echo cancellation
  for the local microphone, with remote network streaming support.

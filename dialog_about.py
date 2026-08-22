@@ -361,6 +361,34 @@ AGC、VAD，31 段均衡器在菜单「设置 → 均衡器」打开。</p>
 
 CHANGELOG_TEXT = """# 更新日志
 
+## 2026-08-22 — 引擎全面纯 Python 化：组件化架构（重大重构）
+
+- **删除全部 C 代码与自编译二进制**：`aimic.c`/`aimic.h`（C DSP 核心）、
+  `pipewire_client.c`（PipeWire 桥）、`alsa_client.c`（ALSA 桥）、`pvpipe.py`/
+  `pvalsa.py`（ctypes 绑定）、`setup.py`（gcc 构建链）、捆绑的 onnxruntime
+  预编译 SDK（win/linux 双份）全部移除。项目不再需要 gcc/mingw，CI 删除
+  msys2 与 C 编译步骤
+- **新增 `pvengine` 纯 Python 组件化引擎**：Stage 接口（process/reset/release）
+  为组件唯一契约，组件按 active_modes 声明生效模式，可随意增删替换重排——
+  components/ 下 denoise/aec/tse/gain/eq/vad/agc/compressor/clip/recorder/tap
+  每个文件一个组件；dsp/ 提供窗函数/STFT/环形缓冲/流式重采样/Mel 频谱等可独立
+  复用的基础件；pipeline.py 按序执行 + 模式旁路。numpy 负责帧级 DSP，
+  scipy 提供 EQ 双二阶层联（lfilter），onnxruntime 跑模型推理
+- **三个 ONNX 模型逐位语义移植**：v9 降噪（spec [1,1025,1,2] interleaved +
+  enc/dec/tfa/inter 四状态，sqrt-Hann、OLA 归一化阈值 1e-6、3 帧静音预热）、
+  aec9（mic/far planar 谱 + 全套流式状态 + far 端非 48k 时内部重采样）、
+  tse15（spec_frame/enr_spec/cache 契约、参考音频镜像填充逐帧 STFT 缓存）。
+  与 lite 引擎同模型对比验证，输出差异仅浮点噪声级
+- **Linux 音频桥改 pulsectl**：ctypes 到系统 libpulse，走 pipewire-pulse 兼容层；
+  每条流独占线程 + 独立 Pulse 连接。**ALSA 备选接口整体移除**（旧混合实现连同
+  UI「本地接口 ALSA」选项），单一路径 = pipewire-pulse
+- **viz 内存隐患根治**：旧 C 版 process_pipeline 无条件向可视化缓冲追加且只增不减
+  （~1.4GB/小时）；新版改为有界 BufferTapStage（超限丢最旧）且仅网络管线内临时启用
+- **依赖变更**：requirements.txt 新增 numpy / scipy / onnxruntime / pulsectl
+  （不锁版本，安装即最新）；deb Depends 只留 pipewire（去 libasound2）
+- **`aimic.py` 变兼容垫片**：re-export pvengine，AudioProcessor/RingBuffer/
+  Resampler/compute_spectrum 等 API 不变，调用方零改动
+
 ## 2026-08-22 — Lite 网络模式：切换网络稳健性修复与逻辑精简
 
 - **防火墙零逻辑**：删除全部主动防火墙代码（旧端口级规则/UAC 提权安装/规则检查/

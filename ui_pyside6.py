@@ -52,7 +52,7 @@ from PySide6.QtWidgets import QMessageBox
 
 from audio_processor import (
     get_local_lan_ip, get_device_names, get_device_id,
-    API_TYPE_WASAPI, API_TYPE_NETWORK, API_TYPE_ALSA, get_api_name_by_type,
+    API_TYPE_WASAPI, API_TYPE_NETWORK, get_api_name_by_type,
     device_config_suffix,
     get_platform_api_options, default_api_type,
     create_audio_processor, start_audio_stream, HOP_LENGTH,
@@ -91,8 +91,7 @@ def _api_tooltip() -> str:
     """音频接口下拉框的工具提示（平台感知）。"""
     if sys.platform.startswith("linux"):
         return ("音频接口(API)：\n"
-                "PulseAudio — Linux 桌面常用音频服务（PipeWire 兼容），\n"
-                "           推荐。ALSA 为底层备选。")
+                "PulseAudio — Linux 桌面常用音频服务（PipeWire 兼容），推荐。")
     if sys.platform.startswith("darwin"):
         return "音频接口(API)：\nCore Audio — macOS 原生音频接口。"
     return ("音频接口(API)：\n"
@@ -1201,18 +1200,12 @@ class MainPanel(QWidget):
             self._output_combo.blockSignals(True)
             self._monitor_combo.blockSignals(True)
 
-            # Linux：PipeWire 用 node.name（显示职责标记），ALSA 用 plughw 名
-            # 均存 userData；下拉框显示文本、选中取 userData。
+            # Linux：PipeWire 用 node.name（显示职责标记），存 userData；
+            # 下拉框显示文本、选中取 userData。
             if IS_LINUX:
                 from pvplatform.audio.pwpipe_client import source_label, dest_label
-                is_alsa = (not is_network and self._api_type == API_TYPE_ALSA)
-                if is_alsa:
-                    from audio_processor import _alsa_source_ports, _alsa_dest_ports
-                    in_ports = _alsa_source_ports() if not is_network else []
-                    out_ports = _alsa_dest_ports()
-                else:
-                    in_ports = [(source_label(p), p) for p in inp] if not is_network else []
-                    out_ports = [(dest_label(p), p) for p in out]
+                in_ports = [(source_label(p), p) for p in inp] if not is_network else []
+                out_ports = [(dest_label(p), p) for p in out]
                 self._input_combo.clear()
                 for text, data in in_ports:
                     self._input_combo.addItem(text, data)
@@ -1775,26 +1768,10 @@ def start_processing(state, log):
         inp, out, api_type = _get_ids(state)
         is_network = api_type == API_TYPE_NETWORK
 
-        # Linux：输入/输出/监听是原生 PipeWire node.name 或 ALSA plughw 名，
+        # Linux：输入/输出/监听是原生 PipeWire node.name，
         # 下拉框选中即接管。PortAudio 不参与本地输入/输出。
         pw_ports = ("", "", "")
-        alsa_ports = ("", "", "")
-        use_pw = IS_LINUX and not is_network and api_type != API_TYPE_ALSA
-        use_alsa = IS_LINUX and not is_network and api_type == API_TYPE_ALSA
-        if use_alsa:
-            mp_in = _combo_value(state.main_panel._input_combo) if hasattr(state.main_panel, '_input_combo') else ""
-            mp_out = _combo_value(state.main_panel._output_combo) if hasattr(state.main_panel, '_output_combo') else ""
-            mp_mon = _combo_value(state.main_panel._monitor_combo) if hasattr(state.main_panel, '_monitor_combo') else ""
-            mon_on = (state.main_panel._monitor_cb.isChecked()
-                      if hasattr(state.main_panel, '_monitor_cb') else False) and mode != MODE_AEC
-            alsa_ports = (mp_in, mp_out, mp_mon if mon_on else "")
-            if not mp_in or not mp_out:
-                log.err("请选择 ALSA 输入与输出设备")
-                return
-            inp = None
-            out = None
-            log.msg(f"[启动] ALSA 输入: {mp_in}\n[启动] ALSA 输出: {mp_out}"
-                    + (f"\n[启动] ALSA 监听: {mp_mon}" if mp_mon else ""))
+        use_pw = IS_LINUX and not is_network
         if use_pw:
             mp_in = _combo_value(state.main_panel._input_combo) if hasattr(state.main_panel, '_input_combo') else ""
             mp_out = _combo_value(state.main_panel._output_combo) if hasattr(state.main_panel, '_output_combo') else ""
@@ -1864,7 +1841,7 @@ def start_processing(state, log):
         failed_mon = False
         failed_aec = False
         in_name = out_name = mon_name = aec_name = ""
-        if not is_network and not use_pw and not use_alsa:
+        if not is_network and not use_pw:
             _p = pyaudio.PyAudio()
             try:
                 in_name = mp._input_combo.currentText() if mp else ""
@@ -2001,15 +1978,12 @@ def start_processing(state, log):
             out_dev = mp._output_combo.currentText() if mp else ""
             if use_pw:
                 log.msg(f"[启动] PipeWire: {in_dev} → PureVox → {out_dev}（48kHz 单声道）")
-            elif use_alsa:
-                log.msg(f"[启动] ALSA: {in_dev} → PureVox → {out_dev}（48kHz 单声道）")
             else:
                 log.msg(f"[启动] {api_name} 输入#{inp} ({in_dev}) → 输出#{out} ({out_dev})")
             state.processing_thread = start_audio_stream(
                 inp, out, proc, HOP_LENGTH, mid,
                 api_type=api_type, ready_msg=ready_msg,
-                pw_ports=pw_ports if use_pw else (),
-                alsa_ports=alsa_ports if use_alsa else ())
+                pw_ports=pw_ports if use_pw else ())
 
         # 等待音频流创建结果（_create_stream 在子线程异步执行）
         if state.processing_thread:
@@ -2033,7 +2007,7 @@ def start_processing(state, log):
             fac_sink = ""
             if state.config:
                 fac_sink = state.config.get(mp._device_key("far"), "") or ""
-            if (use_pw or use_alsa) and hasattr(state.main_panel, '_monitor_combo'):
+            if use_pw and hasattr(state.main_panel, '_monitor_combo'):
                 # 手动 far 端：下拉框当前选中值（AEC 模式下该行即 far 选择）
                 fac_sink = _combo_value(state.main_panel._monitor_combo) or fac_sink
             state.processing_thread.set_aec_far_sink(fac_sink)

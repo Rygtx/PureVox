@@ -1,8 +1,8 @@
 #!/bin/bash
 # PureVox - AppImage packaging script (universal Linux)
 # Output: dist/PureVox-Linux-x64-<yyyy-MM-dd-HHmm>-release.AppImage
-# Bundles the embedded Python 3.12 (packages/python312) + app + bundled onnxruntime.
-# Requires: gcc, pkg-config, libpipewire-0.3-devel, python3 (build), wget (appimagetool)
+# Bundles the embedded Python 3.12 (packages/python312) + app (pure Python engine).
+# Requires: python3 (build), wget (appimagetool)
 set -e
 cd "$(dirname "$0")"
 
@@ -25,26 +25,21 @@ if [ ! -x "packages/python312/bin/python3" ]; then
     ./bootstrap_python312.sh
 fi
 
-echo "==> build pure C shared libraries"
-python3 setup.py build_ext --inplace --force >/dev/null
-[ -f "libaimic.so" ] && [ -f "libpvpipe.so" ] && [ -f "libpvalsa.so" ] || { echo "missing .so"; exit 1; }
-
 echo "==> prepare AppDir"
 rm -rf "$STAGE"
 mkdir -p "$APPDIR/usr/lib/purevox" "$APPDIR/usr/bin"
 
-echo "==> copy sources/models/lib"
+echo "==> copy sources/models"
 for f in \
     audio_processor.py config_manager.py dialog_about.py dialog_eq.py logger.py \
     model_config.py run_pyside6.py spectrum_histogram.py theme_colors.py \
     dialog_tse_reference.py ui_pyside6.py user_paths.py wav_io.py \
-    aimic.py pvpipe.py pvalsa.py \
+    aimic.py \
     aec9_ep0544.onnx tse15_stream_ep_0673.onnx v9_fft2048_band256_epoch_261.onnx \
     audio_icon_off.ico audio_icon_on.ico; do
     cp "$f" "$APPDIR/usr/lib/purevox/"
 done
-cp libaimic.so libpvpipe.so libpvalsa.so "$APPDIR/usr/lib/purevox/"
-cp packages/onnxruntime-linux-x64-1.22.0/lib/libonnxruntime.so* "$APPDIR/usr/lib/purevox/"
+cp -r pvengine "$APPDIR/usr/lib/purevox/"
 cp -r html "$APPDIR/usr/lib/purevox/"
 mkdir -p "$APPDIR/usr/lib/purevox/server"
 cp server/*.py "$APPDIR/usr/lib/purevox/server/"
@@ -95,7 +90,6 @@ cat > "$APPDIR/AppRun" <<'EOF'
 #!/bin/sh
 HERE="$(dirname "$(readlink -f "$0")")"
 export PYTHONHOME="$HERE/usr/python312"
-export LD_LIBRARY_PATH="$HERE/usr/lib/purevox${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 export PATH="$HERE/usr/python312/bin:$PATH"
 cd "$HERE/usr/lib/purevox" || exit 1
 exec "$HERE/usr/python312/bin/python3" run_pyside6.py "$@"

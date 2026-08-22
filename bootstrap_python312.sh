@@ -44,8 +44,7 @@ fi
 cat <<EOF
 
 PureVox 内嵌 Python 就绪（独立于系统环境，位于 packages/python312）。
-用下面的启动器运行 / 构建（自动带 LD_LIBRARY_PATH）：
+用下面的启动器运行（自动带 LD_LIBRARY_PATH）：
   ./py312 run_pyside6.py
-  ./py312 setup.py build_ext --inplace --force
   ./py312 -m pip install <pkg>
 EOF

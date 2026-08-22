@@ -157,8 +157,8 @@ def get_api_name(api_type: int) -> str:
 def get_api_options() -> list:
     """返回 UI 下拉选项 [(label, type), ...]：本地接口 + 网络。
 
-    Linux 提供两个本地接口：PipeWire（默认，原生）与 ALSA（原生备选）；
-    Windows 提供 WASAPI（默认）与 MME（旧版备选）；macOS 仍单一本地接口 + 网络。
+    Linux 单一本地接口 PipeWire（原生）；Windows 提供 WASAPI（默认）与
+    MME（旧版备选）；macOS 仍单一本地接口 + 网络。
     """
     opts = []
     if IS_WINDOWS:
@@ -166,7 +166,6 @@ def get_api_options() -> list:
         opts.append(("本地接口 MME", API_MME))
     elif IS_LINUX:
         opts.append(("本地接口 PipeWire（默认）", API_PIPEWIRE))
-        opts.append(("本地接口 ALSA", API_ALSA))
     else:
         opts.append(("本地设备", platform_default_api_type()))
     opts.append(("网络(API)", API_NETWORK))

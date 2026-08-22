@@ -24,7 +24,6 @@ from PySide6.QtCore import QTimer, Qt
 from PySide6.QtWidgets import QApplication, QDialog, QHBoxLayout, QLabel, QPushButton, QVBoxLayout
 
 from pvplatform.system import virtual_mic_ready, ensure_virtual_mic, remove_virtual_mic
-from audio_processor import API_TYPE_ALSA, get_api_name_by_type
 
 _GREEN = "#3aa76d"
 _RED = "#d9534f"
@@ -46,7 +45,7 @@ def _refresh_state(state_label, status_dot):
 
 def show_virtual_mic_dialog(logger, refresh_devices=None, api_type=0):
     """Linux 虚拟声卡面板。refresh_devices: 可选回调（创建/清理后刷新设备下拉）。
-    api_type: 当前本地接口（API_TYPE_PIPEWIRE / API_TYPE_ALSA），决定提示文案。"""
+    api_type: 兼容旧签名保留（现仅 PipeWire 单一本地接口，不再影响文案）。"""
     dlg = QDialog(None)
     dlg.setWindowTitle("PureVox - 虚拟声卡")
     dlg.setMinimumWidth(420)
@@ -69,17 +68,13 @@ def show_virtual_mic_dialog(logger, refresh_devices=None, api_type=0):
     _refresh_state(state_label, status_dot)
 
     # 两个出口端点说明
-    is_alsa = (api_type == API_TYPE_ALSA)
     tips = QLabel(
         "PureVox 虚拟麦克风由两个出口组成（创建后其它软件按需选用）：\n"
         "• PureVox 虚拟麦克风（purevox_out.monitor）—— 宽口径源，供绝大多数软件选用；\n"
         "• PureVox mic（purevox_mic）—— 供 OBS 等只列\"真源\"的软件使用（由前者的\n"
         "  重映射而来）。\n"
-        + ("本地接口为 ALSA：创建后请在「输出设备」下拉选择「PureVox 虚拟麦克风」，"
-           "降噪输出即可汇入本虚拟麦克风。\n"
-           if is_alsa else
-           "本地接口为 PipeWire：降噪输出自动写入本虚拟麦克风，无需额外选择。\n")
-        + "PureVox 不会自动创建虚拟声卡：需要时点\"创建\"，不用时点\"清理\"。"
+        "降噪输出自动写入本虚拟麦克风，无需额外选择。\n"
+        "PureVox 不会自动创建虚拟声卡：需要时点\"创建\"，不用时点\"清理\"。"
     )
     tips.setWordWrap(True)
     tips.setStyleSheet("font-size: 10pt;")
