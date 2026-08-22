@@ -28,7 +28,9 @@ if _this_dir not in os.environ.get('PATH', ''):
 try:
     import opuslib
     OPUS_AVAILABLE = True
-except ImportError:
+except Exception:
+    # ImportError = pip 包缺失；普通 Exception = 系统缺 libopus（Linux）。
+    # 缺库只降级 Opus 解码（网络推流不可用），主程序其余功能不受影响
     OPUS_AVAILABLE = False
 
 logger = logging.getLogger(__name__)

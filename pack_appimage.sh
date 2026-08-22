@@ -40,6 +40,12 @@ for f in \
     cp "$f" "$APPDIR/usr/lib/purevox/"
 done
 cp -r pvengine "$APPDIR/usr/lib/purevox/"
+
+# 捆绑系统 libopus（opuslib 经 ctypes find_library 加载；AppImage 自带一份，
+# 保证宿主机没装 opus 时网络推流解码也可用）
+for so in /usr/lib/x86_64-linux-gnu/libopus.so* /usr/lib64/libopus.so*; do
+    [ -e "$so" ] && cp "$so" "$APPDIR/usr/lib/purevox/" || true
+done
 cp -r html "$APPDIR/usr/lib/purevox/"
 mkdir -p "$APPDIR/usr/lib/purevox/server"
 cp server/*.py "$APPDIR/usr/lib/purevox/server/"
@@ -90,6 +96,7 @@ cat > "$APPDIR/AppRun" <<'EOF'
 #!/bin/sh
 HERE="$(dirname "$(readlink -f "$0")")"
 export PYTHONHOME="$HERE/usr/python312"
+export LD_LIBRARY_PATH="$HERE/usr/lib/purevox${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 export PATH="$HERE/usr/python312/bin:$PATH"
 cd "$HERE/usr/lib/purevox" || exit 1
 exec "$HERE/usr/python312/bin/python3" run_pyside6.py "$@"
@@ -97,7 +104,10 @@ EOF
 chmod +x "$APPDIR/AppRun"
 
 echo "==> appimagetool"
-TOOL="$STAGE/appimagetool"
+# 优先用缓存路径（CI 经 actions/cache 复用；本地默认 ~/.cache/purevox），
+# 不存在才下载——避免每次打包都 wget
+TOOL="${PUREVOX_APPIMAGETOOL:-$HOME/.cache/purevox/appimagetool}"
+mkdir -p "$(dirname "$TOOL")"
 [ -x "$TOOL" ] || wget -q -O "$TOOL" \
   "https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage"
 chmod +x "$TOOL"

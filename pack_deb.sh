@@ -146,7 +146,7 @@ Section: sound
 Priority: optional
 Architecture: $ARCH
 Maintainer: a2heng <752848283@qq.com>
-Depends: pipewire
+Depends: pipewire, libopus0
 Description: PureVox — Real-time AI microphone noise reduction
  Real-time AI audio denoising / target speech extraction / echo cancellation
  for the local microphone, with remote network streaming support.

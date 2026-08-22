@@ -99,6 +99,7 @@ Release:        $REV
 Summary:        AI microphone noise reduction
 License:        GPL-3.0-or-later
 BuildArch:      $ARCH
+Requires:       pipewire, opus
 
 %description
 Real-time AI microphone noise reduction, echo cancellation and target

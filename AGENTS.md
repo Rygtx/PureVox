@@ -129,6 +129,16 @@ cd android
 - **onnxruntime 走 pip 最新版（2026-08-22 纯 py 迁移）**：不再捆绑预编译 C SDK；
   `requirements.txt` 不锁版本，CI/全新环境安装即最新。模型 opset ≤18，
   onnxruntime 长期向后兼容
+- **外部下载全部预置化（2026-08-22）**：`server/opus.dll`（预编译 libopus，BSD）
+  直接提交进仓库（`.gitignore` 对其白名单），CI 与本地开发均不再下载；
+  Linux 内嵌 python312 编译产物与 appimagetool 二进制走 `actions/cache`
+  （key 分别为 cpython 子模块 SHA 与固定版本）；Android opus 源码 zip 同样缓存。
+  本地开发 `pack_appimage.sh` 复用 `~/.cache/purevox/appimagetool`，也可用
+  `PUREVOX_APPIMAGETOOL` 环境变量指定
+- **Linux 的 opus**：opuslib 经 `ctypes.util.find_library('opus')` 加载**系统**
+  libopus——deb Depends 带 `libopus0`、rpm Requires 带 `opus`；AppImage 从构建机
+  拷贝 `libopus.so*` 进包并经 AppRun 注入 `LD_LIBRARY_PATH`。缺库时
+  `opus_codec.OPUS_AVAILABLE=False` 优雅降级（仅网络推流解码不可用），主程序正常
 - **Linux job 按发行版分开是刻意设计，勿合并成一个 job**（2026-08-10 决策）：deb 在
   Ubuntu、rpm 在 Fedora 产出，是因为 rpm 打包须依赖 `rpmbuild` 与真实 Fedora 包名解析，
   移到 Ubuntu 上构建可靠性下降；分开还有并行收益与故障隔离

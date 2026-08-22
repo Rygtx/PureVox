@@ -28,7 +28,7 @@ jobs:
             # the compiled interpreter has no _ctypes and the GUI crashes on import
             # ctypes (ModuleNotFoundError: No module named '_ctypes').
             # file: appimagetool requires the `file` command at packaging time.
-            sysdeps: "build-essential make pkg-config libssl-dev libffi-dev python3 python3-pip python3-setuptools imagemagick wget git zlib1g-dev file"
+            sysdeps: "build-essential make pkg-config libssl-dev libffi-dev libopus0 python3 python3-pip python3-setuptools imagemagick wget git zlib1g-dev file"
             pkg_deb: true
             pkg_appimage: true
           - distro: fedora
@@ -80,6 +80,24 @@ jobs:
           PY="python3"; [ "${{ matrix.distro }}" = "python3.12" ] && PY="python"
           $PY -m pip install --quiet numpy onnxruntime scipy pyside6 zeroconf aiohttp opuslib cryptography pillow 2>/dev/null \
             || $PY -m pip install --break-system-packages numpy onnxruntime scipy pyside6 zeroconf aiohttp opuslib cryptography pillow || true
+
+      # ── 预置缓存：避免每次 CI 重复下载/编译（2026-08-22 纯 py 迁移）──
+      - name: Read cpython submodule SHA (cache key)
+        if: matrix.pkg_appimage
+        id: submod
+        run: echo "sha=$(git rev-parse HEAD:packages/cpython)" >> "$GITHUB_OUTPUT"
+      - name: Cache embedded python312 build (skip CPython recompile)
+        if: matrix.pkg_appimage
+        uses: actions/cache@v4
+        with:
+          path: packages/python312
+          key: py312-embedded-ubuntu22-${{ steps.submod.outputs.sha }}
+      - name: Cache appimagetool binary
+        if: matrix.pkg_appimage
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/purevox
+          key: appimagetool-continuous-x64
 
       - name: Import smoke test (pure-Python engine loads a model and denoises one frame)
         run: |
@@ -185,13 +203,7 @@ jobs:
           python -m compileall -q aimic.py pvengine audio_processor.py config_manager.py model_config.py ui_pyside6.py run_pyside6.py pvplatform server 2>$null
           Write-Host "compileall OK"
 
-      - name: Download opus.dll (gitignored, needed by server/)
-        shell: pwsh
-        run: |
-          curl.exe -fsSL -L "https://github.com/DSharpPlus/DSharpPlus/raw/master/docs/natives/vnext_natives_win32_x64.zip" -o "$env:TEMP\opus.zip"
-          Expand-Archive -Path "$env:TEMP\opus.zip" -DestinationPath "$env:TEMP\opus" -Force
-          Copy-Item "$env:TEMP\opus\libopus.dll" "server\opus.dll" -Force
-          if (-not (Test-Path "server\opus.dll")) { throw "opus.dll not found" }
+      # server/opus.dll 已随仓库提交（预编译 libopus，BSD），无需再下载
 
       - name: Build Windows bundle (PyInstaller, timestamped)
         shell: pwsh
@@ -233,6 +245,7 @@ jobs:
         with:
           distribution: temurin
           java-version: "17"
+          cache: gradle
 
       - name: Set up Android SDK
         uses: android-actions/setup-android@v4.0.1
@@ -242,13 +255,24 @@ jobs:
           yes | sdkmanager --licenses >/dev/null
           sdkmanager "platforms;android-34" "ndk;27.0.12077973" "build-tools;34.0.0"
 
+      # 缓存 opus 源码：命中则跳过下载（2026-08-22 纯 py 迁移）
+      - name: Cache opus source
+        uses: actions/cache@v4
+        with:
+          path: android/opus-src
+          key: opus-src-1.5.2
+
       - name: Download Opus source (android/opus-src is gitignored)
         run: |
-          mkdir -p android/opus-src
-          wget -q -O /tmp/opus.zip https://github.com/xiph/opus/archive/refs/tags/v1.5.2.zip
-          unzip -q /tmp/opus.zip -d /tmp
-          mv /tmp/opus-1.5.2/* android/opus-src/
-          test -f android/opus-src/CMakeLists.txt
+          if [ -f android/opus-src/CMakeLists.txt ]; then
+            echo "opus-src cached, skip download"
+          else
+            mkdir -p android/opus-src
+            wget -q -O /tmp/opus.zip https://github.com/xiph/opus/archive/refs/tags/v1.5.2.zip
+            unzip -q /tmp/opus.zip -d /tmp
+            mv /tmp/opus-1.5.2/* android/opus-src/
+            test -f android/opus-src/CMakeLists.txt
+          fi
 
       - name: Build debug APK
         working-directory: android

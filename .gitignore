@@ -29,9 +29,9 @@
 *.so
 *.dylib
 *.dll
-# 捆绑的预编译 onnxruntime 1.22.0 SDK（Windows DLL / Linux .so）是构建、打包与运行时必需的，保留提交
-!packages/onnxruntime-win-x64-1.22.0/lib/*.dll
-!packages/onnxruntime-linux-x64-1.22.0/lib/*.so*
+# server/opus.dll 是预编译 libopus（BSD，纯运行库）——提交进仓库，
+# 免去 CI 与本地开发每次下载（2026-08-22 纯 py 迁移）
+!server/opus.dll
 
 # Third-party runtime components (not part of the source tree; see README)
 tools/VBCABLE_Driver_Pack45.zip
