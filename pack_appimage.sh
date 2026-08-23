@@ -78,14 +78,14 @@ Categories=AudioVideo;Audio;Utility;
 EOF
 cp "$APPDIR/usr/share/applications/$APP_NAME.desktop" "$APPDIR/$APP_NAME.desktop"
 mkdir -p "$APPDIR/usr/share/icons/hicolor/256x256/apps" "$APPDIR/usr/share/icons/hicolor/512x512/apps"
-# 根目录 Icon 用 1024 源 PNG（桌面文件 Icon=purevox 要求 AppDir 根有 png/svg/xpm）
+# 根目录 Icon 用 512 源 PNG（桌面文件 Icon=purevox 要求 AppDir 根有 png/svg/xpm）
 if command -v magick >/dev/null; then
-    magick assets/icons/audio_icon_base_on_1024.png -resize 256x256 "$APPDIR/usr/share/icons/hicolor/256x256/apps/purevox.png"
-    magick assets/icons/audio_icon_base_on_1024.png -resize 512x512 "$APPDIR/usr/share/icons/hicolor/512x512/apps/purevox.png"
+    magick assets/icons/audio_icon_base.png -resize 256x256 "$APPDIR/usr/share/icons/hicolor/256x256/apps/purevox.png"
+    magick assets/icons/audio_icon_base.png -resize 512x512 "$APPDIR/usr/share/icons/hicolor/512x512/apps/purevox.png"
 else
     python3 -c "
 from PIL import Image
-im = Image.open('assets/icons/audio_icon_base_on_1024.png')
+im = Image.open('assets/icons/audio_icon_base.png')
 im.convert('RGBA').resize((256,256), Image.LANCZOS).save('$APPDIR/usr/share/icons/hicolor/256x256/apps/purevox.png')
 im.convert('RGBA').resize((512,512), Image.LANCZOS).save('$APPDIR/usr/share/icons/hicolor/512x512/apps/purevox.png')
 "

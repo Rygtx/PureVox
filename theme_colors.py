@@ -3,28 +3,29 @@
 #
 # PureVox is licensed under the GNU General Public License v3.0 or
 # later (GPL-3.0-or-later).  See LICENSE for details.
-# 
+#
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
 # the Free Software Foundation, either version 3 of the License, or
 # (at your option) any later version.
-# 
+#
 # The built-in AI models are NOT covered by the GPL; they are the
 # property of a2heng and may only be used with PureVox under
 # authorization.  See MODEL-LICENSE.md for details.
-# 
+#
 # SPDX-License-Identifier: GPL-3.0-or-later
 
 # theme_colors.py
-"""统一主题颜色管理模块。
-所有深色/浅色主题的颜色值集中定义在此，其他模块通过便捷函数获取当前主题颜色。
+"""统一主题颜色管理模块（单一深色主题）。
+
+PureVox 桌面端只有一种外观：墨黑深色。颜色集中定义在此，
+其他模块通过便捷函数获取。
 
 用法：
-    from theme_colors import get_theme_palette, get_theme_colors, is_dark_current
+    from theme_colors import current_palette, current_colors
 
-    dark = is_dark_current()
-    pal = get_theme_palette(dark)   # QPalette 角色颜色
-    c = get_theme_colors(dark)      # 组件颜色
+    pal = current_palette()   # QPalette 角色颜色
+    c = current_colors()      # 组件颜色
 """
 
 from dataclasses import dataclass
@@ -34,12 +35,12 @@ from PySide6.QtWidgets import QApplication
 
 
 # ═══════════════════════════════════════════════════════════════
-#  QPalette 角色颜色（接近 Windows 11 实际值）
+#  QPalette 角色颜色（墨黑深色，唯一主题）
 # ═══════════════════════════════════════════════════════════════
 
 @dataclass(frozen=True)
 class PaletteDef:
-    """一套完整的 QPalette 角色颜色定义。"""
+    """QPalette 角色颜色定义。"""
 
     window: QColor
     window_text: QColor
@@ -60,8 +61,9 @@ class PaletteDef:
 
     def apply_to(self, pal: QPalette) -> None:
         """将本定义写入一个 QPalette。
-        
-        只覆盖基础明暗角色，保留系统的 Highlight/Link 等主题色。
+
+        只覆盖基础明暗角色，Highlight/Link 由 apply_theme_palette
+        按系统 accent 覆写。
         """
         pal.setColor(QPalette.ColorRole.Window, self.window)
         pal.setColor(QPalette.ColorRole.WindowText, self.window_text)
@@ -76,31 +78,9 @@ class PaletteDef:
         pal.setColor(QPalette.ColorRole.ToolTipText, self.tooltip_text)
         pal.setColor(QPalette.ColorRole.Mid, self.mid)
         pal.setColor(QPalette.ColorRole.Dark, self.dark)
-        # 注意：不覆盖 Highlight / HighlightedText / Link，保留系统主题色
 
 
-# ---- Windows 11 浅色主题 QPalette ----
-PALETTE_LIGHT = PaletteDef(
-    window=QColor(0xF3, 0xF3, 0xF3),
-    window_text=QColor(0x00, 0x00, 0x00),
-    base=QColor(0xFF, 0xFF, 0xFF),
-    alternate_base=QColor(0xF5, 0xF5, 0xF5),
-    text=QColor(0x00, 0x00, 0x00),
-    button=QColor(0xF0, 0xF0, 0xF0),
-    button_text=QColor(0x00, 0x00, 0x00),
-    bright_text=QColor(0xFF, 0x00, 0x00),
-    placeholder_text=QColor(0x70, 0x70, 0x70),
-    tooltip_base=QColor(0xFF, 0xFF, 0xFF),
-    tooltip_text=QColor(0x00, 0x00, 0x00),
-    highlight=QColor(0x00, 0x78, 0xD4),   # Win11 accent blue
-    highlighted_text=QColor(0xFF, 0xFF, 0xFF),
-    link=QColor(0x00, 0x78, 0xD4),
-    mid=QColor(0xCC, 0xCC, 0xCC),
-    dark=QColor(0xA0, 0xA0, 0xA0),
-)
-
-# ---- Windows 11 深色主题 QPalette ----
-PALETTE_DARK = PaletteDef(
+PALETTE = PaletteDef(
     window=QColor(0x20, 0x20, 0x20),
     window_text=QColor(0xF0, 0xF0, 0xF0),
     base=QColor(0x1A, 0x1A, 0x1A),
@@ -112,7 +92,7 @@ PALETTE_DARK = PaletteDef(
     placeholder_text=QColor(0x99, 0x99, 0x99),
     tooltip_base=QColor(0x2D, 0x2D, 0x2D),
     tooltip_text=QColor(0xF0, 0xF0, 0xF0),
-    highlight=QColor(0x60, 0xCD, 0xFF),   # Win11 dark accent blue
+    highlight=QColor(0x60, 0xCD, 0xFF),   # 兜底 accent；运行时被系统 accent 覆写
     highlighted_text=QColor(0x00, 0x00, 0x00),
     link=QColor(0x60, 0xCD, 0xFF),
     mid=QColor(0x55, 0x55, 0x55),
@@ -126,7 +106,7 @@ PALETTE_DARK = PaletteDef(
 
 @dataclass(frozen=True)
 class ThemeColors:
-    """各组件使用的颜色，按深色/浅色分别定义。"""
+    """各组件使用的颜色。"""
 
     # ── 胶囊控件 SegmentedControl ──
     segment_btn_fg: str          # 未选中按钮前景
@@ -165,34 +145,7 @@ class ThemeColors:
     about_close_btn_hover: str
 
 
-# ---- 浅色组件颜色 ----
-COLORS_LIGHT = ThemeColors(
-    segment_btn_fg="#555555",
-    segment_sep="#cccccc",
-    vu_unlit_green=(204, 240, 204),
-    vu_unlit_yellow=(240, 240, 204),
-    vu_unlit_red=(240, 204, 204),
-    record_btn_bg="#424242",
-    record_btn_countdown_text="#ff5252",
-    record_btn_progress_fill="#f44336",
-    start_btn_bg="#4caf50",
-    start_btn_hover="#388e3c",
-    stop_btn_bg="#f44336",
-    stop_btn_hover="#d32f2f",
-    eq_grid="#d0d0d0",
-    eq_text_secondary="#999999",
-    spec_grid="#d0d0d0",
-    spec_text_c="#999999",
-    spec_bar_out="#4caf50",
-    spec_bar_more="#e0e0e0",
-    spec_bar_less="#90a4ae",
-    about_link="#0078D4",
-    about_close_btn_bg="#0078D4",
-    about_close_btn_hover="#1565c0",
-)
-
-# ---- 深色组件颜色 ----
-COLORS_DARK = ThemeColors(
+COLORS = ThemeColors(
     segment_btn_fg="#aaaaaa",
     segment_sep="#555555",
     vu_unlit_green=(0, 61, 20),
@@ -222,41 +175,27 @@ COLORS_DARK = ThemeColors(
 #  便捷函数
 # ═══════════════════════════════════════════════════════════════
 
-def is_dark_current() -> bool:
-    """检测当前生效的主题是否为深色（优先检测调色板明暗）。"""
-    app = QApplication.instance()
-    if app:
-        pal = app.palette()
-        return pal.window().color().lightness() < 128
-    return QApplication.palette().window().color().lightness() < 128
-
-
-def get_theme_palette(dark: bool) -> PaletteDef:
-    """返回深色或浅色的 QPalette 定义。"""
-    return PALETTE_DARK if dark else PALETTE_LIGHT
-
-
-def get_theme_colors(dark: bool) -> ThemeColors:
-    """返回深色或浅色的组件颜色定义。"""
-    return COLORS_DARK if dark else COLORS_LIGHT
-
-
 def current_palette() -> PaletteDef:
-    """返回当前主题的 QPalette 定义。"""
-    return get_theme_palette(is_dark_current())
+    """返回主题的 QPalette 定义。"""
+    return PALETTE
 
 
 def current_colors() -> ThemeColors:
-    """返回当前主题的组件颜色定义。"""
-    return get_theme_colors(is_dark_current())
+    """返回组件颜色定义。"""
+    return COLORS
 
 
-def apply_theme_palette(app: QApplication, dark: bool) -> None:
-    """在系统当前调色板基础上叠加主题明暗定义。
-    
-    _sync_theme_ui 已先调 setStyle 获取系统最新调色板（含 accent），
-    此处在 app.palette() 上覆盖基础明暗，Highlight/Link 保留系统色。
-    """
+def apply_theme_palette(app: QApplication) -> None:
+    """应用主题调色板；Highlight/Link 跟随系统 accent（读不到用兜底色）。"""
+    from pvplatform.system import system_accent_color
+
     pal = app.palette()
-    get_theme_palette(dark).apply_to(pal)
+    PALETTE.apply_to(pal)
+    try:
+        accent = system_accent_color()
+    except Exception:
+        accent = None
+    if accent:
+        pal.setColor(QPalette.ColorRole.Highlight, accent)
+        pal.setColor(QPalette.ColorRole.Link, accent)
     app.setPalette(pal)

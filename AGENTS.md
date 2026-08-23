@@ -152,7 +152,7 @@ cd android
   - 容器 job 在 checkout 前先装系统依赖（含 `git`）——REST API 下载不支持 submodules；
     cpython 子模块已移除（2026-08-23），bootstrap 按需下载 tarball
   - appimagetool 容器无 FUSE → 用 `--appimage-extract-and-run`；`.desktop` 要在
-    AppDir 根目录放一份；图标用 `assets/icons/audio_icon_base_on_1024.png`
+    AppDir 根目录放一份；图标用 `assets/icons/audio_icon_base.png`
     直接生成 256/512 png
   - `pack_deb.sh` 末尾 `| head` 会 SIGPIPE(141) 使 `sh -e` 退出 → 补 `|| true`
   - Ubuntu 容器 pip 装 pillow 遇到匹配版本时用 `--break-system-packages` 兜底
@@ -173,7 +173,7 @@ cd android
 | 模块 | 职责 |
 |---|---|
 | `run_pyside6.py` | 单实例锁、启动入口，导入 `ui_pyside6.run_app` |
-| `ui_pyside6.py` | 主 UI（PySide6）——**单列节点面板**：顶部 启动/退出控制条 + PluginPanel（输入/处理/输出/可视化全部为可增删排序的节点行，三级形态 toggle/inline/expand，viz 行内嵌实时控件）；48kHz 检测弹框保留。设备选择在 input/output 节点行内（Linux 存 node.name） |
+| `ui_pyside6.py` | 主 UI（PySide6）——**单列节点面板**：顶部单一工具条（启动/退出 · 添加节点▾ · 清空 · 设置▾[原菜单栏并入：快捷键/自动运行/开机自启/系统声音/虚拟声卡/关于]）+ PluginPanel（输入/处理/输出/可视化全部为可增删排序的节点行，三级形态 toggle/inline/expand，viz 行内嵌实时控件；排序走**拖拽手柄**，无上下移按钮）；48kHz 检测弹框保留。设备选择在 input/output 节点行内（Linux 存 node.name）。**外观为单一墨黑深色主题**（theme_colors.py 单份定义 + 系统 accent 高亮），无明暗切换 |
 | `session_plan.py` | **L3 会话层**——`SessionPlan.from_chain(chain_cfg)` 纯函数：链文档 → 校验后的可执行计划（inputs/outputs/remote_url/viz/fx_chain/problems/warnings）。UI 启动流程只消费计划，不做内联解析 |
 | `audio_processor.py` | 核心音频线程 —— `AudioThread`(全双工流/PipeWire 循环/网络循环/**多输入混音+多输出扇出**[Windows extras 回调])、`SpeakerCapture`(AEC loopback)、`RingBuffer`、设备枚举、TSE 参考录音工具(`_recorder`/`load_tse_reference`/`_wsola_time_stretch`) |
 | `pvengine/` | **纯 Python 组件化音频引擎**——Stage 接口（process/reset/release）是唯一契约；`components/`(denoise/aec/tse/gain/eq/vad/agc/compressor/clip/recorder/tap) 每文件一个组件、按 active_modes 声明生效模式；`dsp/`(窗/STFT/环形缓冲/重采样/Mel 频谱/ONNX 会话) 可独立复用；`pipeline.py` 按序执行+模式旁路；`processor.py` 是 AudioProcessor 门面（保持旧 API）。模型：v9 降噪（spec [1,1025,1,2] + enc/dec/tfa/inter 四态）、aec9、tse15，全部 numpy + onnxruntime 实现 |
@@ -334,3 +334,4 @@ AEC far-end：独立录制流指向 `far_sink.monitor`（会话内创建/销毁�
 - 源码 **GPL-3.0**（SPDX: `GPL-3.0-or-later`），见 `LICENSE`
 - 内置 AI 模型（`*.onnx`）**不随 GPL 授权**，归 a2heng 所有，禁止提取用于其他项目，仅随 PureVox 经授权使用 → 见 `MODEL-LICENSE.md`
 - 作者另有 MIT 模型仓库可自由使用：`lightweight-denoise-48k` / `lightweight-aec-48k`（README 已写）
+

@@ -45,7 +45,7 @@ from PySide6.QtWidgets import (
     QSlider, QSystemTrayIcon, QMenu,
     QLineEdit, QDialog, QFrame, QScrollArea,
 )
-from PySide6.QtCore import Qt, QTimer, Signal, QSize, QRectF
+from PySide6.QtCore import Qt, QTimer, Signal, QSize, QRectF, QEvent
 from PySide6.QtGui import QIcon, QAction, QFont, QColor, QPalette, QPainter, QPixmap, QPen
 from PySide6.QtWidgets import QMessageBox
 
@@ -201,91 +201,28 @@ class AppState:
 _state: AppState = AppState()
 
 
-from theme_colors import is_dark_current, get_theme_palette
-
-
-def is_dark_theme(config=None) -> bool:
-    """检测当前是否为深色主题（优先检测调色板以便手动模式也能正确反映）"""
-    return is_dark_current()
-
-
-def effective_theme_mode(config) -> str:
-    """返回当前生效的主题模式：'system' / 'light' / 'dark'"""
-    if config is None:
-        return "system"
-    mode = config.get("theme", "system")
-    if mode not in ("system", "light", "dark"):
-        return "system"
-    return mode
-
-
-def _get_system_accent_color():
-    """读取系统 accent / 主题色（Windows 读注册表；其它平台返回 None）。"""
-    return system_accent_color()
-
-
-def _sync_theme_ui(app: QApplication, config) -> None:
-    """统一的主题同步入口 —— 无论系统触发还是用户触发，都走此函数。"""
-    mode = effective_theme_mode(config)
-    manual = (mode != "system")
-
-    if mode == "system":
-        dark = is_dark_current()
-    else:
-        dark = (mode == "dark")
-
-    # 构建 palette：基础明暗 + 系统 accent
-    pal = app.palette()
-    get_theme_palette(dark).apply_to(pal)
-    accent = _get_system_accent_color()
-    if accent:
-        pal.setColor(QPalette.Highlight, accent)
-    app.setPalette(pal)
-
-    # Re-polish 所有窗口 + DWM 标题栏
+def _apply_theme(app: QApplication) -> None:
+    """应用唯一主题（墨黑深色）：palette + 系统 accent 高亮 + 深色标题栏。"""
+    from theme_colors import apply_theme_palette
+    apply_theme_palette(app)
     for w in app.topLevelWidgets():
-        w.style().unpolish(w)
-        w.style().polish(w)
-        for child in w.findChildren(QWidget):
-            child.style().unpolish(child)
-            child.style().polish(child)
-        if manual and hasattr(w, 'winId'):
-            _set_titlebar_theme(int(w.winId()), dark)
-
-    # 菜单栏：手动模式用 Qt 渲染（跟随 palette），系统模式用 native
-    _refresh_menus(app, manual=manual)
+        try:
+            set_titlebar_theme(int(w.winId()), True)
+        except Exception:
+            pass
 
 
-def _refresh_menus(app: QApplication, manual: bool):
-    """刷新菜单栏：手动模式 Qt 渲染，系统模式 native。
-    
-    QSS 中的 palette(...) 引用是动态的，palette 变化后自动生效，
-    但 QMenu 是独立弹出窗口需要单独刷新。
-    """
-    # 菜单栏：手动模式切到 Qt 渲染后，QStyle 绘制 item 和背景用 widget palette，
-    # 必须设完整 palette（含 Window 角色控制背景）
-    for w in app.topLevelWidgets():
-        mb = w.menuBar() if hasattr(w, 'menuBar') else None
-        if mb:
-            mb.setNativeMenuBar(not manual)
-            mb.style().unpolish(mb)
-            mb.style().polish(mb)
-    # 已弹出的 QMenu 子控件也刷新（QMenu 是独立弹出窗口，不在 topLevelWidgets 中）
-    # 逐菜单重设自身 QSS 触发 palette(...) 重解析，再 unpolish/polish 子控件
-    for menu in app.allWidgets():
-        if isinstance(menu, QMenu):
-            ms = menu.styleSheet()
-            if ms:
-                menu.setStyleSheet(ms)
-            menu.update()
-            for child in menu.findChildren(QWidget):
-                child.style().unpolish(child)
-                child.style().polish(child)
-
-
-def _set_titlebar_theme(hwnd: int, dark: bool) -> None:
-    """设置系统标题栏深色/浅色模式（仅 Windows DWM 有效，其它平台空操作）。"""
-    set_titlebar_theme(int(hwnd), dark)
+def load_icon(name: str) -> QIcon:
+    """装载 assets/icons 下 PIL 生成的小图标（@1x + @2x 双倍率）。"""
+    root = getattr(sys, '_MEIPASS', os.path.dirname(sys.executable)) \
+        if getattr(sys, 'frozen', False) \
+        else os.path.dirname(os.path.abspath(__file__))
+    icon = QIcon()
+    for suffix in ("", "@2x"):
+        p = os.path.join(root, "assets", "icons", f"{name}{suffix}.png")
+        if os.path.exists(p):
+            icon.addPixmap(QPixmap(p))
+    return icon
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -488,7 +425,7 @@ class PluginRow(QWidget):
 
     changed = Signal(int, str, object)      # (row_index, key, value) 参数微调
     toggled = Signal(int, bool)             # 行内启用/停用
-    actionRequested = Signal(str, int, int) # (remove|move, row_index, direction)
+    actionRequested = Signal(str, int)      # (remove, row_index)；排序改拖拽
     expandRequested = Signal(str)           # 展开独立 UI（携带 ptype）
 
     def __init__(self, index, plugin_type, label, kind, params_spec, params,
@@ -505,14 +442,26 @@ class PluginRow(QWidget):
         self._body_widget = None
         self._card_lay = None
 
-        card = QFrame()
-        card.setFrameShape(QFrame.StyledPanel)
-        lay = QVBoxLayout(card)
-        lay.setContentsMargins(6, 4, 6, 4)
+        row = QFrame()
+        row.setObjectName("nodeRow")
+        row.setFrameShape(QFrame.NoFrame)
+        lay = QVBoxLayout(row)
+        lay.setContentsMargins(0, 4, 6, 4)
         lay.setSpacing(2)
 
         head = QHBoxLayout()
         head.setSpacing(4)
+        # 拖拽手柄（面板 eventFilter 接管其鼠标事件完成排序）
+        self.grip = QLabel()
+        dpr = self.devicePixelRatioF()
+        pm = load_icon("grip").pixmap(int(16 * dpr), int(16 * dpr))
+        pm.setDevicePixelRatio(dpr)
+        self.grip.setPixmap(pm)
+        self.grip.setFixedSize(18, 20)
+        self.grip.setAlignment(Qt.AlignCenter)
+        self.grip.setCursor(Qt.OpenHandCursor)
+        self.grip.setToolTip("拖动调整顺序")
+        head.addWidget(self.grip)
         self.cb_on = QCheckBox(label)
         self.cb_on.setChecked(enabled)
         self.cb_on.toggled.connect(self._on_toggle)
@@ -521,21 +470,17 @@ class PluginRow(QWidget):
         if self.tier == "expand":
             title = {"eq": "均衡器…", "tse": "参考音频…"}.get(plugin_type, "展开…")
             eb = QPushButton(title)
-            eb.setFixedHeight(20)
+            eb.setFixedHeight(22)
             eb.clicked.connect(lambda: self.expandRequested.emit(self.plugin_type))
             head.addWidget(eb)
-        from PySide6.QtWidgets import QStyle
-        st = self.style()
-        for std, tip, fn in ((QStyle.SP_ArrowUp, "上移", lambda: self._move(-1)),
-                             (QStyle.SP_ArrowDown, "下移", lambda: self._move(1)),
-                             (QStyle.SP_DialogCloseButton, "删除", self._remove)):
-            b = QPushButton()
-            b.setIcon(st.standardIcon(std))
-            b.setFixedSize(22, 22)
-            b.setIconSize(QSize(12, 12))
-            b.setToolTip(tip)
-            b.clicked.connect(fn)
-            head.addWidget(b)
+        db = QPushButton()
+        db.setObjectName("rowDel")
+        db.setIcon(load_icon("close"))
+        db.setFixedSize(22, 22)
+        db.setIconSize(QSize(12, 12))
+        db.setToolTip("删除")
+        db.clicked.connect(self._remove)
+        head.addWidget(db)
         self._card_lay = lay
         lay.addLayout(head)
 
@@ -561,6 +506,9 @@ class PluginRow(QWidget):
             gl.setStyleSheet("color: palette(mid); font-size: 8pt;")
             h.addWidget(gl)
             self.dev_combo = QComboBox()
+            self.dev_combo.setSizeAdjustPolicy(
+                QComboBox.AdjustToMinimumContentsLengthWithIcon)
+            self.dev_combo.setMinimumContentsLength(6)
             self._fill_devices(params.get("device", ""))
             self.dev_combo.currentTextChanged.connect(self._on_dev_changed)
             h.addWidget(self.dev_combo, 1)
@@ -576,6 +524,9 @@ class PluginRow(QWidget):
                 gl.setStyleSheet("color: palette(mid); font-size: 8pt;")
                 grid.addWidget(gl, r, 0)
                 self.dev_combo = QComboBox()
+                self.dev_combo.setSizeAdjustPolicy(
+                    QComboBox.AdjustToMinimumContentsLengthWithIcon)
+                self.dev_combo.setMinimumContentsLength(6)
                 self._fill_devices(params.get("far_device", ""), echo=True)
                 self.dev_combo.currentTextChanged.connect(
                     lambda _t: self.changed.emit(
@@ -611,7 +562,7 @@ class PluginRow(QWidget):
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
-        outer.addWidget(card)
+        outer.addWidget(row)
 
     # ── 设备下拉（input/output/echo_cancel）──
     def _fill_devices(self, current: str, echo: bool = False):
@@ -671,10 +622,7 @@ class PluginRow(QWidget):
         self.toggled.emit(self.row_index, on)
 
     def _remove(self):
-        self.actionRequested.emit("remove", self.row_index, 0)
-
-    def _move(self, direction):
-        self.actionRequested.emit("move", self.row_index, direction)
+        self.actionRequested.emit("remove", self.row_index)
 
 
 class PluginPanel(QWidget):
@@ -697,38 +645,24 @@ class PluginPanel(QWidget):
         root.setContentsMargins(4, 4, 4, 4)
         root.setSpacing(4)
 
-        head = QHBoxLayout()
-        head.setSpacing(4)
-        title = QLabel("节点链")
-        title.setStyleSheet("font-weight: bold;")
-        head.addWidget(title)
-        head.addStretch()
-        self._add_combo = QComboBox()
-        from pvengine.plugins import all_specs
-        for sp in all_specs():
-            self._add_combo.addItem(sp.label, sp.name)
-        head.addWidget(self._add_combo, 1)
-        add_btn = QPushButton("+ 添加")
-        add_btn.setFixedHeight(22)
-        add_btn.clicked.connect(self._on_add)
-        head.addWidget(add_btn)
-        clear_btn = QPushButton("清空")
-        clear_btn.setFixedHeight(22)
-        clear_btn.setToolTip("清空节点链")
-        clear_btn.clicked.connect(lambda: self.load_chain([]))
-        head.addWidget(clear_btn)
-        root.addLayout(head)
-
         self._scroll = QScrollArea()
         self._scroll.setWidgetResizable(True)
         self._scroll.setFrameShape(QFrame.NoFrame)
+        # 内容宽度跟随视口：只竖向滚动；控件过宽时压缩自身而不是拉出横向条
+        self._scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         body = QWidget()
         self._rows_lay = QVBoxLayout(body)
         self._rows_lay.setContentsMargins(0, 0, 0, 0)
-        self._rows_lay.setSpacing(4)
+        self._rows_lay.setSpacing(0)
         self._rows_lay.addStretch()
         self._scroll.setWidget(body)
         root.addWidget(self._scroll, 1)
+
+        # 拖拽排序状态（各行的 grip 手柄 installEventFilter 到本面板接管鼠标）
+        self._drag_row = None
+        self._drag_active = False
+        self._drag_grab_offset = None
+        self._drag_overlay = None
 
         self.load_chain(config.get("plugin_chain", []))
 
@@ -754,6 +688,8 @@ class PluginPanel(QWidget):
             row.toggled.connect(self._on_row_toggle)
             row.actionRequested.connect(self._on_action)
             row.expandRequested.connect(self._on_expand)
+            row.grip._plugin_row = row
+            row.grip.installEventFilter(self)
             self._rows.append(row)
             self._rows_lay.insertWidget(self._rows_lay.count() - 1, row)
             if spec.kind == "viz" and row.cb_on.isChecked():
@@ -855,15 +791,18 @@ class PluginPanel(QWidget):
                 pass
         self._save_and_apply()
 
-    def _on_add(self):
-        t = self._add_combo.currentData()
-        if not t:
-            return
-        cfg = self.to_config()
+    def plugin_types(self):
+        """可添加的插件类型 [(name, label)]（供工具条「添加节点」菜单）。"""
+        from pvengine.plugins import all_specs
+        return [(sp.name, sp.label) for sp in all_specs()]
+
+    def add_plugin(self, t):
+        """追加一个插件节点并应用。"""
         from pvengine.plugins import get_spec
         sp = get_spec(t)
         if sp is None:
             return
+        cfg = self.to_config()
         if t == "remote_mic":
             defaults = {"url": self._config.get("NETWORK_input_url", "")}
         elif sp.kind == "viz":
@@ -876,15 +815,15 @@ class PluginPanel(QWidget):
         self.load_chain(cfg)
         self._save_and_apply()
 
-    def _on_action(self, action, row_index, direction):
+    def clear_chain(self):
+        """清空节点链并应用。"""
+        self.load_chain([])
+        self._save_and_apply()
+
+    def _on_action(self, action, row_index):
         cfg = self.to_config()
         if action == "remove":
             del cfg[row_index]
-        elif action == "move":
-            j = row_index + direction
-            if not (0 <= j < len(cfg)):
-                return
-            cfg[row_index], cfg[j] = cfg[j], cfg[row_index]
         self.load_chain(cfg)
         self._save_and_apply()
 
@@ -895,9 +834,97 @@ class PluginPanel(QWidget):
         elif ptype == "eq" and hasattr(self, "_open_eq_editor"):
             self._open_eq_editor()
 
+    # ── 拖拽排序：grip 手柄的鼠标事件经 eventFilter 到此 ──
+    def eventFilter(self, obj, ev):
+        row = getattr(obj, "_plugin_row", None)
+        if row is not None:
+            t = ev.type()
+            if t == QEvent.MouseButtonPress:
+                return self._drag_press(obj, row, ev)
+            if t == QEvent.MouseMove:
+                return self._drag_move(row, ev)
+            if t == QEvent.MouseButtonRelease:
+                return self._drag_release(obj, row, ev)
+        return super().eventFilter(obj, ev)
+
+    def _drag_press(self, grip, row, ev):
+        if ev.button() != Qt.LeftButton:
+            return False
+        grip.grabMouse()                      # 后续 move/release 全部送达手柄
+        grip.setCursor(Qt.ClosedHandCursor)
+        self._drag_row = row
+        self._drag_active = False
+        self._drag_grab_offset = (ev.globalPosition().toPoint()
+                                  - row.mapToGlobal(row.rect().topLeft()))
+        return True
+
+    def _drag_move(self, row, ev):
+        if not (ev.buttons() & Qt.LeftButton) or self._drag_row is not row:
+            return False
+        gp = ev.globalPosition().toPoint()
+        if not self._drag_active:
+            self._drag_active = True
+            ov = QLabel(None, Qt.Tool | Qt.FramelessWindowHint
+                        | Qt.WindowStaysOnTopHint)
+            ov.setAttribute(Qt.WA_TransparentForMouseEvents)
+            ov.setWindowOpacity(0.85)
+            ov.setPixmap(row.grab())
+            ov.show()
+            self._drag_overlay = ov
+            row.setVisible(False)
+        self._drag_overlay.move(gp - self._drag_grab_offset)
+        self._place_row(row, self._target_index(gp.y()))
+        return True
+
+    def _drag_release(self, grip, row, ev):
+        grip.releaseMouse()
+        grip.setCursor(Qt.OpenHandCursor)
+        was_active = self._drag_active
+        if self._drag_overlay is not None:
+            self._drag_overlay.deleteLater()
+            self._drag_overlay = None
+        row.setVisible(True)
+        self._drag_row = None
+        self._drag_active = False
+        if not was_active:                    # 单击手柄，视为无动作
+            return True
+        lay = self._rows_lay                  # 同步 _rows 至布局顺序后重建应用
+        ordered = [lay.itemAt(i).widget() for i in range(lay.count())]
+        order = {id(w): i for i, w in enumerate(x for x in ordered if x)}
+        self._rows.sort(key=lambda r: order.get(id(r), 1 << 30))
+        cfg = self.to_config()
+        self.load_chain(cfg)
+        self._save_and_apply()
+        return True
+
+    def _target_index(self, y_global):
+        """按其余行中点计算插入位置（不含被拖行）。"""
+        idx = 0
+        lay = self._rows_lay
+        for i in range(lay.count()):
+            w = lay.itemAt(i).widget()
+            if w is None or w is self._drag_row or not w.isVisible():
+                continue
+            if y_global > w.mapToGlobal(w.rect().center()).y():
+                idx += 1
+        return idx
+
+    def _place_row(self, row, target):
+        """把被拖行的槽位移到 target，其余行即时回流。"""
+        lay = self._rows_lay
+        widgets = [lay.itemAt(i).widget() for i in range(lay.count())]
+        widgets = [w for w in widgets if w is not None]
+        widgets.remove(row)
+        target = max(0, min(target, len(widgets)))
+        widgets.insert(target, row)
+        while lay.count():
+            lay.takeAt(0)
+        for w in widgets:
+            lay.addWidget(w)
+        lay.addStretch()
+
 
 class MainWindow(QMainWindow):
-    WM_SETTINGCHANGE = 0x001A
     WM_POWERBROADCAST = 0x0218
     PBT_APMSUSPEND = 0x0004
     PBT_APMRESUMEAUTOMATIC = 0x0012
@@ -955,14 +982,12 @@ class MainWindow(QMainWindow):
         _resume_ui_timers(_state)
 
     def nativeEvent(self, eventType, message):
-        # 仅 Windows 有原生消息（主题变更 / 电源事件）；其它平台直接透传
+        # 仅 Windows 有原生消息（电源事件）；其它平台直接透传
         if IS_WINDOWS and eventType == b"windows_generic_MSG":
             try:
                 import ctypes.wintypes
                 msg = ctypes.wintypes.MSG.from_address(int(message))
-                if msg.message == self.WM_SETTINGCHANGE:
-                    QTimer.singleShot(200, self._on_theme_changed)
-                elif msg.message == self.WM_POWERBROADCAST:
+                if msg.message == self.WM_POWERBROADCAST:
                     self._on_power_event(msg.wParam)
             except:
                 pass
@@ -1016,13 +1041,6 @@ class MainWindow(QMainWindow):
         if _state.fx_panel:
             _state.fx_panel.refresh_devices()
         start_processing(_state, _state.logger or get_logger())
-
-    def _on_theme_changed(self):
-        """系统主题变化 → 统一同步入口。"""
-        self.setUpdatesEnabled(False)
-        _sync_theme_ui(QApplication.instance(), _state.config)
-        self.setUpdatesEnabled(True)
-        self.repaint()
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -1670,74 +1688,10 @@ class MainApp:
     def _is_boot(self):
         return is_autostart()
 
-    def _create_menu(self, window, config, logger):
-        # ── 原生菜单栏 ──
-        from PySide6.QtWidgets import QMenu
-        menubar = window.menuBar()
-
-        # 设置菜单（下拉）
-        settings_menu = menubar.addMenu("设置")
-        hk = QAction("快捷键 (右Alt+>)", window)
-        hk.setCheckable(True)
-        hk.setChecked(config.get("hotkey_enabled", True))
-        hk.triggered.connect(lambda: toggle_hotkey(config, logger))
-        settings_menu.addAction(hk)
-        auto = QAction("启动时自动运行", window)
-        auto.setCheckable(True)
-        auto.setChecked(config.get("auto_start", False))
-        auto.triggered.connect(lambda: toggle_auto_start(config, logger))
-        settings_menu.addAction(auto)
-        boot = QAction("开机自启", window)
-        boot.setCheckable(True)
-        boot.setChecked(config.get("registry_auto_start", False))
-        boot.triggered.connect(lambda: self._toggle_boot(logger))
-        settings_menu.addAction(boot)
-
-        # 主题放在设置里
-        theme_menu = settings_menu.addMenu("主题")
-        theme_labels = {"system": "系统", "light": "白天", "dark": "黑夜"}
-        theme_values = ["system", "light", "dark"]
-        current_theme = config.get("theme", "system")
-        self._theme_menu = theme_menu
-        self._theme_labels = theme_labels
-
-        for tv in theme_values:
-            a = QAction(theme_labels[tv], window)
-            a.setCheckable(True)
-            a.setChecked(tv == current_theme)
-            a.triggered.connect(lambda *x, _tv=tv: self._set_theme(
-                config, logger, _tv))
-            theme_menu.addAction(a)
-
-        # 顶层快捷操作
-        snd = QAction("系统声音", window)
-        snd.triggered.connect(lambda: open_sound_panel(logger))
-        menubar.addAction(snd)
-        vmic = QAction("虚拟声卡", window)
-        vmic.triggered.connect(lambda: _virtual_mic_dialog(logger, window))
-        menubar.addAction(vmic)
-        about = QAction("关于", window)
-        about.triggered.connect(lambda: self._show_about(window))
-        menubar.addAction(about)
-
     def _apply_style(self):
         app = QApplication.instance()
         app.setFont(QFont("Microsoft YaHei", 10))
         app.setStyleSheet("""
-            QMenuBar {
-                background: palette(window);
-                color: palette(window-text);
-                font-size: 10pt;
-            }
-            QMenuBar::item {
-                padding: 4px 14px;
-                background: transparent;
-                color: palette(window-text);
-            }
-            QMenuBar::item:selected {
-                background: palette(highlight);
-                color: palette(highlighted-text);
-            }
             QMenu {
                 font-size: 10pt;
                 padding: 4px;
@@ -1879,6 +1833,32 @@ class MainApp:
             #quitBtn:hover {
                 background-color: #d32f2f;
             }
+            QToolButton {
+                border: none;
+                padding: 4px 6px;
+                border-radius: 4px;
+            }
+            QToolButton:hover {
+                background: palette(mid);
+            }
+            QToolButton::menu-indicator {
+                image: none;
+            }
+            #nodeRow {
+                background: transparent;
+                border-bottom: 1px solid palette(alternate-base);
+            }
+            #nodeRow:hover {
+                background: palette(alternate-base);
+            }
+            #rowDel {
+                border: none;
+                border-radius: 4px;
+                background: transparent;
+            }
+            #rowDel:hover {
+                background: #c0392b;
+            }
         """)
 
     def _toggle_boot(self, logger):
@@ -1894,41 +1874,12 @@ class MainApp:
                 _state.config.save_config()
                 logger.sys("开机自启: 关")
 
-    def _set_theme(self, config, logger, theme_value):
-        """直接设置主题（三选一）。"""
-        config.set("theme", theme_value)
-        config.save_config()
-        logger.sys(f"主题: {self._theme_labels.get(theme_value, theme_value)}")
-        # 更新勾选状态
-        for action in self._theme_menu.actions():
-            action.setChecked(action.text() == self._theme_labels.get(theme_value))
-        # 统一同步入口
-        _sync_theme_ui(QApplication.instance(), config)
-
     def _show_about(self, window):
         from dialog_about import show_about_dialog
         show_about_dialog(window)
 
     def _create_ui(self, window, config, saver, logger):
-        # ── 顶部控制条：启动/退出 ──
-        header = QWidget()
-        hl = QHBoxLayout(header)
-        hl.setContentsMargins(6, 6, 6, 2)
-        hl.setSpacing(6)
-        start_btn = QPushButton("启动音频处理")
-        start_btn.setObjectName("startBtn")
-        start_btn.setFixedHeight(34)
-        start_btn.clicked.connect(lambda: toggle_processing(_state, logger))
-        start_btn.setToolTip(
-            "启动/停止音频处理引擎。\n"
-            "首次启动会加载 AI 模型（约 1~2 秒），\n"
-            "之后即可实时处理麦克风音频。\n"
-            "快捷键: 右 Alt + >")
-        hl.addWidget(start_btn, 1)
-        quit_btn = QPushButton("退出")
-        quit_btn.setFixedHeight(34)
-        quit_btn.clicked.connect(lambda: quit_app(window))
-        hl.addWidget(quit_btn)
+        from PySide6.QtWidgets import QToolButton
 
         # ── 节点链面板：输入/处理/输出/可视化 全部可增删排序 ──
         fxp = PluginPanel(config=config, saver=saver,
@@ -1979,6 +1930,71 @@ class MainApp:
 
         fxp._open_eq_editor = open_eq_editor
         fxp._open_tse_dialog = lambda: _open_tse_dialog_for(_state)
+
+        # ── 单一工具条：启停 / 添加节点 / 清空 / 设置（原菜单栏并入）──
+        header = QWidget()
+        hl = QHBoxLayout(header)
+        hl.setContentsMargins(6, 6, 6, 4)
+        hl.setSpacing(6)
+        start_btn = QPushButton("启动音频处理")
+        start_btn.setObjectName("startBtn")
+        start_btn.setFixedHeight(34)
+        start_btn.clicked.connect(lambda: toggle_processing(_state, logger))
+        start_btn.setToolTip(
+            "启动/停止音频处理引擎。\n"
+            "首次启动会加载 AI 模型（约 1~2 秒），\n"
+            "之后即可实时处理麦克风音频。\n"
+            "快捷键: 右 Alt + >")
+        hl.addWidget(start_btn, 1)
+        quit_btn = QPushButton("退出")
+        quit_btn.setObjectName("quitBtn")
+        quit_btn.setFixedHeight(34)
+        quit_btn.clicked.connect(lambda: quit_app(window))
+        hl.addWidget(quit_btn)
+
+        add_btn = QToolButton()
+        add_btn.setText("添加节点")
+        add_btn.setIcon(load_icon("plus"))
+        add_btn.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+        add_btn.setPopupMode(QToolButton.InstantPopup)
+        add_menu = QMenu(add_btn)
+        for name, label in fxp.plugin_types():
+            add_menu.addAction(label, lambda _t=name: fxp.add_plugin(_t))
+        add_btn.setMenu(add_menu)
+        hl.addWidget(add_btn)
+
+        clear_btn = QPushButton("清空")
+        clear_btn.setToolTip("清空节点链")
+        clear_btn.clicked.connect(fxp.clear_chain)
+        hl.addWidget(clear_btn)
+
+        gear_btn = QToolButton()
+        gear_btn.setIcon(load_icon("settings"))
+        gear_btn.setToolTip("设置")
+        gear_btn.setPopupMode(QToolButton.InstantPopup)
+        gear_menu = QMenu(gear_btn)
+        gear_menu.addAction("系统声音", lambda: open_sound_panel(logger))
+        gear_menu.addAction("虚拟声卡",
+                            lambda: _virtual_mic_dialog(logger, window))
+        gear_menu.addSeparator()
+
+        def _check(text, key, default, toggler):
+            a = QAction(text, window)
+            a.setCheckable(True)
+            a.setChecked(config.get(key, default))
+            a.triggered.connect(toggler)
+            gear_menu.addAction(a)
+
+        _check("快捷键 (右Alt+>)", "hotkey_enabled", True,
+               lambda: toggle_hotkey(config, logger))
+        _check("启动时自动运行", "auto_start", False,
+               lambda: toggle_auto_start(config, logger))
+        _check("开机自启", "registry_auto_start", False,
+               lambda: self._toggle_boot(logger))
+        gear_menu.addSeparator()
+        gear_menu.addAction("关于", lambda: self._show_about(window))
+        gear_btn.setMenu(gear_menu)
+        hl.addWidget(gear_btn)
 
         window.add_widget(header, stretch=0)
         window.add_widget(fxp, stretch=1)
@@ -2063,8 +2079,6 @@ class MainApp:
         _state.config = config
         self._apply_style()
 
-        # 启动时根据配置应用主题（palette 在窗口创建后由 _sync_theme_ui 统一处理）
-
         logger = Logger()
         _state.logger = logger
         QTimer.singleShot(3000, lambda: add_firewall_rule(logger))
@@ -2074,10 +2088,9 @@ class MainApp:
         window = MainWindow(config, logger)
         _state.root = window
         self._window = window
-        self._create_menu(window, config, logger)
 
-        # 统一同步主题（palette + 标题栏 + 菜单栏）
-        _sync_theme_ui(app, config)
+        # 统一应用唯一主题（palette + 深色标题栏）
+        _apply_theme(app)
 
         res = getattr(sys, '_MEIPASS', os.path.dirname(sys.executable)) if getattr(sys, 'frozen', False) else os.path.dirname(os.path.abspath(__file__))
         ion, ioff = self._setup(window, res, config)

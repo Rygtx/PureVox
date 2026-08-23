@@ -129,8 +129,6 @@ class ConfigDefaults:
     # 服务器
     server_enabled: bool = False
     server_port: int = 59123
-    # 主题
-    theme: str = "system"  # "system" / "light" / "dark"
     # 启动 / 快捷键
     auto_start: bool = False
     registry_auto_start: bool = False
@@ -204,7 +202,6 @@ class ConfigDefaults:
             "tse_reference_wav_path": instance.tse_reference_wav_path,
             "server_enabled": instance.server_enabled,
             "server_port": instance.server_port,
-            "theme": instance.theme,
             "auto_start": instance.auto_start,
             "registry_auto_start": instance.registry_auto_start,
             "hotkey_enabled": instance.hotkey_enabled,
@@ -295,7 +292,6 @@ class ConfigManager:
         "monitor_device_sndio", "aec_far_sink_sndio",
         "tse_reference_wav_path",
         "server_enabled", "server_port",
-        "theme",
         "auto_start", "registry_auto_start", "hotkey_enabled",
         "vbcable_check_enabled",
         "eq_preset_0", "eq_preset_1", "eq_preset_2", "eq_preset_3",
