@@ -25,8 +25,6 @@ PureVox 音频处理核心模块。
 - 音频设备枚举与 WASAPI Core Audio 辅助工具
 """
 
-import ctypes
-from ctypes import wintypes, POINTER, byref, cast, c_void_p
 import io
 import math
 import os
@@ -50,7 +48,7 @@ _module_log = print
 # 平台抽象层：SpeakerCapture 工厂 + 公共件（RingBuffer/常量/日志，避免循环导入）
 from pvplatform import IS_LINUX
 from pvplatform.audio import create_speaker_capture
-from pvplatform.audio.common import SAMPLE_RATE as _SAMPLE_RATE, HOP_LENGTH as _HOP_LENGTH, set_module_log as _set_common_log
+from pvplatform.audio.common import set_module_log as _set_common_log
 
 if IS_LINUX:
     from pvplatform.audio.pwpipe_client import PwBridge as _PwBridge

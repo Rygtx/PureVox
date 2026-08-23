@@ -22,10 +22,10 @@ TSE 参考音频弹框（独立模块，避免膨胀 ui_pyside6）。
   - RecordButton         录音按钮（倒计时 + 进度动画）
   - TseReferenceDialog   弹框：录音（动画）+ 播放 + 文件信息
 
-弹框内完成录音：未运行处理时自动以降噪模式启动临时会话采集参考，录完自动停。
+弹框内完成录音：未运行处理时自动启动临时会话采集参考，录完自动停。
 打开方式（见 ui_pyside6）：
-  1. TSE 模式启动时检测到无参考音频 → 弹框
-  2. 主界面「参考音频…」按钮 → 弹框
+  1. TSE 插件启用且无参考音频时提示
+  2. 节点行「参考音频…」按钮 → 弹框
 """
 
 import os
@@ -43,7 +43,7 @@ from audio_processor import (
 )
 
 # ui_pyside6 只在运行期导入（其内部打开本模块是懒加载，避免循环依赖）
-from ui_pyside6 import _state, start_processing, stop_processing, MODE_TSE, MODE_DENOISE
+from ui_pyside6 import _state, start_processing, stop_processing
 
 
 class RecordButton(QPushButton):
@@ -235,38 +235,21 @@ class TseReferenceDialog(QDialog):
         if self._recording:
             return
         self._auto_stop_after_record = False
-        saved_mode = MODE_DENOISE
-        if _state.main_panel is not None:
-            saved_mode = getattr(_state.main_panel, '_mode', MODE_DENOISE)
 
-        # 未运行：自动以降噪模式启动临时会话（采集参考音频），录完自动停
+        # 未运行：自动启动临时会话采集参考音频，录完自动停
         if not _state.is_processing:
             try:
-                if _state.main_panel is not None:
-                    _state.main_panel._mode = MODE_DENOISE
-                self._config.set("mode", MODE_DENOISE)
                 start_processing(_state, self._log)
             except Exception as e:
                 self._log.err(f"自动启动失败: {e}")
-            finally:
-                if _state.main_panel is not None:
-                    _state.main_panel._mode = saved_mode
             if not _state.is_processing:
-                self._log.err("录音需要音频处理可用（请检查麦克风/输出配置）")
+                self._log.err("录音需要音频处理可用（请检查节点链中的输入/输出）")
                 return
             self._auto_stop_after_record = True
 
         th = _state.processing_thread
         if not th:
             return
-
-        # 切到降噪模式录制（TSE 需要参考，录音是采集参考）
-        if saved_mode == MODE_TSE:
-            try:
-                th.processor.set_mode(1)  # 降噪模式
-                th.set_tse_audio_hook(None)
-            except Exception:
-                pass
 
         th.set_recording_hook(lambda s: _recorder.feed(list(s)))
         self._recording = True
@@ -315,10 +298,9 @@ class TseReferenceDialog(QDialog):
                     self._log.tse("参考音频已保存并加载")
                 except Exception as e:
                     self._log.err(f"参考音频加载失败: {e}")
-            # 恢复到 TSE 模式（参考已加载，立即生效）
-            if th and getattr(_state.main_panel, '_mode', None) == MODE_TSE:
+            # 参考已加载：重新挂 TSE 音频钩子，链中启用的 tse 插件立即生效
+            if th:
                 try:
-                    th.processor.set_mode(3)
                     register_tse_audio_hook(th, self._log)
                 except Exception:
                     pass

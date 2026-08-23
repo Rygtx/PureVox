@@ -21,14 +21,11 @@
 更新日志是唯一维护位置：无独立 CHANGELOG.md 文件，发版时直接在 CHANGELOG_TEXT 顶部追加。
 """
 
-import sys
-
 from PySide6.QtWidgets import (
-    QDialog, QVBoxLayout, QLabel, QPushButton,
+    QDialog, QVBoxLayout,
     QTextBrowser, QWidget, QTabWidget, QApplication
 )
-from PySide6.QtCore import Qt, QUrl
-from PySide6.QtGui import QColor, QDesktopServices
+from PySide6.QtCore import Qt
 
 try:
     from _build_version import BUILD_DATE
@@ -360,6 +357,14 @@ AGC、VAD，31 段均衡器在菜单「设置 → 均衡器」打开。</p>
 # ── 更新日志（中文，唯一维护位置：发版时在顶部追加）──
 
 CHANGELOG_TEXT = """# 更新日志
+
+## 2026-08-23 — 移除 cpython git 子模块，引导脚本按需下载源码包
+
+- **packages/cpython 子模块整体移除**：Linux 内嵌 Python 3.12 改由
+  bootstrap_python312.sh 按需下载官方 CPython@v3.12.11 tarball 后一次性编译
+  （缓存于 ~/.cache/purevox，PUREVOX_CPYTHON_TARBALL 可指定离线包），
+  克隆仓库不再需要 submodule 步骤
+- CI 缓存 key 由「子模块 SHA」固定为 cpython 版本号；checkout 不再拉子模块
 
 ## 2026-08-23 — 传输后端插件化（架构升级 · 第一阶段）
 

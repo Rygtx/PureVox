@@ -20,16 +20,14 @@ PySide6 Main UI
 """
 
 import asyncio
-import ctypes
 import os
-import socket
 import subprocess
 import sys
 import math
 import threading
 import time
 from dataclasses import dataclass, field
-from typing import Any, Callable, List, Optional, Tuple
+from typing import Any, List, Optional, Tuple
 
 # 平台抽象层（win32 依赖仅在 Windows 上延迟导入，避免 Linux 上 import 即崩）
 from pvplatform.system import (
@@ -39,27 +37,26 @@ from pvplatform.system import (
     system_accent_color, set_titlebar_theme,
     run_as_admin as _sys_run_as_admin,
 )
-from pvplatform import IS_WINDOWS, IS_LINUX, IS_MACOS
+from pvplatform import IS_WINDOWS, IS_LINUX, IS_MACOS  # IS_MACOS 预留：macOS 支持恢复时使用
 
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QGridLayout, QLabel, QPushButton, QComboBox, QCheckBox,
-    QSlider, QSizePolicy, QSystemTrayIcon, QMenu, QButtonGroup,
+    QSlider, QSystemTrayIcon, QMenu,
     QLineEdit, QDialog, QFrame, QScrollArea,
 )
-from PySide6.QtCore import Qt, QTimer, Signal, QSize, QRectF, QUrl
-from PySide6.QtGui import QIcon, QAction, QFont, QColor, QPalette, QPainter, QPainterPath, QPixmap, QPen, QDesktopServices
+from PySide6.QtCore import Qt, QTimer, Signal, QSize, QRectF
+from PySide6.QtGui import QIcon, QAction, QFont, QColor, QPalette, QPainter, QPixmap, QPen
 from PySide6.QtWidgets import QMessageBox
 
 from audio_processor import (
-    get_local_lan_ip, get_device_names, get_device_id,
-    API_TYPE_WASAPI, API_TYPE_NETWORK, get_api_name_by_type,
-    device_config_suffix,
-    get_platform_api_options, default_api_type,
+    get_device_names, get_device_id,
+    API_TYPE_NETWORK, get_api_name_by_type,
+    default_api_type,
     create_audio_processor, start_audio_stream, HOP_LENGTH,
     load_tse_reference,
-    register_tse_audio_hook, _recorder,
-    _samples_to_wav_bytes, CFG_REF_WAV_PATH,
+    register_tse_audio_hook,
+    CFG_REF_WAV_PATH,
 )
 from session_plan import SessionPlan
 try:
@@ -69,8 +66,8 @@ except ImportError:
 # pyaudio（PortAudio）仅 Windows/macOS 专用；Linux 全程原生 PipeWire，
 # 本模块对 pyaudio 的引用都在 Linux 不可达的 48k 检测分支内。
 from config_manager import ConfigManager
-from logger import Logger, log, get_logger
-from model_config import DENOISE_MODEL, TSE_MODEL, AEC_MODEL
+from logger import Logger, get_logger
+from model_config import DENOISE_MODEL
 
 from server.https_server import PureVoxServer
 
@@ -684,6 +681,7 @@ class PluginPanel(QWidget):
     """统一节点面板：输入/处理/输出/可视化全部以可增删排序的行呈现。"""
 
     chainChanged = Signal(list)
+    structureChanged = Signal()   # 端点签名变化（DESIGN.md §7）→ 触发自动重启
 
     def __init__(self, config, saver=None, get_processor=None,
                  get_devices=None, logger=None, parent=None):
@@ -767,6 +765,7 @@ class PluginPanel(QWidget):
                     sw.setMinimumHeight(120)
                     row.set_body(sw)
         self._renumber()
+        self._last_sig = self._signature()
 
     def refresh_devices(self):
         devs = self._get_devices()
@@ -780,6 +779,11 @@ class PluginPanel(QWidget):
     def _renumber(self):
         for i, r in enumerate(self._rows):
             r.row_index = i
+
+    def _signature(self):
+        """端点签名（DESIGN.md §7）：变化 ⇒ 结构类变更 ⇒ 需要重启音频流。"""
+        p = SessionPlan.from_chain(self.to_config())
+        return (p.inputs, p.outputs, p.remote_url)
 
     # ── 启动流程访问器 ──
     def _enabled_rows_of(self, ptype):

@@ -20,9 +20,9 @@ jobs:
           # Universal packages: deb (Ubuntu) + AppImage; fedora -> rpm; python3.12 baseline.
           - distro: ubuntu-22.04
             container: ubuntu:22.04
-            # libssl-dev: the AppImage job compiles the embedded CPython from the
-            # packages/cpython submodule; without ssl headers that interpreter's
-            # pip has no networking, so bootstrap_python312.sh fails.
+            # libssl-dev: the AppImage job compiles the embedded CPython
+            # (downloaded tarball, see bootstrap_python312.sh); without ssl
+            # headers that interpreter's pip has no networking, so bootstrap fails.
             # libffi-dev: the embedded CPython needs libffi to build the `_ctypes`
             # module (pulsectl ctypes binding depends on it). Without it
             # the compiled interpreter has no _ctypes and the GUI crashes on import
@@ -45,9 +45,7 @@ jobs:
       image: ${{ matrix.container }}
     steps:
       # Install system dependencies BEFORE checkout: containers have no git, so
-      # actions/checkout would fall back to the REST API download (no .git dir),
-      # which does NOT support `submodules`. With git present it does a real
-      # clone and can fetch packages/cpython (needed only by the AppImage job).
+      # actions/checkout would fall back to the REST API download (no .git dir).
       - name: Install system dependencies
         run: |
           if [ -n "${{ matrix.sysdeps }}" ]; then
@@ -60,9 +58,8 @@ jobs:
           fi
 
       - uses: actions/checkout@v5
-        with:
-          # Only the AppImage job needs the cpython submodule; shallow clone stays cheap.
-          submodules: ${{ matrix.pkg_appimage && 'recursive' || 'false' }}
+        # cpython 子模块已移除：bootstrap_python312.sh 按需下载官方源码包
+        # （版本锁定 3.12.11，~/.cache/purevox 可跨任务缓存）
 
       - name: Set build timestamp (tag v* -> tag version; else now)
         id: ts
@@ -82,16 +79,14 @@ jobs:
             || $PY -m pip install --break-system-packages numpy onnxruntime scipy pyside6 zeroconf aiohttp opuslib cryptography pillow || true
 
       # ── 预置缓存：避免每次 CI 重复下载/编译（2026-08-22 纯 py 迁移）──
-      - name: Read cpython submodule SHA (cache key)
-        if: matrix.pkg_appimage
-        id: submod
-        run: echo "sha=$(git rev-parse HEAD:packages/cpython)" >> "$GITHUB_OUTPUT"
-      - name: Cache embedded python312 build (skip CPython recompile)
+      - name: Cache embedded python312 build + cpython tarball (skip recompile)
         if: matrix.pkg_appimage
         uses: actions/cache@v4
         with:
-          path: packages/python312
-          key: py312-embedded-ubuntu22-${{ steps.submod.outputs.sha }}
+          path: |
+            packages/python312
+            ~/.cache/purevox
+          key: py312-embedded-ubuntu22-cpython-3.12.11
       - name: Cache appimagetool binary
         if: matrix.pkg_appimage
         uses: actions/cache@v4

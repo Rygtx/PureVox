@@ -22,7 +22,7 @@ UI 启动流程调用 from_chain 得到计划；ok() 为假展示 problems 并�
 为真则把字段分发给传输层（AudioThread/PwBridge）与引擎（set_plugins）。
 """
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import List, Optional, Tuple
 
 from pvengine.plugins import get_spec

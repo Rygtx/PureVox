@@ -50,14 +50,15 @@ Windows / Linux 桌面应用 + Android 客户端：实时 AI 音频降噪 / 目�
 ## 运行 / 构建
 
 **内嵌 Python 3.12（推荐，独立于系统环境）**：本项目可自带独立 Python 3.12，
-与系统 Python 完全隔离。Windows 走 NuGet 下载预编译包；Linux 源码以 **git 子模块**
-`packages/cpython`（CPython@v3.12.11）锁定，由引导脚本 out-of-tree 一次性编译。
+与系统 Python 完全隔离。Windows 走 NuGet 下载预编译包；Linux 源码由引导脚本
+**按需下载官方 CPython@v3.12.11 tarball**（一次性，缓存于 `~/.cache/purevox`，
+可用 `PUREVOX_CPYTHON_TARBALL` 指定离线包）后 out-of-tree 一次性编译。
 产物统一放 `packages/`。
 
-- 克隆后先 `git submodule update --init --depth 1 packages/cpython` 拉子模块
 - `./bootstrap_python312.sh`（Linux，幂等）→ 生成自包含 `packages/python312/` + 装依赖
 - `./bootstrap_python312.ps1`（Windows）→ 生成 `packages\python312w\`（NuGet 完整版，含头文件/链接库）
 - 内嵌解释器与系统 Python 互相独立；`packages/python312*`、`.py312-src/` 不进版本库（gitignore）
+- **不再使用 git 子模块**（2026-08-23 移除 packages/cpython）：CI 缓存 key 固定为 cpython 版本号
 
 ### Windows (PowerShell)
 
@@ -132,7 +133,7 @@ cd android
 - **外部下载全部预置化（2026-08-22）**：`server/opus.dll`（预编译 libopus，BSD）
   直接提交进仓库（`.gitignore` 对其白名单），CI 与本地开发均不再下载；
   Linux 内嵌 python312 编译产物与 appimagetool 二进制走 `actions/cache`
-  （key 分别为 cpython 子模块 SHA 与固定版本）；Android opus 源码 zip 同样缓存。
+  （key 分别为固定 cpython 版本号与固定版本）；Android opus 源码 zip 同样缓存。
   本地开发 `pack_appimage.sh` 复用 `~/.cache/purevox/appimagetool`，也可用
   `PUREVOX_APPIMAGETOOL` 环境变量指定
 - **Linux 的 opus**：opuslib 经 `ctypes.util.find_library('opus')` 加载**系统**
@@ -144,12 +145,12 @@ cd android
   移到 Ubuntu 上构建可靠性下降；分开还有并行收益与故障隔离
   （一个发行版坏不掉其他产物）。AppImage 在 ubuntu job 内（best-effort，
    `continue-on-error: true`），捆绑内嵌 python312——该 job 需先装 `libssl-dev`
-  （否则子模块编译出的 CPython 无 ssl 模块，pip 无网络，`bootstrap_python312.sh` 失败）
+  （否则编译出的 CPython 无 ssl 模块，pip 无网络，`bootstrap_python312.sh` 失败）
   与 `file`（appimagetool 打包必需），并确保 `PyAudio` 不在 Linux 依赖里
   （已移到 `requirements-win.txt`，否则编译缺 `portaudio.h` 让 AppImage 静默失败）。
 - **CI 踩坑（实测细节补充，避免重踩）**：
   - 容器 job 在 checkout 前先装系统依赖（含 `git`）——REST API 下载不支持 submodules；
-    AppImage job 才拉 `packages/cpython` 子模块
+    cpython 子模块已移除（2026-08-23），bootstrap 按需下载 tarball
   - appimagetool 容器无 FUSE → 用 `--appimage-extract-and-run`；`.desktop` 要在
     AppDir 根目录放一份；图标用 `audio_icon_base_on_1024.png` 直接生成 256/512 png
   - `pack_deb.sh` 末尾 `| head` 会 SIGPIPE(141) 使 `sh -e` 退出 → 补 `|| true`

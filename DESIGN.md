@@ -173,7 +173,30 @@ class BackendSpec:
 | fx 插件实例化失败 | 该节点不入管线，记入 plugin_errors，其余继续 |
 | 传输中断线 | 健康检查重建有限次；用尽后停线程（继承既有策略） |
 
-## 7. 扩展指南
+## 7. 变更生效矩阵（热更 vs 重启）
+
+原则：**参数类变更热更，结构类（端点绑定）变更重启**。
+结构类变更在处理运行中触发时，UI 以防抖（400ms）自动执行
+`stop_processing → start_processing`（`restart_processing`，带重入保护），
+用户无感知手工操作；未运行则仅保存配置，下次启动生效。
+
+| 变更 | 生效方式 | 机制 |
+|---|---|---|
+| fx 参数滑杆 | 热更 | `update_plugin_param` 直达运行实例 |
+| fx 行启用/停用 | 热更 | `stage.enabled`；AEC 特例：动态起停扬声器采集 |
+| fx 行增删/排序 | 热更 | 整链 `set_plugins` 重建（模型经 stage_cache 复用，不断流） |
+| EQ 增益/预设 | 热更 | eq 插件参数 |
+| TSE 参考录音/加载 | 热更 | `set_tse_reference` |
+| viz 行启停 | 热更 | UI tap 开关，不进引擎 |
+| 输入/输出设备选择 | 重启（自动） | 流绑定于 open() 时的设备名 |
+| remote_mic 地址 | 重启（自动） | 服务器注入路径绑定 |
+| audio_input/output 行启停/增删/排序 | 重启（自动） | 端点集合变化 |
+| 传输后端切换 | 重启（自动） | 后端在 open 时绑定 |
+
+判定规则（代码层）：`SessionPlan.from_chain` 的签名三元组
+`(inputs, outputs, remote_url)` 发生变化 ⇒ 结构类变更。
+
+## 8. 扩展指南
 
 新增 **fx 处理插件**：
 1. `pvengine/components/` 新建 Stage（process/reset/release 契约）。
@@ -189,7 +212,7 @@ class BackendSpec:
 4. `session_plan` 单测 + UI 冒烟断言。
 5. 更新日志追加一行。
 
-## 8. 平台差异矩阵
+## 9. 平台差异矩阵
 
 | 能力 | Linux (PipeWire) | Windows (PortAudio) |
 |---|---|---|

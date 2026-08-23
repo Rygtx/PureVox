@@ -1,36 +1,50 @@
 #!/bin/sh
 # PureVox — 内嵌 Python 3.12 引导脚本（Linux）
-# 从 git 子模块 packages/cpython（CPython@v3.12.11）一次性编译出自包含的
+# 下载 CPython 3.12.11 官方源码包（一次性，可缓存），编译出自包含的
 # packages/python312/（独立于系统 Python）。幂等：已生成则跳过构建，
-# 仅补齐依赖。编译在 .py312-src/build 下进行，不污染子模块工作区。
+# 仅补齐依赖。不再依赖 git 子模块——源码包按需拉取。
 #
 # 用法: ./bootstrap_python312.sh
+# 环境变量:
+#   PUREVOX_CPYTHON_TARBALL  预置的源码包路径（离线/内网用）
 set -e
 
 APP_DIR="$(cd "$(dirname "$0")" && pwd)"
-SUBMOD="$APP_DIR/packages/cpython"
 PREFIX="$APP_DIR/packages/python312"
-BUILD_DIR="$APP_DIR/.py312-src/build"
+BUILD_DIR="$APP_DIR/.py312-src"
 PY_MAJOR=3.12
 PY_BIN="$PREFIX/bin/python$PY_MAJOR"
+
+PY_VER=3.12.11
+TARBALL_NAME="Python-${PY_VER}.tgz"
+TARBALL_URL="https://www.python.org/ftp/python/${PY_VER}/${TARBALL_NAME}"
+CACHE_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/purevox"
+TARBALL="${PUREVOX_CPYTHON_TARBALL:-$CACHE_DIR/$TARBALL_NAME}"
 
 # 内嵌解释器自带 libpython3.12.so，需让子进程找到它（独立于系统环境）
 export LD_LIBRARY_PATH="$PREFIX/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 
-# 1. 初始化子模块（若仓库尚未拉取子模块）
-if [ ! -f "$SUBMOD/configure" ]; then
-    echo "==> 初始化 git 子模块 packages/cpython ..."
-    git -C "$APP_DIR" submodule update --init --depth 1 packages/cpython
+# 1. 获取 CPython 源码包（一次性；已缓存则直接复用）
+if [ ! -f "$TARBALL" ]; then
+    echo "==> 下载 CPython ${PY_VER} 源码包 ..."
+    mkdir -p "$(dirname "$TARBALL")"
+    if command -v curl >/dev/null 2>&1; then
+        curl -fL -o "$TARBALL.part" "$TARBALL_URL"
+    else
+        wget -O "$TARBALL.part" "$TARBALL_URL"
+    fi
+    mv "$TARBALL.part" "$TARBALL"
 fi
 
-# 2. 编译内嵌 Python（若未生成；可断点续编：已有 build 目录就直接 make）
+# 2. 编译内嵌 Python（若未生成；可断点续编：已有 Makefile 就直接 make）
 if [ ! -x "$PY_BIN" ]; then
-    echo "==> 从子模块编译 Python 3.12.11 到 $PREFIX ..."
+    SRC="$BUILD_DIR/Python-${PY_VER}"
+    echo "==> 从源码编译 Python ${PY_VER} 到 $PREFIX ..."
+    rm -rf "$SRC"
     mkdir -p "$BUILD_DIR"
-    cd "$BUILD_DIR"
-    if [ ! -f Makefile ]; then
-        "$SUBMOD/configure" --prefix="$PREFIX" --enable-shared --with-ensurepip=install
-    fi
+    tar -xzf "$TARBALL" -C "$BUILD_DIR"
+    cd "$SRC"
+    ./configure --prefix="$PREFIX" --enable-shared --with-ensurepip=install
     make -j"$(nproc)"
     make install
     cd "$APP_DIR"
