@@ -25,6 +25,7 @@ import os
 import socket
 import subprocess
 import sys
+import math
 import threading
 import time
 from dataclasses import dataclass, field
@@ -297,6 +298,7 @@ def _set_titlebar_theme(hwnd: int, dark: bool) -> None:
 _VU_DB_MIN, _VU_DB_MAX = -60.0, 0.0
 _VU_DB_RNG = _VU_DB_MAX - _VU_DB_MIN
 _VU_PEAK_FALL = 20.0
+_VU_PEAK_HOLD = 10.0
 _VU_TICKS = [-60, -54, -48, -42, -36, -30, -24, -18, -12, -6, 0]
 _VU_GREEN = QColor("#00cc44")
 _VU_YELLOW = QColor("#cccc00")
@@ -325,7 +327,7 @@ class VUBar(QWidget):
         dt = now - self._t
         self._t = now
         peak = max(max(abs(x) for x in samples), 1e-10)
-        db = 20.0 * _math.log10(peak)
+        db = 20.0 * math.log10(peak)
         self._db = db
         if self._db > self._peak:
             self._peak = self._db
@@ -1577,7 +1579,7 @@ def _feed_visualizer(state):
         if vu is not None:
             peak = getattr(th, '_vu_peak', 0.0)
             if peak > 0:
-                vu.update_level_db(20.0 * _math.log10(max(peak, 1e-10)))
+                vu.update_level_db(20.0 * math.log10(max(peak, 1e-10)))
         # 频谱直方图（只在可见时更新；控件来自 spectrum 节点行）
         spec = fxp.spectrum_widget() if fxp else None
         if spec is not None and spec.isVisible():
