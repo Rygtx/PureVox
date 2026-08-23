@@ -20,7 +20,7 @@
 修改模型时只需改这个文件，所有引用处自动同步。
 """
 
-# ── ONNX 模型文件名 ──
-DENOISE_MODEL = "v9_fft2048_band256_epoch_261.onnx"
-AEC_MODEL = "aec9_ep0544.onnx"
-TSE_MODEL = "tse15_stream_ep_0673.onnx"
+# ── ONNX 模型（相对应用根目录，仓库与打包产物同布局：models/）──
+DENOISE_MODEL = "models/v9_fft2048_band256_epoch_261.onnx"
+AEC_MODEL = "models/aec9_ep0544.onnx"
+TSE_MODEL = "models/tse15_stream_ep_0673.onnx"

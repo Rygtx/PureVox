@@ -234,11 +234,24 @@ class TsePlugin(_AiPluginBase):
 
 # ── 工具函数 ──
 def _model_file(name):
-    """按模型文件名定位：仓库根（源码态）→ 引擎目录（打包态）。"""
-    import os
+    """按模型相对路径定位：PyInstaller 资源目录 → 仓库根 → CWD。
+
+    name 形如 "models/xxx.onnx"（见 model_config.py）；各打包形态
+    （源码 / deb / rpm / AppImage / PyInstaller）均把 models/ 放在应用根，
+    PyInstaller 冻结态资源在 sys._MEIPASS。全部落空时原样返回
+    （保持旧行为：交给调用方按异常报告）。
+    """
+    import os, sys
     here = os.path.dirname(os.path.abspath(__file__))
-    for base in (os.path.dirname(os.path.dirname(os.path.dirname(here))), here,
-                 os.path.dirname(here)):
+    bases = []
+    meipass = getattr(sys, "_MEIPASS", None)
+    if meipass:
+        bases.append(meipass)
+    # 源码态仓库根 = pvengine/components 上三级；打包态为应用根附近目录
+    bases.append(os.path.dirname(os.path.dirname(os.path.dirname(here))))
+    bases.append(here)
+    bases.append(os.path.dirname(here))
+    for base in bases:
         cand = os.path.join(base, name)
         if os.path.isfile(cand):
             return cand

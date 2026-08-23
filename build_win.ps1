@@ -32,7 +32,7 @@ Set-Content _build_version.py "BUILD_DATE = `"$date`"" -Encoding UTF8
 # 2. PyInstaller packaging
 #    lazy-imported modules must be hidden-import (function-level `from xx import` is not
 #    discovered statically)
-& $PY -m PyInstaller --clean --name PureVox --noconsole --icon=audio_icon_on.ico `
+& $PY -m PyInstaller --clean --name PureVox --noconsole --icon=assets\icons\audio_icon_on.ico `
     --hidden-import=pyaudio `
     --hidden-import=audio_processor `
     --hidden-import=dialog_about `
@@ -42,9 +42,9 @@ Set-Content _build_version.py "BUILD_DATE = `"$date`"" -Encoding UTF8
     --hidden-import=wav_io `
     --hidden-import=dialog_vbcable_check `
     --hidden-import=pvplatform.audio.pwpipe_client `
-    --add-data="*.onnx;." `
-    --add-data="audio_icon_on.ico;." `
-    --add-data="audio_icon_off.ico;." `
+    --add-data="models\*.onnx;models" `
+    --add-data="assets\icons\audio_icon_on.ico;assets\icons" `
+    --add-data="assets\icons\audio_icon_off.ico;assets\icons" `
     --add-data="html\*.html;html\" `
     --add-data="html\css\*.css;html\css\" `
     --add-data="html\js\*.js;html\js\" `

@@ -54,7 +54,7 @@ if not acquire_single_instance("PureVox"):
         from PySide6.QtGui import QIcon
         _app = QApplication(sys.argv)
         _res = getattr(sys, '_MEIPASS', os.path.dirname(sys.executable)) if getattr(sys, 'frozen', False) else os.path.dirname(os.path.abspath(__file__))
-        _ico = os.path.join(_res, "audio_icon_off.ico")
+        _ico = os.path.join(_res, "assets", "icons", "audio_icon_off.ico")
         _box = QMessageBox()
         _box.setWindowTitle("PureVox")
         _box.setText("PureVox 已在运行，请勿重复启动。")

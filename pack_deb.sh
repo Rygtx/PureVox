@@ -46,17 +46,18 @@ mkdir -p "$ROOT/opt/purevox" \
          "$ROOT/usr/share/icons/hicolor/256x256/apps" \
          "$ROOT/DEBIAN"
 
-echo "==> 拷贝源码/模型/图标"
+echo "==> 拷贝源码/图标"
 for f in \
     audio_processor.py config_manager.py dialog_about.py dialog_eq.py logger.py \
     model_config.py run_pyside6.py spectrum_histogram.py theme_colors.py \
     dialog_tse_reference.py dialog_virtual_mic_linux.py ui_pyside6.py \
     user_paths.py wav_io.py \
-    aimic.py \
-    aec9_ep0544.onnx tse15_stream_ep_0673.onnx v9_fft2048_band256_epoch_261.onnx \
-    audio_icon_off.ico audio_icon_on.ico; do
+    aimic.py; do
     cp "$f" "$ROOT/opt/purevox/"
 done
+mkdir -p "$ROOT/opt/purevox/models" "$ROOT/opt/purevox/assets/icons"
+cp models/*.onnx "$ROOT/opt/purevox/models/"
+cp assets/icons/*.ico "$ROOT/opt/purevox/assets/icons/"
 
 echo "==> 捆绑内嵌 Python 3.12（packages/python312，含 PySide6 等全部 Python 依赖）"
 # 与 pack_appimage.sh 一致：若内嵌 python 未编译则先引导（幂等）。CI 的
@@ -76,7 +77,7 @@ if [ ! -e "$ROOT/opt/purevox/python312/lib/libcrypt.so.2" ] && \
 fi
 
 echo "==> 瘦身 PySide6（应用只用 QtWidgets/QtCore/QtGui，砍掉 qml/3D/Charts 等冗余，560M→~112M）"
-bash scripts/slim_pyside6.sh "$ROOT/opt/purevox/python312/lib/python3.12/site-packages/PySide6"
+bash tools/slim_pyside6.sh "$ROOT/opt/purevox/python312/lib/python3.12/site-packages/PySide6"
 
 echo "==> 拷贝 html/"
 cp -r html "$ROOT/opt/purevox/"
@@ -128,11 +129,11 @@ StartupNotify=false
 EOF
 
 echo "==> 图标 (ico → png)"
-magick audio_icon_on.ico[0] -resize 256x256 \
+magick assets/icons/audio_icon_on.ico[0] -resize 256x256 \
     "$ROOT/usr/share/icons/hicolor/256x256/apps/purevox.png" 2>/dev/null \
  || python3 -c "
 from PIL import Image
-im = Image.open('audio_icon_on.ico')
+im = Image.open('assets/icons/audio_icon_on.ico')
 im = im.convert('RGBA').resize((256, 256), Image.LANCZOS)
 im.save('$ROOT/usr/share/icons/hicolor/256x256/apps/purevox.png')
 "

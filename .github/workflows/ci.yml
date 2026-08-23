@@ -101,7 +101,7 @@ jobs:
           import sys, os
           import numpy as np
           import aimic
-          ap = aimic.AudioProcessor(0.0, 'v9_fft2048_band256_epoch_261.onnx')
+          ap = aimic.AudioProcessor(0.0, 'models/v9_fft2048_band256_epoch_261.onnx')
           x = (np.sin(np.arange(1024) * 0.05) * 0.3).astype('float32')
           out = ap.process(x.tolist())
           assert len(out) == 1024
@@ -208,7 +208,7 @@ jobs:
       - name: Smoke import engine (pure Python, loads the denoise model)
         shell: pwsh
         run: |
-          python -c "import aimic, numpy as _np; ap = aimic.AudioProcessor(0.0, 'v9_fft2048_band256_epoch_261.onnx'); out = ap.process([0.0] * 1024); assert len(out) == 1024; print('pvengine OK on Python', __import__('sys').version.split()[0])"
+          python -c "import aimic, numpy as _np; ap = aimic.AudioProcessor(0.0, 'models/v9_fft2048_band256_epoch_261.onnx'); out = ap.process([0.0] * 1024); assert len(out) == 1024; print('pvengine OK on Python', __import__('sys').version.split()[0])"
 
       - name: Upload Windows bundle
         uses: actions/upload-artifact@v7.0.1

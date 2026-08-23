@@ -35,11 +35,12 @@ for f in \
     audio_processor.py config_manager.py dialog_about.py dialog_eq.py logger.py \
     model_config.py run_pyside6.py spectrum_histogram.py theme_colors.py \
     dialog_tse_reference.py ui_pyside6.py user_paths.py wav_io.py \
-    aimic.py \
-    aec9_ep0544.onnx tse15_stream_ep_0673.onnx v9_fft2048_band256_epoch_261.onnx \
-    audio_icon_off.ico audio_icon_on.ico; do
+    aimic.py; do
     cp "$f" "$ROOT/opt/purevox/"
 done
+mkdir -p "$ROOT/opt/purevox/models" "$ROOT/opt/purevox/assets/icons"
+cp models/*.onnx "$ROOT/opt/purevox/models/"
+cp assets/icons/*.ico "$ROOT/opt/purevox/assets/icons/"
 
 echo "==> copy html/ server/ pvplatform/ pvengine/"
 cp -r html "$ROOT/opt/purevox/"
@@ -82,11 +83,11 @@ StartupNotify=false
 EOF
 
 echo "==> icon (ico -> png)"
-magick audio_icon_on.ico[0] -resize 256x256 \
+magick assets/icons/audio_icon_on.ico[0] -resize 256x256 \
     "$ROOT/usr/share/icons/hicolor/256x256/apps/purevox.png" 2>/dev/null \
  || python3 -c "
 from PIL import Image
-im = Image.open('audio_icon_on.ico')
+im = Image.open('assets/icons/audio_icon_on.ico')
 im = im.convert('RGBA').resize((256, 256), Image.LANCZOS)
 im.save('$ROOT/usr/share/icons/hicolor/256x256/apps/purevox.png')
 " 2>/dev/null || true

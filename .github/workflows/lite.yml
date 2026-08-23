@@ -44,13 +44,13 @@ jobs:
             requirements.txt
             requirements-win.txt
 
-      - name: Build Lite Denoiser exe (build_lite_local.ps1, single recipe local+CI)
+      - name: Build Lite Denoiser exe (build_lite_mic.ps1, single recipe local+CI)
         shell: pwsh
-        run: powershell -ExecutionPolicy Bypass -File build_lite_local.ps1
+        run: powershell -ExecutionPolicy Bypass -File build_lite_mic.ps1
 
-      - name: Build Lite Net exe (build_net_local.ps1, single recipe local+CI)
+      - name: Build Lite Net exe (build_lite_net.ps1, single recipe local+CI)
         shell: pwsh
-        run: powershell -ExecutionPolicy Bypass -File build_net_local.ps1
+        run: powershell -ExecutionPolicy Bypass -File build_lite_net.ps1
 
       - name: Upload Lite Denoiser bundle (onedir)
         uses: actions/upload-artifact@v7.0.1

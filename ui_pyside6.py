@@ -1990,8 +1990,8 @@ class MainApp:
 
     def _setup(self, window, res, config):
         _state.model_path = os.path.join(res, DENOISE_MODEL)
-        ion = os.path.join(res, "audio_icon_on.ico")
-        ioff = os.path.join(res, "audio_icon_off.ico")
+        ion = os.path.join(res, "assets", "icons", "audio_icon_on.ico")
+        ioff = os.path.join(res, "assets", "icons", "audio_icon_off.ico")
         _state.icon_on_path = ion
         _state.icon_off_path = ioff
         if os.path.exists(ioff):

@@ -358,6 +358,18 @@ AGC、VAD，31 段均衡器在菜单「设置 → 均衡器」打开。</p>
 
 CHANGELOG_TEXT = """# 更新日志
 
+## 2026-08-23 — 仓库结构整理：模型/图标/工具归位，命名清晰化
+
+- **models/**：根目录三个 ONNX 模型（降噪/AEC/TSE）归入 models/，
+  仓库与所有打包产物（deb/rpm/AppImage/PyInstaller）统一该布局
+- **assets/icons/**：应用图标（on/off ico 与 1024 基图）归入 assets/icons/
+- **Lite 应用改名**：lite_denoise_only → lite_mic（PureVox Lite）、
+  lite_net_only → lite_net（PureVox Net Lite）；构建脚本对齐为
+  build_lite_mic.ps1 / build_lite_net.ps1（原 build_lite_local/build_net_local）
+- **tools/ 收敛**：scripts/slim_pyside6.sh 与根目录 diagnose_wasapi.py 并入 tools/；
+  删除零引用残留 sal_fix.h、sfx_config.txt（旧 C 构建 / 7z SFX 打包时代产物）
+- 纯重命名与引用同步，无功能变化
+
 ## 2026-08-23 — 移除 cpython git 子模块，引导脚本按需下载源码包
 
 - **packages/cpython 子模块整体移除**：Linux 内嵌 Python 3.12 改由

@@ -34,11 +34,12 @@ for f in \
     audio_processor.py config_manager.py dialog_about.py dialog_eq.py logger.py \
     model_config.py run_pyside6.py spectrum_histogram.py theme_colors.py \
     dialog_tse_reference.py ui_pyside6.py user_paths.py wav_io.py \
-    aimic.py \
-    aec9_ep0544.onnx tse15_stream_ep_0673.onnx v9_fft2048_band256_epoch_261.onnx \
-    audio_icon_off.ico audio_icon_on.ico; do
+    aimic.py; do
     cp "$f" "$APPDIR/usr/lib/purevox/"
 done
+mkdir -p "$APPDIR/usr/lib/purevox/models" "$APPDIR/usr/lib/purevox/assets/icons"
+cp models/*.onnx "$APPDIR/usr/lib/purevox/models/"
+cp assets/icons/*.ico "$APPDIR/usr/lib/purevox/assets/icons/"
 cp -r pvengine "$APPDIR/usr/lib/purevox/"
 
 # 捆绑系统 libopus（opuslib 经 ctypes find_library 加载；AppImage 自带一份，
@@ -62,7 +63,7 @@ echo "==> bundle embedded Python 3.12"
 cp -a packages/python312 "$APPDIR/usr/python312"
 
 echo "==> slim PySide6 (same closure as deb, shared script)"
-bash scripts/slim_pyside6.sh "$APPDIR/usr/python312/lib/python3.12/site-packages/PySide6"
+bash tools/slim_pyside6.sh "$APPDIR/usr/python312/lib/python3.12/site-packages/PySide6"
 
 echo "==> desktop entry (AppImage needs it at AppDir root + usr/share/applications)"
 mkdir -p "$APPDIR/usr/share/applications"
@@ -79,12 +80,12 @@ cp "$APPDIR/usr/share/applications/$APP_NAME.desktop" "$APPDIR/$APP_NAME.desktop
 mkdir -p "$APPDIR/usr/share/icons/hicolor/256x256/apps" "$APPDIR/usr/share/icons/hicolor/512x512/apps"
 # 根目录 Icon 用 1024 源 PNG（桌面文件 Icon=purevox 要求 AppDir 根有 png/svg/xpm）
 if command -v magick >/dev/null; then
-    magick audio_icon_base_on_1024.png -resize 256x256 "$APPDIR/usr/share/icons/hicolor/256x256/apps/purevox.png"
-    magick audio_icon_base_on_1024.png -resize 512x512 "$APPDIR/usr/share/icons/hicolor/512x512/apps/purevox.png"
+    magick assets/icons/audio_icon_base_on_1024.png -resize 256x256 "$APPDIR/usr/share/icons/hicolor/256x256/apps/purevox.png"
+    magick assets/icons/audio_icon_base_on_1024.png -resize 512x512 "$APPDIR/usr/share/icons/hicolor/512x512/apps/purevox.png"
 else
     python3 -c "
 from PIL import Image
-im = Image.open('audio_icon_base_on_1024.png')
+im = Image.open('assets/icons/audio_icon_base_on_1024.png')
 im.convert('RGBA').resize((256,256), Image.LANCZOS).save('$APPDIR/usr/share/icons/hicolor/256x256/apps/purevox.png')
 im.convert('RGBA').resize((512,512), Image.LANCZOS).save('$APPDIR/usr/share/icons/hicolor/512x512/apps/purevox.png')
 "

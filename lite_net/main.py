@@ -1,11 +1,11 @@
-# PureVox Lite Denoise Only — 入口
+# PureVox Lite Net Only — 入口（网络输入 → 降噪 → 本地输出）
 # Copyright (C) 2024-2026 a2heng <752848283@qq.com>
 # SPDX-License-Identifier: GPL-3.0-or-later
 #
-# 零复用主线，仅复用自包含库 (onnxruntime, numpy, pyaudio)
-# 运行即启动，无启停
+# 零复用主线，仅复用自包含库 (onnxruntime, numpy, pyaudio, websockets, av,
+# cryptography, zeroconf)。运行即启动 WSS 服务，浏览器/Android 客户端推流，
+# 协议与主线一致（JSON + base64 opus + ack）
 
-import os
 import sys
 import ctypes
 
@@ -20,11 +20,10 @@ def ensure_single_instance():
             if err == 183:
                 try:
                     import tkinter.messagebox as mb
-                    # 需先创建隐藏 root
                     import tkinter as tk
                     r = tk.Tk()
                     r.withdraw()
-                    mb.showerror("PureVox Lite", "PureVox 已在运行（完整版或轻量版），不可同时启动。")
+                    mb.showerror("PureVox Net Lite", "PureVox 已在运行（完整版或轻量版），不可同时启动。")
                     r.destroy()
                 except Exception:
                     pass
@@ -33,7 +32,7 @@ def ensure_single_instance():
         except Exception:
             return None
     else:
-        # Linux: 文件锁
+        import os
         import fcntl
         path = os.path.join(os.path.expanduser("~"), ".purevox", "purevox.lock")
         os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -48,12 +47,12 @@ def ensure_single_instance():
 def set_autostart(enable):
     if sys.platform.startswith("win"):
         try:
+            import os
             import winreg
             key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\Microsoft\Windows\CurrentVersion\Run", 0, winreg.KEY_SET_VALUE | winreg.KEY_QUERY_VALUE)
             name = "PureVox"
             if enable:
                 exe = sys.executable
-                # lite 入口
                 script = os.path.join(os.path.dirname(__file__), "main.py")
                 cmd = f'"{exe}" "{script}"'
                 winreg.SetValueEx(key, name, 0, winreg.REG_SZ, cmd)
@@ -66,134 +65,148 @@ def set_autostart(enable):
         except Exception as e:
             print("autostart fail", e)
 
+def _die(msgbox_title, msg):
+    try:
+        import tkinter.messagebox as mb
+        import tkinter as tk
+        r = tk.Tk()
+        r.withdraw()
+        mb.showerror(msgbox_title, msg)
+        r.destroy()
+    except Exception:
+        print(msg)
+    sys.exit(1)
+
 def main():
-    mutex = ensure_single_instance()
-    # 独立配置
-    import os as _os, sys as _sys
-    _sys.path.insert(0, _os.path.dirname(__file__))
+    ensure_single_instance()
+    import os
+    sys.path.insert(0, os.path.dirname(__file__))
     from config import load, save
     import audio
     import engine
+    import net as netmod
 
     cfg = load()
-    ins, outs = audio.list_devices()
+    outs = audio.list_output_devices()
 
-    # 默认设备回退
-    if not cfg.get("input_device") and ins:
-        cfg["input_device"] = ins[0][0]
-    if not cfg.get("output_device") and outs:
-        cfg["output_device"] = outs[0][0]
-
-    # 模型常驻
-    model_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "v9_fft2048_band256_epoch_261.onnx")
-    if not os.path.isfile(model_path):
-        # 兼容 lite 目录内
-        model_path = os.path.join(os.path.dirname(__file__), "v9_fft2048_band256_epoch_261.onnx")
-    try:
-        eng = engine.LiteDenoiseEngine(model_path)
-    except Exception as e:
-        try:
-            import tkinter.messagebox as mb
-            import tkinter as tk
-            r = tk.Tk(); r.withdraw()
-            mb.showerror("模型加载失败", str(e))
-            r.destroy()
-        except Exception:
-            print(e)
-        sys.exit(1)
-
-    # 解析设备索引：兼容旧配置（无 [API] 前缀）按后缀匹配，支持 (disp,idx,props) 或 (disp,idx)
-    def _to_map(lst):
-        mp = {}
-        for item in lst:
-            if len(item) == 3:
-                n,i,_ = item
-                mp[n]=i
-            else:
-                n,i = item
-                mp[n]=i
-        return mp
-    def _idx_list(lst):
-        out=[]
-        for item in lst:
-            if len(item)==3:
-                _,i,_=item
-                out.append(i)
-            else:
-                _,i=item
-                out.append(i)
-        return out
-    in_map = _to_map(ins)
-    out_map = _to_map(outs)
-    def resolve(name, mp, lst):
+    # 默认输出回退
+    def _out_map(lst):
+        return {n: i for n, i in lst}
+    out_map = _out_map(outs)
+    def resolve_out(name):
         if not name:
-            vals = list(mp.values())
+            vals = list(out_map.values())
             return vals[0] if vals else -1
-        if name in mp:
-            return mp[name]
-        for k, v in mp.items():
+        if name in out_map:
+            return out_map[name]
+        for k, v in out_map.items():
             if k.endswith(name) or name.endswith(k):
                 return v
-        for k, v in mp.items():
+        for k, v in out_map.items():
             if name in k or k in name:
                 return v
-        vals = list(mp.values())
+        vals = list(out_map.values())
         return vals[0] if vals else -1
-    in_idx = resolve(cfg.get("input_device", ""), in_map, ins)
-    out_idx = resolve(cfg.get("output_device", ""), out_map, outs)
-    valid_in = set(_idx_list(ins))
-    valid_out = set(_idx_list(outs))
-    if in_idx not in valid_in and ins:
-        in_idx = _idx_list(ins)[0]
-    if out_idx not in valid_out and outs:
-        out_idx = _idx_list(outs)[0]
+
+    # 模型常驻（仓库根 models/；冻结态在 _MEIPASS/models/）
+    def _find_model():
+        rel = os.path.join("models", "v9_fft2048_band256_epoch_261.onnx")
+        meipass = getattr(sys, "_MEIPASS", None)
+        cands = []
+        if meipass:
+            cands.append(os.path.join(meipass, rel))
+        cands.append(os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))), rel))
+        cands.append(rel)
+        for c in cands:
+            if os.path.isfile(c):
+                return c
+        return cands[-1]
+
+    try:
+        eng = engine.LiteDenoiseEngine(_find_model())
+    except Exception as e:
+        _die("模型加载失败", str(e))
+
+    # 网络解码环形缓冲 + 增益（闭包持有，UI/流共享）
+    ring = netmod.JitterRing()
+    gains = {"pre": audio.db_to_linear(cfg.get("pre_gain_db", 0.0)),
+             "post": audio.db_to_linear(cfg.get("post_gain_db", 0.0))}
+
+    def process_fn(chunk):
+        # 网络 hop(960) 累积切出的 1024：前增益 → 引擎
+        x = chunk * gains["pre"]
+        return eng.process(x)
 
     stream = None
     def start_stream():
         nonlocal stream
-        # 同 API 校验：WASAPI/MME 混用即非法，仅提示不自动改输出
-        ok, msg = audio.check_api_match(in_idx, out_idx)
-        if not ok:
-            try:
-                import tkinter.messagebox as mb
-                mb.showerror("组合非法", msg + "\n请将输入与输出设为同一 API。")
-            except Exception:
-                print(msg)
-            return
         if stream:
             try:
                 stream.stop()
             except Exception:
                 pass
-        stream = audio.LiteAudioStream(in_idx, out_idx, eng, cfg.get("pre_gain_db", 0.0), cfg.get("post_gain_db", 0.0))
+            stream = None
+        out_idx = resolve_out(cfg.get("output_device", ""))
+        if out_idx < 0 and not outs:
+            _die("无可用输出设备", "未检测到 WASAPI 输出设备。")
+            return
+        stream = audio.LiteNetStream(out_idx, ring, post_db=cfg.get("post_gain_db", 0.0))
         try:
             stream.start()
         except Exception as e:
-            # 组合非法细化提示
             emsg = str(e)
-            if "Invalid" in emsg or "非法" in emsg or "Unanticipated" in emsg:
-                emsg = emsg + "\n提示：WASAPI 与 MME 不能混用，请将输入/输出设为同一 API。"
             try:
                 import tkinter.messagebox as mb
                 mb.showerror("音频启动失败", emsg)
             except Exception:
                 print(emsg)
-            # 不退出，允许改设备
+            stream = None
 
-    ui = None
-    # UI 回调（主窗口与托盘双向同步，比例档位）
+    # 启动即运行
+    start_stream()
+
+    # 网络服务状态回调（net 线程 → Tk 主线程）
+    from ui import LiteUI
+    ui_holder = {}
+    def on_net_state(clients, note):
+        ui = ui_holder.get("ui")
+        if ui:
+            ui.set_server_state(clients, note)
+
+    port = int(cfg.get("port", 8765))
+    server = netmod.NetServer(ring, port, process_fn=process_fn, on_state=on_net_state)
+    mdns = netmod.MdnsPublisher(port)
+    try:
+        server.start()
+    except Exception as e:
+        _die("网络服务启动失败", str(e))
+        return
+    # 默认广播网卡：配置保存值 > 自动选择（首个非 TUN 物理口）
+    networks = netmod.list_lan_ips()
+    sel = cfg.get("net_ip")
+    mdns.addr = sel if sel in [i for i, _n in networks] else netmod.best_lan_ip(networks)
+    mdns.start()
+    import threading as _th
+    import time as _time
+
+    # 防火墙零逻辑：WSS 开始监听即触发系统「安全中心警报」，点允许即放行；
+    # 「重启」按钮重开监听会再次触发，无需任何主动检查/安装代码
+
     def on_gain(which, val):
         iv = int(val)
         if which == "pre":
             cfg["pre_gain_db"] = iv
+            gains["pre"] = audio.db_to_linear(iv)
         else:
             cfg["post_gain_db"] = iv
+            gains["post"] = audio.db_to_linear(iv)
+            if stream:
+                stream.set_post_gain(iv)
         save(cfg)
-        if stream:
-            stream.set_gains(cfg["pre_gain_db"], cfg["post_gain_db"])
+        ui = ui_holder.get("ui")
         try:
             if ui:
-                # 同步主窗口数字框
                 if which == "pre":
                     ui.pre_var.set(str(iv))
                 else:
@@ -201,45 +214,43 @@ def main():
         except Exception:
             pass
 
-    def on_device(in_name, out_name):
-        nonlocal in_idx, out_idx
-        cfg["input_device"] = in_name
+    def on_output(out_name):
         cfg["output_device"] = out_name
         save(cfg)
-        # 精确或后缀匹配
-        if in_name in in_map:
-            in_idx = in_map[in_name]
-        else:
-            for k, v in in_map.items():
-                if k.endswith(in_name) or in_name.endswith(k):
-                    in_idx = v
-                    break
-        if out_name in out_map:
-            out_idx = out_map[out_name]
-        else:
-            for k, v in out_map.items():
-                if k.endswith(out_name) or out_name.endswith(k):
-                    out_idx = v
-                    break
         start_stream()
+
+    def apply_network(ip):
+        """切网统一路径（用户下拉切换与自动跟随共用）：
+        保存选择 → 证书 SAN 未覆盖当前网卡时重签并热加载 → mDNS 换接口重注册"""
+        cfg["net_ip"] = ip
+        save(cfg)
+        try:
+            if netmod.ensure_tls_cert():
+                server.reload_cert()
+        except Exception:
+            pass
+        try:
+            mdns.restart(ip)
+        except Exception:
+            pass
+
+    def on_network(ip):
+        # 用户手动切换网卡：mDNS/证书跟随即可
+        apply_network(ip)
 
     def on_autostart(enable):
         cfg["autostart"] = bool(enable)
         save(cfg)
         set_autostart(enable)
 
-    # 启动即运行
-    start_stream()
-
-    # Tk UI 黑底白字（无系统标题栏，自绘）
-    from ui import LiteUI
-
     def _hide_window():
+        ui = ui_holder.get("ui")
         try:
             ui.root.withdraw()
         except Exception:
             pass
     def _show_window():
+        ui = ui_holder.get("ui")
         try:
             ui.root.deiconify()
             ui.root.lift()
@@ -248,16 +259,70 @@ def main():
             pass
     def _do_close():
         _hide_window()
-    def _do_minimize():
-        _hide_window()
 
-    ui = LiteUI(cfg, ins, outs, on_gain, on_device, on_autostart, on_close=_do_close, on_minimize=_do_minimize)
+    ui = LiteUI(cfg, outs, on_gain, on_output, on_autostart, on_close=_do_close, on_minimize=_do_close,
+                networks=networks, on_network=on_network)
+    ui.set_server_state(server.clients, "")
+    ui_holder["ui"] = ui
 
-    # 系统托盘（右键在系统底部显示，像素图标，含缩放切换与完整功能）
+    # 网卡自动跟随：低频轮询本机 IPv4，网卡集合或选中 IP 变化时
+    # 自动跟随（证书/mDNS/二维码统一走 apply_network）并刷新下拉列表
+    def start_net_watch():
+        state = {"prev": None}
+
+        def _watch():
+            while True:
+                _time.sleep(5)
+                try:
+                    nets = netmod.list_lan_ips()
+                except Exception:
+                    continue
+                ips = [i for i, _n in nets]
+                cur = frozenset(ips)
+                if cur == state["prev"]:
+                    continue
+                state["prev"] = cur
+                sel = cfg.get("net_ip")
+                # 选中 IP 仍有效则不动（启动时 mDNS 已按其注册），失效才自动改选
+                want = sel if sel in ips else netmod.best_lan_ip(nets)
+                if want and want != sel:
+                    apply_network(want)
+                u = ui_holder.get("ui")
+                if u:
+                    try:
+                        u.root.after(0, lambda nn=nets: u.set_networks(nn))
+                    except Exception:
+                        pass
+        _th.Thread(target=_watch, daemon=True).start()
+
+    start_net_watch()
+
+    def on_restart():
+        # 手动重启：WSS 重开监听 + mDNS 重注册 + 下拉/状态刷新（异常恢复路径）
+        def _run():
+            err = ""
+            try:
+                server.restart()
+            except Exception as e:
+                err = str(e)
+            try:
+                mdns.restart(cfg.get("net_ip"))
+            except Exception:
+                pass
+            u = ui_holder.get("ui")
+            if u:
+                try:
+                    u.root.after(0, lambda: (u.set_networks(netmod.list_lan_ips()),
+                                             u.set_server_state(server.clients, err)))
+                except Exception:
+                    pass
+        _th.Thread(target=_run, daemon=True).start()
+
+    ui.on_restart = on_restart
+
+    # 系统托盘（pystray，与 lite_mic 同构）
     tray = None
     has_tray = False
-
-    # 优先尝试 pystray 系统托盘
     try:
         from PIL import Image, ImageDraw
         import pystray
@@ -271,23 +336,18 @@ def main():
             def _make_icon():
                 img = Image.new("RGBA", (64, 64), (0, 0, 0, 0))
                 d = ImageDraw.Draw(img)
-                # 仅像素大写 P，无边框背景，带边缘色
                 try:
                     from PIL import ImageFont
-                    import os
                     font_path = os.path.join(os.path.dirname(__file__), "fonts", "ark-pixel-12px-monospaced-zh_cn.ttf")
                     if os.path.isfile(font_path):
                         pf = ImageFont.truetype(font_path, 56)
                         bbox = d.textbbox((0, 0), "P", font=pf, stroke_width=3)
                         tw = bbox[2] - bbox[0]
                         th = bbox[3] - bbox[1]
-                        x = (64 - tw) // 2
-                        y = (64 - th) // 2 - 2
-                        d.text((x, y), "P", fill="#6D4C41", font=pf, stroke_width=3, stroke_fill="#FFB74D")
+                        d.text(((64 - tw) // 2, (64 - th) // 2 - 2), "P", fill="#6D4C41", font=pf, stroke_width=3, stroke_fill="#FFB74D")
                     else:
                         raise FileNotFoundError
                 except Exception:
-                    # 回退：手绘大像素 P，带边缘
                     px, py = 16, 8
                     s = 7
                     pat = [
@@ -299,7 +359,6 @@ def main():
                         [1,0,0,0],
                         [1,0,0,0],
                     ]
-                    # 先画边缘
                     for dr in [(-1,0),(1,0),(0,-1),(0,1),(-1,-1),(1,-1),(-1,1),(1,1)]:
                         for r, row in enumerate(pat):
                             for c, v in enumerate(row):
@@ -318,21 +377,15 @@ def main():
 
             def _show(icon, item):
                 _show_window()
-            def _sound(icon, item):
-                ui._open_sound()
-            def _vb(icon, item):
-                ui._open_vb()
-            def _autostart(icon, item):
-                nv = not bool(cfg.get("autostart", False))
-                on_autostart(nv)
-                try:
-                    ui.autostart_var.set(nv)
-                except Exception:
-                    pass
             def _exit(icon, item):
                 try:
                     if icon:
                         icon.stop()
+                except Exception:
+                    pass
+                try:
+                    mdns.stop()
+                    server.stop()
                 except Exception:
                     pass
                 try:
@@ -346,10 +399,6 @@ def main():
                     pass
                 os._exit(0)
 
-            # 挡位与 ui.RES_GEARS 输出对齐；「自动」按屏幕分辨率定挡。
-            # 约束1：pystray 回调在独立线程，Tk 调用必须 after(0) 投递回主线程。
-            # 约束2：_assert_action 按 getfullargspec 校验，action 超过 2 个参数即拒收
-            #（默认参数也不行），故用闭包工厂绑定百分比，不用 lambda 默认参数。
             def _tk(fn):
                 def _run():
                     try:
@@ -386,14 +435,13 @@ def main():
                 pystray.Menu.SEPARATOR,
                 pystray.MenuItem("退出", _exit),
             )
-            tray = pystray.Icon("PureVox Lite", icon_img, "PureVox Lite — 运行中", menu)
+            tray = pystray.Icon("PureVox Net Lite", icon_img, "PureVox Net Lite — 运行中", menu)
             import threading as _th
             _th.Thread(target=tray.run, daemon=True).start()
 
             def on_close():
                 _hide_window()
             ui.root.protocol("WM_DELETE_WINDOW", on_close)
-            # 仅当窗口被最小化（iconic）时才隐藏，避免 withdraw 触发误隐藏
             ui.root.bind("<Unmap>", lambda e: on_close() if ui.root.state() == "iconic" else None)
         except Exception as e:
             import traceback
@@ -404,6 +452,11 @@ def main():
 
     if not has_tray:
         def on_close_exit():
+            try:
+                mdns.stop()
+                server.stop()
+            except Exception:
+                pass
             try:
                 if stream:
                     stream.stop()

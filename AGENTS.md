@@ -152,7 +152,8 @@ cd android
   - 容器 job 在 checkout 前先装系统依赖（含 `git`）——REST API 下载不支持 submodules；
     cpython 子模块已移除（2026-08-23），bootstrap 按需下载 tarball
   - appimagetool 容器无 FUSE → 用 `--appimage-extract-and-run`；`.desktop` 要在
-    AppDir 根目录放一份；图标用 `audio_icon_base_on_1024.png` 直接生成 256/512 png
+    AppDir 根目录放一份；图标用 `assets/icons/audio_icon_base_on_1024.png`
+    直接生成 256/512 png
   - `pack_deb.sh` 末尾 `| head` 会 SIGPIPE(141) 使 `sh -e` 退出 → 补 `|| true`
   - Ubuntu 容器 pip 装 pillow 遇到匹配版本时用 `--break-system-packages` 兜底
     （`||` 回退普通安装），不再 `pip install --upgrade`
