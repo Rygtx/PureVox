@@ -6,12 +6,12 @@
 # 曾误以为锁 6.21.0/2026.6 能解决，实测不能，勿再按此方向锁版本）。
 altgraph
 pefile
-pyinstaller
-pyinstaller-hooks-contrib
+pyinstaller==6.22.2
+pyinstaller-hooks-contrib==2026.6
 pywin32
 pywin32-ctypes
 
 # PyAudio（从 requirements.txt 移来）：仅 Windows/macOS 后端使用（diagnose_wasapi.py、
 # audio_processor.py 的 WASAPI/PortAudio 路径）；Linux 走原生 PipeWire 不需要它，
 # 放这里避免 Linux 建环境时编译失败（缺 portaudio.h）。
-PyAudio
+PyAudio==0.2.14

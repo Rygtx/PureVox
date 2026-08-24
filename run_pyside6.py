@@ -44,6 +44,14 @@ def _early_log(msg: str, tag: str = "SYS") -> None:
 
 # ── 最早可记录的启动时间点 ──
 _early_log("PureVox 启动中...")
+_t0 = datetime.datetime.now()
+
+def _stage(msg):
+    """阶段计时日志：定位首启卡点（导入/枚举等），不依赖 Logger。"""
+    global _t0
+    now = datetime.datetime.now()
+    _early_log(f"{msg} (+{(now - _t0).total_seconds():.2f}s)")
+    _t0 = now
 
 # 检查单实例（Windows 命名 Mutex / Linux flock，见 platform.system）
 if not acquire_single_instance("PureVox"):
@@ -74,7 +82,9 @@ except ImportError:
     print("PureVox 开发版")
 
 # 导入并运行 PySide6 版本
+_stage("开始导入 ui_pyside6（PySide6/onnxruntime/numpy/scipy 重导入）")
 from ui_pyside6 import run_app
+_stage("ui_pyside6 导入完成")
 
 if __name__ == "__main__":
     run_app()

@@ -2,20 +2,23 @@
 # 跨平台运行依赖（Windows / Linux / macOS 通用）
 #
 # 音频引擎为纯 Python（pvengine 包）：numpy 做帧级 DSP，onnxruntime 跑模型推理，
-# scipy 提供 EQ 双二阶层联的 lfilter。依赖一律不锁版本——CI/全新环境安装即最新。
+# scipy 提供 EQ 双二阶层联的 lfilter。
+# 版本策略（2026-08-25 起 pin ==本机验证版本）：CI 与本地必须同一套依赖，
+# 避免产物行为漂移（首启托盘问题排查期间确认 CI 产物与本地不可复现差异的
+# 主要嫌疑就是不锁版本）；升级 = 本机验证后改这里。
 importlib_metadata
 packaging
 protobuf
-numpy
-scipy
-onnxruntime
+numpy==2.5.2
+scipy==1.18.0
+onnxruntime==1.29.0
 # PyAudio 仅 Windows/macOS 后端使用（Linux 走 pipewire-pulse 桥，见 audio_processor.py），
 # 放在 requirements-win.txt，避免 Linux 建环境时编译它（缺 portaudio.h 会失败）。
-PySide6>=6.8
+PySide6==6.11.2
 cryptography>=41.0.0
-zeroconf
-aiohttp>=3.9.0
-opuslib>=3.0
+zeroconf==0.150.0
+aiohttp==3.14.3
+opuslib==3.0.1
 zipp
 # Linux 音频桥：ctypes 到系统 libpulse（pipewire-pulse 兼容层），无自编译组件；
 # 仅 Linux 运行需要，装了也无害

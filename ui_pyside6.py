@@ -21,6 +21,8 @@ PySide6 Main UI
 
 import asyncio
 import os
+import time as _time_mod
+_START_T = _time_mod.time()
 import subprocess
 import sys
 import math
@@ -78,6 +80,15 @@ except ImportError:
     BUILD_DATE = "开发版"
 
 RECORD_DURATION = 10.0
+
+
+def _stage(msg):
+    """启动阶段计时日志（写文件），定位首启卡点。"""
+    try:
+        get_logger().dev(f"{msg} (+{_time_mod.time() - _START_T:.2f}s)")
+    except Exception:
+        pass
+
 
 def _api_tooltip() -> str:
     """音频接口下拉框的工具提示（平台感知）。"""
@@ -704,9 +715,29 @@ class PluginPanel(QWidget):
         self._last_sig = self._signature()
 
     def refresh_devices(self):
-        devs = self._get_devices()
+        """后台线程枚举设备，完成后回 UI 线程刷新行内下拉。
+
+        同步枚举（PyAudio 扫描全部 WASAPI/MME 端点）在首启/慢驱动机器上
+        可能长时间阻塞 UI 线程——表现为进程在、无窗口无托盘、单实例锁
+        被占。此处严禁改回同步调用。
+        """
+        import threading
+
+        def _work():
+            try:
+                devs = self._get_devices()
+            except Exception:
+                return
+            QTimer.singleShot(0, lambda: self._apply_devices(devs))
+
+        threading.Thread(target=_work, daemon=True).start()
+
+    def _apply_devices(self, devs):
+        """把枚举结果应用到各行（UI 线程内执行）。"""
+        self._devices = dict(devs or {})
         for r in self._rows:
-            r.set_devices(devs)
+            if hasattr(r, "set_devices"):
+                r.set_devices(self._devices)
 
     def to_config(self):
         return [{"type": r.plugin_type, "enabled": r.cb_on.isChecked(),
@@ -2029,17 +2060,30 @@ class MainApp:
 
     def _check_vbcable(self):
         """启动后检测 VB-CABLE（仅 Windows）：开启检测时才检查，
-        只有未安装才弹面板；已安装则无事发生。"""
+        只有未安装才弹面板；已安装则无事发生。
+        检测含 PyAudio 设备枚举——放后台线程，不阻塞 UI。"""
         if not IS_WINDOWS or not _state.config:
             return
         if not _state.config.get("vbcable_check_enabled", True):
             return
-        from dialog_vbcable_check import show_vbcable_dialog, vbcable_installed
-        if vbcable_installed():
-            return
-        show_vbcable_dialog(_state.config)
-        QTimer.singleShot(1000, lambda: _state.fx_panel.refresh_devices()
-                          if _state.fx_panel else None)
+
+        import threading
+
+        def _work():
+            try:
+                from dialog_vbcable_check import (show_vbcable_dialog,
+                                                  vbcable_installed)
+                installed = vbcable_installed()
+            except Exception:
+                return
+            if installed:
+                return
+            QTimer.singleShot(0, lambda: (
+                show_vbcable_dialog(_state.config),
+                QTimer.singleShot(1000, lambda: _state.fx_panel.refresh_devices()
+                                  if _state.fx_panel else None)))
+
+        threading.Thread(target=_work, daemon=True).start()
 
     def _register_hotkey(self, logger):
         """通过原生事件过滤器注册全局热键（右Alt + >，仅 Windows；其它平台跳过）。"""
@@ -2087,7 +2131,7 @@ class MainApp:
 
         logger = Logger()
         _state.logger = logger
-        logger.dev("启动阶段：配置与日志就绪")
+        _stage("启动阶段：配置与日志就绪")
         QTimer.singleShot(3000, lambda: add_firewall_rule(logger))
         saver = DebouncedSaver(config)
         _state.debounced_saver = saver
@@ -2095,7 +2139,7 @@ class MainApp:
         window = MainWindow(config, logger)
         _state.root = window
         self._window = window
-        logger.dev("启动阶段：主窗口构造完成")
+        _stage("启动阶段：主窗口构造完成")
 
         # 统一应用唯一主题（palette + 深色标题栏）
         _apply_theme(app)
@@ -2103,7 +2147,7 @@ class MainApp:
         res = getattr(sys, '_MEIPASS', os.path.dirname(sys.executable)) if getattr(sys, 'frozen', False) else os.path.dirname(os.path.abspath(__file__))
         ion, ioff = self._setup(window, res, config)
         self._create_ui(window, config, saver, logger)
-        logger.dev("启动阶段：UI 构建完成")
+        _stage("启动阶段：UI 构建完成")
 
         # 托盘无条件创建：Windows 下 isSystemTrayAvailable 偶发 False
         # （explorer 托盘未就绪等），跳过创建会得到"无界面僵尸进程"。
@@ -2127,7 +2171,7 @@ class MainApp:
         tray.activated.connect(_on_tray_activated)
         tray.show()
         _state.tray_icon = tray
-        logger.dev("启动阶段：托盘已创建")
+        _stage("启动阶段：托盘已创建")
 
         self._register_hotkey(logger)
         # 初始尺寸：单列节点链面板
