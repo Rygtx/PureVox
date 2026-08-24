@@ -2083,12 +2083,11 @@ class MainApp:
 
         config = self._init_config()
         _state.config = config
-        logger.dev("启动阶段：配置就绪")
         self._apply_style()
 
         logger = Logger()
         _state.logger = logger
-        logger.dev("启动阶段：日志就绪")
+        logger.dev("启动阶段：配置与日志就绪")
         QTimer.singleShot(3000, lambda: add_firewall_rule(logger))
         saver = DebouncedSaver(config)
         _state.debounced_saver = saver
