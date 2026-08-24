@@ -958,8 +958,14 @@ class MainWindow(QMainWindow):
         self._layout.addWidget(widget, stretch)
 
     def closeEvent(self, event):
-        event.ignore()
-        self.hide()
+        # 有托盘时关闭 = 隐藏到托盘；无托盘（异常场景）直接退出，
+        # 避免进程无界面残留、占着单实例锁。
+        if _state.tray_icon is not None:
+            event.ignore()
+            self.hide()
+        else:
+            event.accept()
+            quit_app(self)
 
     def changeEvent(self, event):
         """窗口最小化→暂停 VU/频谱，恢复→开启"""
@@ -2077,10 +2083,12 @@ class MainApp:
 
         config = self._init_config()
         _state.config = config
+        logger.dev("启动阶段：配置就绪")
         self._apply_style()
 
         logger = Logger()
         _state.logger = logger
+        logger.dev("启动阶段：日志就绪")
         QTimer.singleShot(3000, lambda: add_firewall_rule(logger))
         saver = DebouncedSaver(config)
         _state.debounced_saver = saver
@@ -2088,6 +2096,7 @@ class MainApp:
         window = MainWindow(config, logger)
         _state.root = window
         self._window = window
+        logger.dev("启动阶段：主窗口构造完成")
 
         # 统一应用唯一主题（palette + 深色标题栏）
         _apply_theme(app)
@@ -2095,28 +2104,31 @@ class MainApp:
         res = getattr(sys, '_MEIPASS', os.path.dirname(sys.executable)) if getattr(sys, 'frozen', False) else os.path.dirname(os.path.abspath(__file__))
         ion, ioff = self._setup(window, res, config)
         self._create_ui(window, config, saver, logger)
+        logger.dev("启动阶段：UI 构建完成")
 
-        if QSystemTrayIcon.isSystemTrayAvailable():
-            tray = QSystemTrayIcon(QIcon(ioff), window)
-            menu = QMenu()
-            menu.setStyleSheet("""
-                QMenu {                  font-size: 11pt; min-width: 120px; }
-                QMenu::item { padding: 6px 24px; min-height: 22px; }
-            """)
-            menu.addAction("退出", lambda: quit_app(window))
-            tray.setContextMenu(menu)
+        # 托盘无条件创建：Windows 下 isSystemTrayAvailable 偶发 False
+        # （explorer 托盘未就绪等），跳过创建会得到"无界面僵尸进程"。
+        tray = QSystemTrayIcon(QIcon(ioff), window)
+        menu = QMenu()
+        menu.setStyleSheet("""
+            QMenu {                  font-size: 11pt; min-width: 120px; }
+            QMenu::item { padding: 6px 24px; min-height: 22px; }
+        """)
+        menu.addAction("退出", lambda: quit_app(window))
+        tray.setContextMenu(menu)
 
-            def _on_tray_activated(reason):
-                if reason == QSystemTrayIcon.Trigger:
-                    if window.isVisible():
-                        window.hide()
-                    else:
-                        window.show()
-                        window.activateWindow()
+        def _on_tray_activated(reason):
+            if reason == QSystemTrayIcon.Trigger:
+                if window.isVisible():
+                    window.hide()
+                else:
+                    window.show()
+                    window.activateWindow()
 
-            tray.activated.connect(_on_tray_activated)
-            tray.show()
-            _state.tray_icon = tray
+        tray.activated.connect(_on_tray_activated)
+        tray.show()
+        _state.tray_icon = tray
+        logger.dev("启动阶段：托盘已创建")
 
         self._register_hotkey(logger)
         # 初始尺寸：单列节点链面板
@@ -2130,6 +2142,13 @@ class MainApp:
 
         QTimer.singleShot(1000, self._auto_start)
         QTimer.singleShot(500, self._check_vbcable)
+        # 启动看门狗：若超时后既无可见窗口也无托盘，说明启动卡死在某
+        # 一步——记日志并强制退出，释放单实例锁，让用户能重新打开。
+        def _startup_watchdog():
+            if not window.isVisible() and _state.tray_icon is None:
+                logger.err("启动看门狗：窗口与托盘均未就绪，强制退出以释放单实例锁")
+                QApplication.instance().quit()
+        QTimer.singleShot(20000, _startup_watchdog)
         logger.sys("就绪")
         sys.exit(app.exec())
 
