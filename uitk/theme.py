@@ -15,56 +15,39 @@
 #
 # SPDX-License-Identifier: GPL-3.0-or-later
 
-"""uitk 主题令牌（纯 tk，无 Qt）——墨黑深色主题的唯一颜色来源。
+"""uitk 主题令牌（纯 tk，无 Qt、无系统依赖）——星露谷像素浅色主题。
 
-与 theme_colors.py 的 Qt 调色板保持同源色值；tk 组件一律通过
-本模块取色，禁止在组件里写死十六进制颜色。
+与 lite_mic/ui.py 同一套配色；颜色集中在此，组件禁止写死十六进制。
+不读系统 accent（跨设备不可靠且引入额外依赖）。
 """
 
-import sys
+# ── 基础面（lite 同源；层级：深棕标题栏 > 羊皮纸窗底 > 面板行 > 纯白输入区）──
+WINDOW      = "#FFF8E1"   # 羊皮纸窗底
+PANEL       = "#FFECB3"   # 行/卡片面板
+ALT_BASE    = PANEL       # 兼容旧名
+BASE        = "#FFFFFF"   # 输入区/下拉弹层（纯白）
+BUTTON      = "#FFB74D"   # 南瓜橙主按钮
+DARK        = "#FFE0B2"   # 悬停底
+MID         = "#8D6E63"   # 木纹边框/分隔线
+TRACK       = "#E6C79A"   # 滑杆槽（介于面板与边框之间）
 
-# ── 基础面（与 theme_colors.PALETTE 同源）──
-WINDOW      = "#202020"   # 窗口底
-BASE        = "#1a1a1a"   # 输入区/列表底
-ALT_BASE    = "#2a2a2a"   # 交替行/卡片
-BUTTON      = "#2d2d2d"   # 按钮常态底
-DARK        = "#3a3a3a"   # 按钮悬停底
-MID         = "#555555"   # 分隔线/边框
+# ── 标题栏（深棕锚点，lite 同源）──
+TITLE_BG    = "#6D4C41"
+TITLE_FG    = "#FFF8E1"
 
 # ── 前景 ──
-TEXT        = "#f0f0f0"
-TEXT_DIM    = "#999999"   # 占位/次要文字
-TEXT_FAINT  = "#666688"
+TEXT        = "#5D4037"
+TEXT_DIM    = "#8D6E63"
+TEXT_FAINT  = "#BCAAA4"
 
 # ── 状态色 ──
-START_BG    = "#4caf50"
-START_HOVER = "#388e3c"
-STOP_BG     = "#f44336"
-STOP_HOVER  = "#d32f2f"
+START_BG    = "#81C784"
+START_HOVER = "#66BB6A"
+STOP_BG     = "#E57373"
+STOP_HOVER  = "#EF5350"
 
-ACCENT_FALLBACK = "#60cdff"
-
-# 运行时被系统 accent 覆写（读不到用兜底）
-ACCENT = ACCENT_FALLBACK
-
-
-def refresh_accent() -> None:
-    """读取系统 accent 色写入 ACCENT；失败保持兜底。
-
-    pvplatform 返回的可能是 Qt QColor（PySide6 版接口），统一转 #rrggbb。
-    """
-    global ACCENT
-    try:
-        if sys.platform.startswith("win"):
-            from pvplatform.system import system_accent_color
-            accent = system_accent_color()
-            if accent:
-                if not isinstance(accent, str):
-                    accent = accent.name()
-                if isinstance(accent, str) and accent.startswith("#"):
-                    ACCENT = accent
-    except Exception:
-        pass
+ACCENT      = "#FFB74D"   # 强调色 = 南瓜橙
+ACCENT_TEXT = "#5D4037"   # accent 底上的前景
 
 
 def hover(bg: str) -> str:
@@ -72,4 +55,5 @@ def hover(bg: str) -> str:
     return {
         START_BG: START_HOVER,
         STOP_BG: STOP_HOVER,
+        BUTTON: DARK,
     }.get(bg, DARK)

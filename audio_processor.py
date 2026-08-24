@@ -89,6 +89,16 @@ except ImportError:
 SAMPLE_RATE = 48000
 FRAME_SIZE = 2048
 HOP_LENGTH = 1024
+
+
+def _bridge_stream_count(bridge):
+    """当前桥接的播放路数（用于线性多出对齐判断）。"""
+    try:
+        return len(bridge._out_rings)
+    except Exception:
+        return 0
+
+
 TSE_SAMPLE_RATE = 48000        # TSE15 模型采样率 (48kHz)
 TSE_HOP_LENGTH = 1024          # 1024 samples @ 48kHz = 21.3ms
 
@@ -950,7 +960,13 @@ class AudioThread(threading.Thread):
                             self._recording_hook(list(out))
                         except Exception:
                             pass
-                    bridge.write(list(out))
+                    # 线性多出：链内有 output 位置抽头时，每路写自己位置
+                    # 上的信号；无抽头（旧配置/单出）回退统一扇出
+                    out_frames = self.processor.take_output_frames()
+                    if len(out_frames) == _bridge_stream_count(bridge):
+                        bridge.write_per_output(out_frames)
+                    else:
+                        bridge.write(list(out))
                     # VU 电平显示降噪输出（out）的峰值
                     self._vu_peak = max(abs(x) for x in out) if out else 0.0
                     if self._viz_enabled:

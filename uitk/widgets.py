@@ -103,7 +103,7 @@ class DarkCheck(tk.Frame):
             w = max(2, self.sizes["pad_sm"])
             pts = [(sz*0.22, sz*0.52), (sz*0.42, sz*0.72), (sz*0.80, sz*0.28)]
             for (x0, y0), (x1, y1) in zip(pts, pts[1:]):
-                c.create_line(x0, y0, x1, y1, fill="#000000", width=w)
+                c.create_line(x0, y0, x1, y1, fill=theme.ACCENT_TEXT, width=w)
 
     def toggle(self):
         self.variable.set(not bool(self.variable.get()))
@@ -139,23 +139,24 @@ class HSlider(tk.Canvas):
         self._hw = max(6, S["ctl_h"] // 3)   # 把手半宽（行程夹紧用）
         self.bind("<Button-1>", self._on_drag)
         self.bind("<B1-Motion>", self._on_drag)
+        self.bind("<Configure>", lambda e: self._draw())
         self._draw()
 
     def _val_to_x(self, v):
-        w = int(self["width"])
+        w = max(self.winfo_width(), int(self["width"]))
         span = w - 2 * self._hw
         return self._hw + int((v - self.lo) / (self.hi - self.lo) * span)
 
     def _draw(self):
         S = self.sizes
-        w = int(self["width"])
-        h = int(self["height"])
+        w = max(self.winfo_width(), int(self["width"]))
+        h = max(self.winfo_height(), int(self["height"]))
         self.delete("all")
         cy = h // 2
         th = max(8, S["ctl_h"] // 3)      # 加粗槽厚
         # 槽顶满全宽（0 → w）
         self.create_rectangle(0, cy - th // 2, w, cy + th // 2,
-                              fill=theme.DARK, width=0)
+                              fill=theme.TRACK, width=0)
         x = self._val_to_x(self.value)
         self.create_rectangle(0, cy - th // 2, x, cy + th // 2,
                               fill=theme.ACCENT, width=0)
@@ -168,7 +169,7 @@ class HSlider(tk.Canvas):
                               width=1)
 
     def _set_from_x(self, ex):
-        w = int(self["width"])
+        w = max(self.winfo_width(), int(self["width"]))
         frac = (ex - self._hw) / max(1, w - 2 * self._hw)
         frac = max(0.0, min(1.0, frac))
         v = self.lo + frac * (self.hi - self.lo)
@@ -195,13 +196,17 @@ class DarkCombo(tk.Frame):
                  sizes=None, fonts=None):
         self.sizes = sizes if sizes is not None else make_sizes(100)
         self.fonts = fonts if fonts is not None else {}
-        super().__init__(parent, bg=theme.MID, bd=0,
-                         padx=1, pady=1)
+        # 外壳与宿主同色（不产生第二圈色），边框只由 inner 的 1px 描边承担
+        host_bg = parent.cget("bg") if isinstance(parent, tk.Widget) \
+            else theme.BASE
+        super().__init__(parent, bg=host_bg, bd=0, padx=0, pady=0)
         self.var = var
         self.values = [v for v in list(values) if v and str(v).strip()]
         self.on_change = on_change
         self._popup = None
-        inner = tk.Frame(self, bg=theme.BASE)
+        inner = tk.Frame(self, bg=theme.BASE,
+                         highlightbackground=theme.MID,
+                         highlightthickness=1)
         self.inner = inner
         inner.pack(fill=tk.BOTH, expand=True)
         self._display = tk.StringVar()

@@ -64,25 +64,32 @@ class DarkDialog(tk.Toplevel):
         w, h = int(w * s), int(h * s)
         self.geometry(f"{w}x{h}")
         self._dlgw, self._dlgh = w, h
-        bar = tk.Frame(self, bg=theme.BUTTON, height=self.sizes["titlebar_h"])
+        bar = tk.Frame(self, bg=theme.TITLE_BG, height=self.sizes["titlebar_h"])
         bar.pack(fill=tk.X)
         bar.pack_propagate(False)
-        lbl = tk.Label(bar, text=title, bg=theme.BUTTON, fg=theme.TEXT,
+        # 三边同色细边（与主窗一致，消除罐头瓶观感）
+        bd_l = tk.Frame(self, bg=theme.TITLE_BG, width=2)
+        bd_r = tk.Frame(self, bg=theme.TITLE_BG, width=2)
+        bd_b = tk.Frame(self, bg=theme.TITLE_BG, height=2)
+        bd_l.pack(side=tk.LEFT, fill=tk.Y)
+        bd_r.pack(side=tk.RIGHT, fill=tk.Y)
+        bd_b.pack(side=tk.BOTTOM, fill=tk.X)
+        lbl = tk.Label(bar, text=title, bg=theme.TITLE_BG, fg=theme.TITLE_FG,
                        font=self.fonts.get("bold"))
         lbl.pack(side=tk.LEFT, padx=self.sizes["pad_md"])
         # 方形关闭钮（与主窗同款：外壳锁正方形，× 居中）
         tb = self.sizes["titlebar_h"]
-        wrap = tk.Frame(bar, bg=theme.BUTTON, width=tb, height=tb)
+        wrap = tk.Frame(bar, bg=theme.TITLE_BG, width=tb, height=tb)
         wrap.pack(side=tk.RIGHT)
         wrap.pack_propagate(False)
-        x = tk.Label(wrap, text="×", bg=theme.BUTTON, fg=theme.TEXT_DIM,
+        x = tk.Label(wrap, text="×", bg=theme.TITLE_BG, fg=theme.TITLE_FG,
                      font=self.fonts.get("bold"), cursor="hand2")
         x.place(relx=0.5, rely=0.5, anchor="center")
         x.bind("<Button-1>", lambda e: self.destroy())
-        x.bind("<Enter>", lambda e: (x.configure(bg=theme.STOP_BG, fg="#000000"),
+        x.bind("<Enter>", lambda e: (x.configure(bg=theme.STOP_BG, fg="#ffffff"),
                                      wrap.configure(bg=theme.STOP_BG)))
-        x.bind("<Leave>", lambda e: (x.configure(bg=theme.BUTTON, fg=theme.TEXT_DIM),
-                                     wrap.configure(bg=theme.BUTTON)))
+        x.bind("<Leave>", lambda e: (x.configure(bg=theme.TITLE_BG, fg=theme.TITLE_FG),
+                                     wrap.configure(bg=theme.TITLE_BG)))
         # 标题栏整体/文字可拖动
         for wd in (bar, lbl):
             wd.bind("<ButtonPress-1>", self._drag_begin)
@@ -213,14 +220,163 @@ def show_about_dialog(parent, sizes=None, fonts=None):
     show(0)
 
 
-# ── EQ 编辑器（10 段滑杆 → 插值为 61 带增益）──
+# ── EQ 编辑器：Canvas 响应曲线 + 拖拽手柄（legacy EQCurveWidget 移植）──
 EQ_BANDS = [31, 62, 125, 250, 500, 1000, 2000, 4000, 8000, 16000]
+PRESETS = {"平直": [0] * 10,
+           "低音增强": [6, 5, 3, 1, 0, 0, 0, 0, 0, 0],
+           "人声增强": [-2, -1, 0, 2, 4, 4, 3, 1, 0, -1],
+           "高音增强": [0, 0, 0, 0, 0, 1, 3, 5, 6, 6]}
+
+
+def _log_frac(f, lo=20.0, hi=20000.0):
+    import math
+    return (math.log10(f) - math.log10(lo)) / (math.log10(hi) - math.log10(lo))
+
+
+class EQCurveCanvas(tk.Canvas):
+    """61 带响应曲线（由 10 手柄对数插值），拖拽/滚轮调增益。粗细/字号随缩放挡位。"""
+
+    def __init__(self, parent, gains10, on_change=None,
+                 sizes=None, fonts=None):
+        self.sizes = sizes or make_sizes(100)
+        self.fonts = fonts or {}
+        self.on_change = on_change
+        self._gains = list(gains10)
+        self._drag_idx = None
+        s = self.sizes["scale"]
+        # 线宽/手柄/字号随挡位缩放
+        self._lw = max(2, int(round(2 * s)))
+        self._hs = max(4, int(round(5 * s)))          # 手柄半边长
+        self._tick_font = ("TkDefaultFont",
+                           max(7, int(round(7 * s))))
+        super().__init__(parent, bg="#FFFFFF", highlightthickness=0,
+                         bd=0, cursor="hand2")
+        self.bind("<Configure>", lambda e: self.redraw())
+        self.bind("<ButtonPress-1>", self._press)
+        self.bind("<B1-Motion>", self._motion)
+        self.bind("<ButtonRelease-1>", lambda e: setattr(self, "_drag_idx", None))
+        self.bind("<MouseWheel>", self._wheel)
+        self.bind("<Button-4>", self._wheel)
+        self.bind("<Button-5>", self._wheel)
+
+    # ── 几何 ──
+    def _geom(self):
+        w = max(self.winfo_width(), 120)
+        h = max(self.winfo_height(), 80)
+        L, R, T, B = 26, 12, 8, 18
+        return w, h, L, R, T, B
+
+    def _x_of_band(self, i, w, L, gw):
+        f = EQ_BANDS[i]
+        lo, hi = math.log10(EQ_BANDS[0]), math.log10(EQ_BANDS[-1])
+        return L + (math.log10(f) - lo) / (hi - lo) * gw
+
+    def _y_of_gain(self, g, T, gh):
+        # ±12dB 满幅
+        return T + gh / 2 - (g / 12.0) * (gh / 2)
+
+    def _gain_at_y(self, y, T, gh):
+        g = (1 - (y - T) / gh) * 24.0 - 12.0
+        return max(-12.0, min(12.0, round(g)))
+
+    def _band_at_x(self, x, w, L, gw):
+        best, bd = 0, 1e9
+        for i in range(10):
+            d = abs(x - self._x_of_band(i, w, L, gw))
+            if d < bd:
+                best, bd = i, d
+        return best
+
+    # ── 绘制 ──
+    def redraw(self):
+        w, h, L, R, T, B = self._geom()
+        gw, gh = w - L - R, h - T - B
+        self.delete("all")
+        # 网格
+        for db in (-12, -6, 0, 6, 12):
+            y = self._y_of_gain(db, T, gh)
+            solid = db == 0
+            self.create_line(L, y, L + gw, y,
+                             fill=theme.MID if solid else "#EEE3CB")
+            self.create_text(L - 4, y, text=f"{db:+d}" if db else "0",
+                             anchor="e", fill=theme.TEXT_FAINT,
+                             font=self._tick_font)
+        for i in range(10):
+            x = self._x_of_band(i, w, L, gw)
+            lbl = f"{EQ_BANDS[i]//1000}k" if EQ_BANDS[i] >= 1000 \
+                else str(EQ_BANDS[i])
+            self.create_text(x, T + gh + 2, text=lbl, anchor="n",
+                             fill=theme.TEXT_FAINT,
+                             font=self._tick_font)
+        # 响应曲线（分段线性，像素风不抗锯齿）
+        pts = []
+        for i in range(10):
+            x = self._x_of_band(i, w, L, gw)
+            y = self._y_of_gain(self._gains[i], T, gh)
+            pts.append((x, y))
+        flat = [c for p in pts for c in p]
+        if len(flat) >= 4:
+            self.create_line(*flat, fill=theme.ACCENT, width=self._lw)
+        # 手柄：正方形像素点
+        s = self._hs
+        for i, (x, y) in enumerate(pts):
+            active = i == getattr(self, "_drag_idx", None)
+            self.create_rectangle(x - s, y - s, x + s, y + s,
+                                  fill=theme.START_BG if active else theme.ACCENT,
+                                  outline=theme.MID, width=1)
+
+    # ── 交互 ──
+    def _press(self, e):
+        w, h, L, R, T, B = self._geom()
+        self._drag_idx = self._band_at_x(e.x, w, L, w - L - R)
+        self._apply_y(e.y)
+
+    def _motion(self, e):
+        if self._drag_idx is None:
+            return
+        self._apply_y(e.y)
+
+    def _apply_y(self, y):
+        _, _, _, _, T, Bm = self._geom()
+        gh = self.winfo_height() - T - Bm
+        self._gains[self._drag_idx] = self._gain_at_y(y, T, gh)
+        self.redraw()
+        if self.on_change:
+            try:
+                self.on_change(list(self._gains))
+            except Exception:
+                pass
+
+    def _wheel(self, e):
+        import sys as _s
+        d = int(-e.delta / 120) if _s.platform.startswith("win") else (
+            -1 if getattr(e, "num", 0) == 4 else
+            1 if getattr(e, "num", 0) == 5 else 0)
+        if not d:
+            return
+        w, h, L, R, T, B = self._geom()
+        i = self._band_at_x(e.x, w, L, w - L - R)
+        self._gains[i] = max(-12, min(12, self._gains[i] + d))
+        self.redraw()
+        if self.on_change:
+            try:
+                self.on_change(list(self._gains))
+            except Exception:
+                pass
+
+    # ── 外部接口 ──
+    def get_gains(self):
+        return list(self._gains)
+
+    def set_gains(self, gains):
+        self._gains = list(gains)
+        self.redraw()
 
 
 def open_eq_editor(parent, get_gains, set_gains, sizes=None, fonts=None):
-    """get_gains() -> list[61]；set_gains(list[61]) 应用并持久化。"""
+    """曲线编辑器：拖手柄/滚轮微调；对数插值映射为 61 带增益实时下发。"""
     import math
-    dlg = DarkDialog(parent, "均衡器", 420, 420, sizes=sizes, fonts=fonts)
+    dlg = DarkDialog(parent, "均衡器", 480, 380, sizes=sizes, fonts=fonts)
     cur61 = list(get_gains())
     freqs61 = [20 * (1000 ** (i / 60.0)) for i in range(61)]
 
@@ -233,10 +389,10 @@ def open_eq_editor(parent, get_gains, set_gains, sizes=None, fonts=None):
                 out.append(pts[0][1])
                 continue
             for i in range(len(pts) - 1):
-                a, b = pts[i], pts[i + 1]
-                if a[0] <= lf <= b[0]:
-                    t = (lf - a[0]) / (b[0] - a[0])
-                    out.append(a[1] + (b[1] - a[1]) * t)
+                a, b2 = pts[i], pts[i + 1]
+                if a[0] <= lf <= b2[0]:
+                    t = (lf - a[0]) / (b2[0] - a[0])
+                    out.append(a[1] + (b2[1] - a[1]) * t)
                     break
             else:
                 out.append(pts[-1][1])
@@ -245,52 +401,33 @@ def open_eq_editor(parent, get_gains, set_gains, sizes=None, fonts=None):
     def band_from_61(gains61):
         out = []
         for fb in EQ_BANDS:
-            j = min(range(61), key=lambda i: abs(freqs61[i] - fb))
+            j = min(range(61), key=lambda k: abs(freqs61[k] - fb))
             out.append(float(gains61[j]))
         return out
 
-    vars10 = []
-    grid = tk.Frame(dlg.body, bg=theme.WINDOW)
-    grid.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
     init10 = band_from_61(cur61)
-    for i, fb in enumerate(EQ_BANDS):
-        c = tk.Frame(grid, bg=theme.WINDOW)
-        c.grid(row=0, column=i, sticky="ns")
-        lbl = f"{fb//1000}k" if fb >= 1000 else str(fb)
-        tk.Label(c, text=lbl, bg=theme.WINDOW, fg=theme.TEXT_DIM,
-                 font=(fonts or {}).get("small")).pack()
-        var = tk.DoubleVar(value=max(-12.0, min(12.0, init10[i])))
-        vars10.append(var)
-        s = tk.Scale(c, variable=var, from_=12, to=-12, resolution=1,
-                     showvalue=False, length=180, orient=tk.VERTICAL,
-                     bg=theme.WINDOW, fg=theme.TEXT,
-                     troughcolor=theme.DARK, highlightthickness=0, bd=0,
-                     activebackground=theme.ACCENT)
-        s.pack()
-        val_lbl = tk.Label(c, text=f"{int(var.get()):+d}", bg=theme.WINDOW,
-                           fg=theme.TEXT, font=(fonts or {}).get("small"))
-        val_lbl.pack()
 
-        def _on(v, vv=var, vl=val_lbl):
-            vl.configure(text=f"{int(float(v)):+d}")
-            apply_now()
+    def apply(vals10):
+        set_gains(interp10(vals10))
 
-    def apply_now():
-        vals = [v.get() for v in vars10]
-        set_gains(interp10(vals))
+    holder = {}
+    curve = EQCurveCanvas(dlg.body, init10,
+                          on_change=lambda v: apply(v),
+                          sizes=sizes, fonts=fonts)
+    holder["c"] = curve
+    curve.pack(fill=tk.BOTH, expand=True, padx=8, pady=(4, 0))
 
     row = tk.Frame(dlg.body, bg=theme.WINDOW)
-    row.pack(fill=tk.X, padx=10, pady=(0, 10))
-    PRESETS = {"平直": [0] * 10, "低音增强": [6, 5, 3, 1, 0, 0, 0, 0, 0, 0],
-               "人声增强": [-2, -1, 0, 2, 4, 4, 3, 1, 0, -1],
-               "高音增强": [0, 0, 0, 0, 0, 1, 3, 5, 6, 6]}
+    row.pack(fill=tk.X, padx=10, pady=(0, 8))
     for name, vals in PRESETS.items():
         b = tk.Label(row, text=name, bg=theme.BUTTON, fg=theme.TEXT,
-                     font=(fonts or {}).get("small"), padx=8,
-                     pady=2, cursor="hand2")
+                     font=(fonts or {}).get("small"), padx=8, pady=2,
+                     cursor="hand2")
         b.pack(side=tk.LEFT, padx=2)
-        b.bind("<Button-1>", lambda e, vs=vals: [
-            v.set(x) for v, x in zip(vars10, vs)] + [apply_now()])
+        b.bind("<Button-1>",
+               lambda e, vs=vals: (curve.set_gains(vs), apply(vs)))
+        b.bind("<Enter>", lambda e, w=b: w.configure(bg=theme.DARK))
+        b.bind("<Leave>", lambda e, w=b: w.configure(bg=theme.BUTTON))
 
 
 # ── TSE 参考录音 ──
@@ -382,7 +519,7 @@ def open_tse_dialog(parent, engine, config, sizes=None, fonts=None):
     btn_row = tk.Frame(dlg.body, bg=theme.WINDOW)
     btn_row.pack(fill=tk.X, padx=14, pady=8)
     rec_btn = tk.Label(btn_row, text="● 开始录音 (10s)", bg=theme.STOP_BG,
-                       fg="#000000", font=(fonts or {}).get("bold"),
+                       fg=theme.ACCENT_TEXT, font=(fonts or {}).get("bold"),
                        padx=12, pady=sizes["pad_sm"] if sizes else 4,
                        cursor="hand2")
     rec_btn.pack(side=tk.LEFT)
@@ -459,7 +596,7 @@ def open_vbcable_dialog(parent, sizes=None, fonts=None):
     btn_row = tk.Frame(card, bg=theme.ALT_BASE)
     btn_row.pack(fill=tk.X, padx=10, pady=(4, 10))
     for text, cmd in actions:
-        b = tk.Label(btn_row, text=text, bg=theme.BUTTON, fg=theme.ACCENT,
+        b = tk.Label(btn_row, text=text, bg=theme.BUTTON, fg=theme.TEXT,
                      font=F.get("body"), padx=12, cursor="hand2",
                      pady=S["pad_sm"])
         b.pack(side=tk.LEFT, padx=(0, 8))

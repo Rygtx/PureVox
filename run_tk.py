@@ -47,9 +47,6 @@ def main():
             print("程序已在运行")
         sys.exit(1)
 
-    from uitk import theme
-    theme.refresh_accent()
-
     config = None
     try:
         from user_paths import CONFIG_PATH, ensure_dirs

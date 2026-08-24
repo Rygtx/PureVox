@@ -29,7 +29,8 @@ import numpy as np
 from pvengine.context import FrameContext, HOP_LENGTH, SAMPLE_RATE, MODE_DENOISE
 from pvengine.pipeline import Pipeline
 from pvengine.plugins import create_plugin, DEFAULT_CHAIN
-from pvengine.components.misc import BufferTapStage, ClipStage, RecorderTapStage
+from pvengine.components.misc import (BufferTapStage, ClipStage,
+                                      OutputTapStage, RecorderTapStage)
 
 _VIZ_CAP = 1 << 16
 
@@ -69,6 +70,8 @@ class AudioProcessor:
         self._stage_cache = {}      # AI Stage 缓存（denoise/aec/tse）
         self._viz_in = BufferTapStage()
         self._viz_out = BufferTapStage()
+        self._viz_taps = []   # 位置抽头（链内 viz 节点），见 set_plugins
+        self._out_taps = []   # 输出位置抽头（链内 output 节点），按链序
         self._viz_in.enabled = False
         self._viz_out.enabled = False
         self._recorder = RecorderTapStage()
@@ -92,17 +95,51 @@ class AudioProcessor:
     def set_plugins(self, chain_cfg):
         """整体替换插件链。单项失败（如模型缺失）跳过并记入 plugin_errors。
 
-        系统节点（输入/输出/可视化）不入管线，但保留占位——
+        系统节点（输入/输出）不入管线，但保留占位——
         _entries 与 UI 节点行索引 1:1 对齐，行级操作按此路由。
+        viz 节点是**位置抽头**：在链中它所在的精确位置插入
+        BufferTapStage（线性语义——抽到的是"到此为止"的信号），
+        按 UI 行序编号，经 take_viz_tap(ordinal) 读取。
         """
         stages = []
         typed = []
         entries = []
+        self._viz_taps = []          # [(ptype, BufferTapStage)] 按链序
+        self._out_taps: list[OutputTapStage] = []   # 输出位置抽头，按链序
         self.plugin_errors = []
+
+        def _spec_kind(ptype):
+            try:
+                from pvengine.plugins import get_spec
+                sp = get_spec(ptype)
+                return sp.kind if sp else None
+            except Exception:
+                return None
+
         for item in (chain_cfg or []):
             ptype = str(item.get("type", ""))
             enabled = bool(item.get("enabled", True))
             params = item.get("params") or {}
+            if _spec_kind(ptype) == "viz":
+                if enabled:
+                    tap = BufferTapStage(48000 * 5)
+                    self._viz_taps.append((ptype, tap))
+                    stages.append(tap)
+                    typed.append((ptype, tap))
+                    entries.append((ptype, tap, dict(params), enabled))
+                else:
+                    entries.append((ptype, None, dict(params), enabled))
+                continue
+            if _spec_kind(ptype) == "output":
+                if enabled:
+                    tap = OutputTapStage()
+                    self._out_taps.append(tap)
+                    stages.append(tap)
+                    typed.append((ptype, tap))
+                    entries.append((ptype, tap, dict(params), enabled))
+                else:
+                    entries.append((ptype, None, dict(params), enabled))
+                continue
             try:
                 obj = create_plugin(ptype, params, self._stage_cache)
             except Exception as e:
@@ -123,6 +160,21 @@ class AudioProcessor:
         self._typed = typed
         self.pipeline = Pipeline(
             [self._viz_in] + stages + [self._recorder, self._clip, self._viz_out])
+
+    def take_viz_tap(self, ordinal: int, cap: int = 4096):
+        """取第 ordinal 个 viz 位置抽头的新样本（UI 线程定期调用即排空）。"""
+        try:
+            return self._viz_taps[ordinal][1].take(cap)
+        except Exception:
+            return []
+
+    def take_output_frames(self) -> list:
+        """取全部输出位置抽头的最新帧（按链序；空列表=无输出节点）。
+
+        音频线程每处理一帧后调用并逐路写入播放流——线性多出：
+        每路输出拿到自己链位置上的信号。
+        """
+        return [t.take_latest() for t in self._out_taps]
 
     def _entries_cfg(self) -> list:
         """全量链配置（含系统节点占位），顺序与 UI 行一致。"""

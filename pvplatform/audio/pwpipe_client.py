@@ -411,6 +411,23 @@ class PwBridge:
         for ring in self._out_rings:
             ring.write(samples)
 
+    def write_per_output(self, frames: List[Optional[List[float]]]) -> None:
+        """按输出路分别写入（线性多出：每路拿自己链位置上的信号）。
+
+        frames[i] 对应第 i 路输出；None/空 表示该路本帧静音跳过；
+        列表短于路数时，多余的路复用最后一个非空帧（单出兼容）。
+        """
+        if not (self.available and self._out_rings):
+            return
+        last = None
+        for i, ring in enumerate(self._out_rings):
+            f = frames[i] if i < len(frames) else None
+            if f:
+                last = f
+                ring.write(f)
+            elif last:
+                ring.write(last)
+
     def set_far(self, sink_name: str, enabled: bool) -> bool:
         """运行时开关 AEC far 采集流（监听 <sink>.monitor 源）。"""
         if not self.available:

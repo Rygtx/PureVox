@@ -173,3 +173,24 @@ class BufferTapStage(Stage):
         got = self._acc[:cap]
         del self._acc[:len(got)]
         return got
+
+
+class OutputTapStage(Stage):
+    """位置输出抽头：保存最新一帧（线性多出——每路输出拿自己链
+    位置上的信号），由音频线程每帧处理后取走写入对应播放流。"""
+
+    name = "output_tap"
+    active_modes = None   # 恒生效
+
+    def __init__(self):
+        super().__init__()
+        self.latest: list[float] = []
+
+    def process(self, frame, ctx: FrameContext):
+        self.latest = frame.tolist()
+        return frame
+
+    def take_latest(self) -> list[float]:
+        got = self.latest
+        self.latest = []
+        return got

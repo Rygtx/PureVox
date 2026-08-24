@@ -328,28 +328,37 @@ class MainWindowTk:
         # ── 自绘顶栏（去系统标题栏，保证颜色一致；整体可拖动）──
         self.root.withdraw()   # 先藏窗，全部上色后再显示——避免白闪
         self.root.overrideredirect(True)
-        bar_title = tk.Frame(self.root, bg=theme.BUTTON, height=S["titlebar_h"])
+        bar_title = tk.Frame(self.root, bg=theme.TITLE_BG,
+                             height=S["titlebar_h"])
         bar_title.pack(fill=tk.X)
         bar_title.pack_propagate(False)
-        title_lbl = tk.Label(bar_title, text="PureVox", bg=theme.BUTTON,
-                             fg=theme.TEXT, font=self.fonts["bold"])
+        # 三边同色细边：消除「深顶浅底罐头瓶/钉子」观感，形成整框包裹
+        bd_l = tk.Frame(self.root, bg=theme.TITLE_BG, width=2)
+        bd_r = tk.Frame(self.root, bg=theme.TITLE_BG, width=2)
+        bd_b = tk.Frame(self.root, bg=theme.TITLE_BG, height=2)
+        bd_l.pack(side=tk.LEFT, fill=tk.Y)
+        bd_r.pack(side=tk.RIGHT, fill=tk.Y)
+        bd_b.pack(side=tk.BOTTOM, fill=tk.X)
+        title_lbl = tk.Label(bar_title, text="PureVox", bg=theme.TITLE_BG,
+                             fg=theme.TITLE_FG, font=self.fonts["bold"])
         title_lbl.pack(side=tk.LEFT, padx=S["pad_md"])
         # 关闭钮：外壳锁定正方形（titlebar 内切），按钮填满
-        close_wrap = tk.Frame(bar_title, bg=theme.BUTTON,
+        close_wrap = tk.Frame(bar_title, bg=theme.TITLE_BG,
                               width=S["titlebar_h"], height=S["titlebar_h"])
         close_wrap.pack(side=tk.RIGHT)
         close_wrap.pack_propagate(False)
-        btn_x = tk.Label(close_wrap, text="×", bg=theme.BUTTON,
-                         fg=theme.TEXT_DIM, font=self.fonts["bold"],
+        btn_x = tk.Label(close_wrap, text="×", bg=theme.TITLE_BG,
+                         fg=theme.TITLE_FG, font=self.fonts["bold"],
                          cursor="hand2")
         btn_x.place(relx=0.5, rely=0.5, anchor="center")
         btn_x.bind("<Button-1>", lambda e: (
             self._hide_window() if getattr(self, "tray", None)
             else self.quit_app()))
         btn_x.bind("<Enter>", lambda e: (btn_x.configure(
-            bg=theme.STOP_BG, fg="#000000"), close_wrap.configure(bg=theme.STOP_BG)))
+            bg=theme.STOP_BG, fg="#ffffff"), close_wrap.configure(bg=theme.STOP_BG)))
         btn_x.bind("<Leave>", lambda e: (btn_x.configure(
-            bg=theme.BUTTON, fg=theme.TEXT_DIM), close_wrap.configure(bg=theme.BUTTON)))
+            bg=theme.TITLE_BG, fg=theme.TITLE_FG),
+            close_wrap.configure(bg=theme.TITLE_BG)))
         for w in (bar_title, title_lbl):
             w.bind("<ButtonPress-1>", self._title_drag_begin)
             w.bind("<B1-Motion>", self._title_drag_move)
@@ -371,7 +380,7 @@ class MainWindowTk:
         bar.pack(fill=tk.X, padx=S["pad_md"], pady=S["pad_md"])
         self.btn_start = FlatButton(bar, "启动音频处理",
                                     command=self._on_start,
-                                    bg=theme.START_BG, fg="#000000",
+                                    bg=theme.START_BG, fg=theme.ACCENT_TEXT,
                                     font=self.fonts["body"], sizes=self.sizes)
         self.btn_start.pack(side=tk.LEFT, fill=tk.X, expand=True)
 
@@ -798,48 +807,44 @@ class MainWindowTk:
 
     def _attach_viz(self, row, name):
         if name == "vu_meter":
-            w = VUCanvas(row.body_frame, sizes=self.sizes)
+            w = VUCanvas(row.body_frame, sizes=self.sizes, height=26)
             w.pack(fill=tk.X, pady=self.sizes["pad_sm"])
         elif name == "spectrum":
+            # 可视化面积最大化：随窗口高度拉伸
             w = SpectrumCanvas(row.body_frame, sizes=self.sizes)
-            w.pack(fill=tk.X, pady=self.sizes["pad_sm"])
+            w.pack(fill=tk.BOTH, expand=True,
+                   pady=self.sizes["pad_sm"])
         else:
             return
-        # 参数区由 _make_row 末尾 ensure_body 统一显示
+        # 位置抽头序号 = 本行之前【启用】的 viz 行数
+        # （set_plugins 只为启用行建抽头；禁用行不占序号）
+        def _ordinal(r=row):
+            return sum(1 for x in self.rows
+                       if x.spec.kind == "viz"
+                       and x.cfg.get("enabled", True)
+                       and self.rows.index(x) < self.rows.index(r))
+        self._viz_widgets.append((row, name, w, _ordinal))
         row.title_lbl.unbind("<Double-Button-1>")
-        self._viz_widgets.append((row, name, w))
 
     def _viz_tick(self):
-        """33ms 定时：从音频线程拉峰值/频谱喂给 viz 控件。"""
-        th = self.engine.thread
+        """33ms 定时喂 viz。
+
+        线性组件语义：每个 viz 行从**自己的位置抽头**取数
+        （processor._viz_taps[ordinal]，抽到的是链中该点之前的全部处理
+        结果）；VU 峰值从同一份抽头样本现算。无全局第二检查点。
+        """
+        proc = self.engine.processor if self.engine.running else None
         now = time.time()
-        for row, name, w in self._viz_widgets:
-            if not row.winfo_exists():
-                continue
-            if th is None or not self.engine.running:
-                if name == "vu_meter":
-                    w.update_level(0.0, now)
+        for row, name, w, ordinal_fn in self._viz_widgets:
+            if not row.winfo_exists() or not row.on_var.get():
                 continue
             try:
+                data = proc.take_viz_tap(ordinal_fn()) if proc else []
                 if name == "vu_meter":
-                    peak = getattr(th, "_vu_peak", 0.0)
-                    w.update_level(peak, now)
-                elif name == "spectrum":
-                    in_buf = getattr(th, "_spectrum_in", None)
-                    out_buf = getattr(th, "_spectrum_out", None)
-                    in_data = out_data = None
-                    if in_buf and in_buf.available() > 0:
-                        n = min(2048, in_buf.available())
-                        in_data = in_buf.read_latest(n)
-                    if out_buf and out_buf.available() > 0:
-                        n = min(2048, out_buf.available())
-                        out_data = out_buf.read_latest(n)
-                    if isinstance(in_data, list) and not in_data:
-                        in_data = None
-                    if isinstance(out_data, list) and not out_data:
-                        out_data = None
-                    if in_data or out_data:
-                        w.update_spectrum(in_data, out_data)
+                    w.update_level(max((abs(x) for x in data), default=0.0),
+                                   now)
+                elif name == "spectrum" and data:
+                    w.update_spectrum(None, data)
             except Exception:
                 pass
         self.root.after(33, self._viz_tick)
@@ -868,11 +873,14 @@ class MainWindowTk:
             acts.append(("教程", lambda: webbrowser_open(
                 "https://www.bilibili.com/video/BV1i2bazGEKe/")))
         for text, cmd in acts:
-            b = tk.Label(card, text=text, bg=theme.BUTTON, fg=theme.ACCENT,
-                         font=self.fonts.get("small"), padx=6, pady=1,
-                         cursor="hand2")
-            b.pack(side=tk.RIGHT, padx=2)
+            # 文字型动作：直接坐在卡片底上，不搞彩色贴片（悬停才变色）
+            b = tk.Label(card, text=text, bg=theme.ALT_BASE,
+                         fg=theme.TEXT_DIM, font=self.fonts.get("small"),
+                         padx=6, pady=4, cursor="hand2")
+            b.pack(side=tk.RIGHT)
             b.bind("<Button-1>", lambda e, c=cmd: c())
+            b.bind("<Enter>", lambda e, w=b: w.configure(fg=theme.TEXT))
+            b.bind("<Leave>", lambda e, w=b: w.configure(fg=theme.TEXT_DIM))
 
     def refresh_devices(self):
         """后台枚举设备，回主线程刷新各设备下拉。"""
@@ -958,5 +966,4 @@ def sys_wheel_delta(e):
 
 
 if __name__ == "__main__":
-    theme.refresh_accent()
     MainWindowTk().run()
