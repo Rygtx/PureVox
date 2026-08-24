@@ -61,20 +61,24 @@ class ParamSlider(tk.Frame):
         super().__init__(parent, bg=parent.cget("bg"))
         self.sizes = sizes
         self.fonts = fonts
-        tk.Label(self, text=label, bg=self["bg"], fg=theme.TEXT_DIM,
-                 font=fonts.get("small")).pack(side=tk.LEFT,
-                                               padx=(0, sizes["pad_sm"]))
-        # 数值在右（× 前），大号加粗醒目
-        self.val_lbl = tk.Label(self, text=f"{default:g}", bg=self["bg"],
-                                fg=theme.ACCENT, font=fonts.get("bold"),
-                                width=5, anchor="e")
-        self.val_lbl.pack(side=tk.RIGHT)
+        # 纯单位标签（如 dB）放数字后面；描述性标签才放左侧
+        self._unit = label if len(label) <= 3 else ""
+        if label and not self._unit:
+            tk.Label(self, text=label, bg=self["bg"], fg=theme.TEXT_DIM,
+                     font=fonts.get("small")).pack(side=tk.LEFT,
+                                                   padx=(0, sizes["pad_sm"]))
+        # 数值+单位在右（× 前），大号加粗醒目
+        self.val_lbl = tk.Label(self, text=f"{default:g} {self._unit}".strip(),
+                                bg=self["bg"], fg=theme.TEXT,
+                                font=fonts.get("bold"), anchor="e")
+        self.val_lbl.pack(side=tk.RIGHT, padx=(self.sizes["pad_sm"], 0))
         from .widgets import HSlider
         ref = {}
         s = HSlider(self, lo, hi, default, step, sizes=sizes,
                     command=lambda: (
                         self.var.set(ref["s"].value),
-                        self.val_lbl.configure(text=f"{ref['s'].value:g}"),
+                        self.val_lbl.configure(
+                            text=f"{ref['s'].value:g} {self._unit}".strip()),
                         on_commit()))
         ref["s"] = s
         s.pack(side=tk.LEFT, fill=tk.X, expand=True)

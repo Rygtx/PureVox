@@ -154,15 +154,15 @@ class HSlider(tk.Canvas):
         self.delete("all")
         cy = h // 2
         th = max(8, S["ctl_h"] // 3)      # 加粗槽厚
-        # 槽顶满全宽（0 → w）
-        self.create_rectangle(0, cy - th // 2, w, cy + th // 2,
+        # 槽顶满全宽（0 → w-1，留 1px 防描边被裁）
+        self.create_rectangle(0, cy - th // 2, w - 1, cy + th // 2,
                               fill=theme.TRACK, width=0)
         x = self._val_to_x(self.value)
-        self.create_rectangle(0, cy - th // 2, x, cy + th // 2,
+        self.create_rectangle(0, cy - th // 2, min(x, w - 1), cy + th // 2,
                               fill=theme.ACCENT, width=0)
-        # 把手（行程夹在两端内，视觉上槽顶到边）
+        # 把手（行程夹在两端内并留 1px，防止右端描边被画布裁掉）
         hh = S["ctl_h"] - 4
-        x = max(self._hw, min(w - self._hw, x))
+        x = max(self._hw + 1, min(w - self._hw - 1, x))
         self.create_rectangle(x - self._hw, cy - hh // 2,
                               x + self._hw, cy + hh // 2,
                               fill=theme.ACCENT, outline=theme.TEXT_DIM,

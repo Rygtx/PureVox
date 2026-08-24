@@ -247,8 +247,8 @@ class EQCurveCanvas(tk.Canvas):
         # 线宽/手柄/字号随挡位缩放
         self._lw = max(2, int(round(2 * s)))
         self._hs = max(4, int(round(5 * s)))          # 手柄半边长
-        self._tick_font = ("TkDefaultFont",
-                           max(7, int(round(7 * s))))
+        self._axis_font = ("TkDefaultFont", max(9, int(round(9 * s))))
+        self._tick_font = ("TkDefaultFont", max(8, int(round(8 * s))))
         super().__init__(parent, bg="#FFFFFF", highlightthickness=0,
                          bd=0, cursor="hand2")
         self.bind("<Configure>", lambda e: self.redraw())
