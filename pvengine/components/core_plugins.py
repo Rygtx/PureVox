@@ -31,7 +31,7 @@ from pvengine.dsp.stft import StftProcessor
 
 class GainPlugin(Effect):
     NAME = "gain"
-    LABEL = "前增益"
+    LABEL = "增益"
     PARAMS = {"gain_db": ("增益 dB", -30.0, 30.0, 0.0, 1.0)}
 
     def __init__(self, params=None, stage_cache=None):
