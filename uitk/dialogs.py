@@ -24,6 +24,7 @@
 import ast
 import os
 import tkinter as tk
+import math
 
 from . import theme
 from .metrics import make_sizes
