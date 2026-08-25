@@ -15,8 +15,8 @@
 #
 # SPDX-License-Identifier: GPL-3.0-or-later
 
-"""核心处理插件——把 前增益/AGC/噪声门/EQ/压缩器/AI 降噪/AEC/TSE 统一成与
-FX 音效相同的插件接口（NAME/LABEL/PARAMS/set_params/process/reset），
+"""核心处理插件——前增益/AGC/噪声门/EQ/压缩器/AI 降噪/AEC/TSE 统一为相同的
+插件接口（NAME/LABEL/PARAMS/set_params/process/reset），
 使整条管线完全由用户插件链驱动，不再有固定模式。
 
 AI 类插件的模型引擎由 AudioProcessor 的 engine_cache 共享（按类型缓存），
@@ -25,7 +25,7 @@ AI 类插件的模型引擎由 AudioProcessor 的 engine_cache 共享（按类�
 
 import numpy as np
 
-from pvengine.components.fx.base import Effect
+from pvengine.components.effect_base import Effect
 from pvengine.dsp.stft import StftProcessor
 
 

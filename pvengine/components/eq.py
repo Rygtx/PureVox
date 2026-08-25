@@ -15,11 +15,20 @@
 #
 # SPDX-License-Identifier: GPL-3.0-or-later
 
-"""EQ 组件——61 段 peaking biquad 级联（RBJ 系数，Q=√2）。
+"""EQ 组件——61 段 1/6 倍频程图示均衡器（标准做法）。
 
-IIR 递推用 scipy.signal.lfilter（C 实现速度），zi 状态跨帧连续；
-全部增益为 0 时组件旁路（对齐原 C eq_active_ 行为）。
+- 频点为 ISO 266 1/6 倍频程标称中心频率（20 Hz ~ 20 kHz，相邻比 2^(1/6)）；
+- 每段一个 RBJ peaking biquad（audio-eq-cookbook 系式）；
+- Q 与频点栅格带宽匹配：Q = √(2^N)/(2^N − 1)，N = 1/6 倍频程 → ≈8.65。
+  这是图示 EQ 的标准取法——每段 -3 dB 带宽≈本段栅格宽度，
+  调一段只影响自己附近的频带，不向邻段大面积串扰；
+- 全零增益整体旁路；运行时跳过零增益段（恒等滤波器，跳过不改输出）；
+- IIR 递推走 scipy.signal.lfilter（C 实现），zi 状态跨帧连续。
+
+response_at() 是全链频响的唯一权威实现：引擎与 UI 曲线共用同一份系数与 Q。
 """
+
+import math
 
 import numpy as np
 from scipy.signal import lfilter
@@ -28,7 +37,10 @@ from pvengine.context import FrameContext, SAMPLE_RATE
 from pvengine.stages.base import Stage
 
 EQ_BANDS = 61
-EQ_Q = 1.414
+
+# 标准 1/6 倍频程带宽匹配 Q：Q = √(2^N)/(2^N − 1)，N = 1/6 ≈ 8.651
+_EQ_OCTAVES = 1.0 / 6.0
+EQ_Q = (2.0 ** (_EQ_OCTAVES / 2.0)) / (2.0 ** _EQ_OCTAVES - 1.0)
 
 EQ_FREQS = (
     20.0, 22.4, 25.0, 28.0, 31.5, 35.5, 40.0, 45.0, 50.0, 56.0,
@@ -56,6 +68,24 @@ def _peaking_eq(freq: float, gain_db: float, q: float, fs: float):
             (1.0 - alpha / a) / a0)
 
 
+def response_at(freq: float, gains, fs: float = SAMPLE_RATE) -> float:
+    """全部峰值段在 freq 处的总响应（dB）。UI 曲线绘制与本文件共用。"""
+    total_db = 0.0
+    w = 2.0 * math.pi * freq / fs
+    c, s = math.cos(w), math.sin(w)
+    c2, s2 = math.cos(2.0 * w), math.sin(2.0 * w)
+    for i, g in enumerate(gains):
+        if i >= EQ_BANDS or abs(float(g)) < 1e-9:
+            continue
+        b0, b1, b2, a1, a2 = _peaking_eq(EQ_FREQS[i], float(g), EQ_Q, fs)
+        nr = b0 + b1 * c + b2 * c2
+        ni = -(b1 * s + b2 * s2)
+        dr = 1.0 + a1 * c + a2 * c2
+        di = -(a1 * s + a2 * s2)
+        total_db += 20.0 * math.log10(math.hypot(nr, ni) / math.hypot(dr, di))
+    return total_db
+
+
 class EqStage(Stage):
     name = "eq"
 
@@ -63,24 +93,30 @@ class EqStage(Stage):
         super().__init__()
         self.fs = sample_rate
         self.active = False
+        self._active_idx: tuple[int, ...] = ()
         self._coeffs = [_peaking_eq(f, 0.0, EQ_Q, sample_rate) for f in EQ_FREQS]
         self._zi = [np.zeros(2) for _ in range(EQ_BANDS)]
 
     def set_gains(self, gains) -> None:
-        """设置 61 段增益（dB）；全零即旁路。"""
-        any_nonzero = False
+        """设置 61 段增益（dB）；全零即旁路。新激活段清零滤波器状态。"""
+        active = []
+        prev_active = self._active_idx
         for i in range(EQ_BANDS):
             g = float(gains[i]) if i < len(gains) else 0.0
-            if g != 0.0:
-                any_nonzero = True
             self._coeffs[i] = _peaking_eq(EQ_FREQS[i], g, EQ_Q, self.fs)
-        self.active = any_nonzero
+            if g != 0.0:
+                active.append(i)
+        self._active_idx = tuple(active)
+        for i in self._active_idx:
+            if i not in prev_active:
+                self._zi[i][:] = 0.0
+        self.active = bool(active)
 
     def process(self, frame, ctx: FrameContext):
         if not self.active:
             return frame
         y = frame.astype(np.float64)
-        for i in range(EQ_BANDS):
+        for i in self._active_idx:
             b0, b1, b2, a1, a2 = self._coeffs[i]
             y, self._zi[i] = lfilter([b0, b1, b2], [1.0, a1, a2], y, zi=self._zi[i])
         return y.astype(np.float32)

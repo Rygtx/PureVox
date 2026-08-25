@@ -15,12 +15,12 @@
 #
 # SPDX-License-Identifier: GPL-3.0-or-later
 
-"""音效组件基类与参数描述。
+"""插件基类——核心处理插件（增益/AGC/门/EQ/压缩器/AI 三件套）的统一契约。
 
-每个音效 = 一个 Effect 子类：
+每个插件 = 一个 Effect 子类：
 - PARAMS 声明参数模式（key → (标签, 最小, 最大, 默认, 步进)），UI 据此自动生成控件；
 - process(frame, ctx) -> frame 为唯一处理入口（float32 一维帧）；
-- 全部实现必须可整帧向量化（禁止逐样本 Python 循环），保证实时预算。
+- 实现必须满足实时预算（整帧向量化，禁止逐样本 Python 循环）。
 """
 
 from abc import ABC, abstractmethod
@@ -28,7 +28,7 @@ import numpy as np
 
 
 class Effect(ABC):
-    """音效基类。子类需设置 NAME（注册键）与 LABEL（显示名）。"""
+    """处理插件基类。子类需设置 NAME（注册键）与 LABEL（显示名）。"""
 
     NAME: str = "base"
     LABEL: str = "未命名"
@@ -51,7 +51,7 @@ class Effect(ABC):
         self.on_params_changed()
 
     def on_params_changed(self):
-        """参数变更钩子（如重建脉冲响应/滤波器系数），默认无操作。"""
+        """参数变更钩子（如重建滤波器系数），默认无操作。"""
 
     @abstractmethod
     def process(self, frame: np.ndarray, ctx) -> np.ndarray:
@@ -59,11 +59,3 @@ class Effect(ABC):
 
     def reset(self):
         """清空流式状态（缓冲/包络/滤波器 zi）。"""
-
-
-def db_to_lin(db: float) -> float:
-    return 10.0 ** (db / 20.0)
-
-
-def lin_to_db(lin: float) -> float:
-    return 20.0 * np.log10(max(abs(lin), 1e-10))

@@ -37,7 +37,6 @@ from pvengine.components.core_plugins import (
     GainPlugin, AgcPlugin, GatePlugin, EqPlugin, CompressorPlugin,
     DenoiserPlugin, EchoCancelPlugin, TsePlugin,
 )
-from pvengine.components.fx import EFFECT_TYPES as _FX_TYPES
 
 
 @dataclass(frozen=True)
@@ -50,7 +49,7 @@ class NodeSpec:
     params: dict = field(default_factory=dict)  # 滑杆模式 {key: (label,lo,hi,default,step)}
 
 
-# ── fx 目录顺序：核心在前（信号流惯例顺序），FX 在后 ──
+# ── 插件目录（信号流惯例顺序）──
 CATALOG: list[type] = [
     GainPlugin,
     DenoiserPlugin,
@@ -61,7 +60,6 @@ CATALOG: list[type] = [
     EqPlugin,
     CompressorPlugin,
 ]
-CATALOG += list(_FX_TYPES.values())
 
 PLUGIN_TYPES: dict[str, type] = {cls.NAME: cls for cls in CATALOG}
 

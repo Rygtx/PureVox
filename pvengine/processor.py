@@ -36,7 +36,7 @@ _VIZ_CAP = 1 << 16
 
 
 class _EffectAdapter:
-    """FX Effect → Stage 协议适配（Pipeline 只认 accepts/process/reset）。"""
+    """插件 Effect → Stage 协议适配（Pipeline 只认 accepts/process/reset）。"""
 
     name = "fx"
 

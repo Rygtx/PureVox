@@ -28,15 +28,8 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Qt, Signal, QRectF, QTimer
 from PySide6.QtGui import QPainter, QPen, QColor, QFont
 
-EQ_FREQS = [
-    20, 22.4, 25, 28, 31.5, 35.5, 40, 45, 50, 56,
-    63, 71, 80, 90, 100, 112, 125, 140, 160, 180,
-    200, 224, 250, 280, 315, 355, 400, 450, 500, 560,
-    630, 710, 800, 900, 1000, 1120, 1250, 1400, 1600, 1800,
-    2000, 2240, 2500, 2800, 3150, 3550, 4000, 4500, 5000, 5600,
-    6300, 7100, 8000, 9000, 10000, 11200, 12500, 14000, 16000, 18000,
-    20000,
-]
+# 频点栅格 / Q / 频响计算一律取自引擎（单一实现来源）
+from pvengine.components.eq import EQ_FREQS, response_at
 
 PRESETS = {
     "默认平直": [0,0,0,0,0,0,0,0,0,0, 0,0,0,0,0,0,0,0,0,0, 0,0,0,0,0,0,0,0,0,0, 0,0,0,0,0,0,0,0,0,0, 0,0,0,0,0,0,0,0,0,0, 0,0,0,0,0,0,0,0,0,0,0],
@@ -178,28 +171,7 @@ class EQCurveWidget(QWidget):
         return min(range(len(EQ_FREQS)), key=lambda i: abs(math.log10(freq) - math.log10(EQ_FREQS[i])))
 
     def _response(self, freq):
-        sr, q = 48000.0, 1.414
-        total = 0.0
-        for cf, gain in zip(EQ_FREQS, self._values):
-            if abs(gain) < 0.1:
-                continue
-            A = 10 ** (gain / 40.0)
-            w0 = 2.0 * math.pi * cf / sr
-            alpha = math.sin(w0) / (2.0 * q)
-            cos_w0 = math.cos(w0)
-            b0, b1, b2 = 1.0 + alpha * A, -2.0 * cos_w0, 1.0 - alpha * A
-            a0, a1, a2 = 1.0 + alpha / A, -2.0 * cos_w0, 1.0 - alpha / A
-            b0, b1, b2, a1, a2 = b0/a0, b1/a0, b2/a0, a1/a0, a2/a0
-            w = 2.0 * math.pi * freq / sr
-            c, s = math.cos(w), math.sin(w)
-            c2, s2 = math.cos(2*w), math.sin(2*w)
-            nr = b0 + b1*c + b2*c2
-            ni = -(b1*s + b2*s2)
-            dr = 1.0 + a1*c + a2*c2
-            di = -(a1*s + a2*s2)
-            mag = math.sqrt((nr*nr + ni*ni) / (dr*dr + di*di))
-            total += 20.0 * math.log10(mag)
-        return total
+        return response_at(freq, self._values)
 
     def _emit_debounced(self):
         """防抖发射：合并 50ms 内的多次变更，只发一次信号。"""

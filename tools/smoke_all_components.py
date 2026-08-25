@@ -94,8 +94,11 @@ def main() -> int:
             not in_dev and "音频输入" in "".join(plan.problems)), plan.problems
         if in_dev and out_dev:
             assert plan.ok(), plan.problems
-            assert len(plan.outputs) == 2, plan.outputs
-            assert len(plan.fx_chain) >= len(specs) - 5, len(plan.fx_chain)
+            # 输出数 = 注册表 output 节点数 + 追加的一路扇出
+            n_outputs = sum(1 for sp in specs if sp.kind == "output") + 1
+            assert len(plan.outputs) == n_outputs, plan.outputs
+            n_fx = sum(1 for sp in specs if sp.kind == "fx")
+            assert len(plan.fx_chain) == n_fx, len(plan.fx_chain)
     check("session_plan", t_plan)
 
     # ── 真实窗口构建 + 满链渲染 ──
