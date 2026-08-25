@@ -3,11 +3,11 @@
 # 产出: dist/PureVox-Linux-x64-<yyyy-MM-dd-HHmm>-release.deb
 #
 # 布局（与既有版本一致）:
-#   /opt/purevox/          全部源码+.so+模型+html+pvplatform
+#   /opt/purevox/          全部源码+模型+html+uitk+pvplatform
 #   /opt/purevox/python312  内嵌 Python 3.12（packages/python312 全量拷贝，
-#                          PySide6 + zeroconf/aiohttp/cryptography/opuslib
-#                          全部 pip 装好，与系统 Python 完全隔离）
-#   /usr/bin/purevox       启动脚本 → 用内嵌 python312 跑 run_pyside6.py
+#                          zeroconf/aiohttp/cryptography/opuslib 等 pip 依赖
+#                          全部装好，与系统 Python 完全隔离；GUI 为标准库 Tkinter）
+#   /usr/bin/purevox       启动脚本 → 用内嵌 python312 跑 run_tk.py
 #   /usr/share/applications/purevox.desktop
 #   /usr/share/icons/hicolor/256x256/apps/purevox.png
 #
@@ -48,9 +48,8 @@ mkdir -p "$ROOT/opt/purevox" \
 
 echo "==> 拷贝源码/图标"
 for f in \
-    audio_processor.py config_manager.py dialog_about.py dialog_eq.py logger.py \
-    model_config.py run_pyside6.py spectrum_histogram.py theme_colors.py \
-    dialog_tse_reference.py dialog_virtual_mic_linux.py ui_pyside6.py \
+    audio_processor.py config_manager.py about_content.py logger.py \
+    model_config.py run_tk.py \
     user_paths.py wav_io.py \
     aimic.py; do
     cp "$f" "$ROOT/opt/purevox/"
@@ -59,7 +58,7 @@ mkdir -p "$ROOT/opt/purevox/models" "$ROOT/opt/purevox/assets/icons"
 cp models/*.onnx "$ROOT/opt/purevox/models/"
 cp assets/icons/*.ico "$ROOT/opt/purevox/assets/icons/"
 
-echo "==> 捆绑内嵌 Python 3.12（packages/python312，含 PySide6 等全部 Python 依赖）"
+echo "==> 捆绑内嵌 Python 3.12（packages/python312，含全部 pip 依赖；GUI 为标准库 Tkinter）"
 # 与 pack_appimage.sh 一致：若内嵌 python 未编译则先引导（幂等）。CI 的
 # ubuntu job 需先拉 packages/cpython 子模块（workflow 已处理）且装有 libssl-dev，
 # 否则 bootstrap 编译出的解释器无 ssl、pip 无网络。
@@ -76,9 +75,6 @@ if [ ! -e "$ROOT/opt/purevox/python312/lib/libcrypt.so.2" ] && \
         "$ROOT/opt/purevox/python312/lib/libcrypt.so.2"
 fi
 
-echo "==> 瘦身 PySide6（应用只用 QtWidgets/QtCore/QtGui，砍掉 qml/3D/Charts 等冗余，560M→~112M）"
-bash tools/slim_pyside6.sh "$ROOT/opt/purevox/python312/lib/python3.12/site-packages/PySide6"
-
 echo "==> 拷贝 html/"
 cp -r html "$ROOT/opt/purevox/"
 
@@ -86,9 +82,11 @@ echo "==> 拷贝 server/（剔除 Windows opus.dll）"
 mkdir -p "$ROOT/opt/purevox/server"
 cp server/*.py "$ROOT/opt/purevox/server/"
 
-echo "==> 拷贝 pvplatform/ 与 pvengine/"
+echo "==> 拷贝 pvplatform/ 与 pvengine/ 与 uitk/ 与 about/"
 cp -r pvplatform "$ROOT/opt/purevox/"
 cp -r pvengine "$ROOT/opt/purevox/"
+cp -r uitk "$ROOT/opt/purevox/"
+cp -r about "$ROOT/opt/purevox/"
 find "$ROOT/opt/purevox" -name "__pycache__" -type d -exec rm -rf {} + 2>/dev/null || true
 
 echo "==> 生成版本戳 _build_version.py（窗口标题，与文件名/包版本同源）"
@@ -101,12 +99,12 @@ echo "==> /usr/bin/purevox 启动脚本"
 cat > "$ROOT/usr/bin/purevox" <<'EOF'
 #!/bin/sh
 # PureVox — AI 麦克风降噪
-# 使用捆绑的内嵌 Python 3.12（/opt/purevox/python312，PySide6/numpy/onnxruntime
-# 等全部依赖已随包携带），与系统 Python/发行版包名完全隔离。
+# 使用捆绑的内嵌 Python 3.12（/opt/purevox/python312，numpy/onnxruntime 等
+# 全部依赖已随包携带，GUI 为标准库 Tkinter），与系统 Python/发行版包名完全隔离。
 export PYTHONHOME="/opt/purevox/python312"
 export PATH="/opt/purevox/python312/bin:$PATH"
 cd /opt/purevox || exit 1
-exec /opt/purevox/python312/bin/python3.12 /opt/purevox/run_pyside6.py "$@"
+exec /opt/purevox/python312/bin/python3.12 /opt/purevox/run_tk.py "$@"
 EOF
 chmod +x "$ROOT/usr/bin/purevox"
 
@@ -153,9 +151,10 @@ Description: PureVox — Real-time AI microphone noise reduction
  for the local microphone, with remote network streaming support.
  PureVox 实时 AI 麦克风降噪/目标提取/回声消除。
  .
- Python 运行时与全部 Python 依赖（PySide6 / zeroconf / aiohttp /
+ Python 运行时与全部 Python 依赖（zeroconf / aiohttp /
  cryptography / opuslib）已捆绑于包内 /opt/purevox/python312，与系统 Python
- 完全隔离，不依赖发行版 python 包名，跨发行版可安装即用。
+ 完全隔离，不依赖发行版 python 包名，跨发行版可安装即用；界面为标准库
+ Tkinter，无 Qt。
  .
  Linux 音频基于原生 PipeWire（libpipewire），格式协商 F32 单声道 48000Hz，
  重采样与声道转换由 PipeWire 负责。虚拟麦克风为单声道 null-sink

@@ -31,17 +31,14 @@ Set-Content _build_version.py "BUILD_DATE = `"$date`"" -Encoding UTF8
 
 # 2. PyInstaller packaging
 #    lazy-imported modules must be hidden-import (function-level `from xx import` is not
-#    discovered statically)
+#    discovered statically). The UI is the pure-Tkinter app (run_tk.py + uitk/);
+#    tcl/tk support is collected automatically and MUST be kept in the bundle.
 & $PY -m PyInstaller --clean --name PureVox --noconsole --icon=assets\icons\audio_icon_on.ico `
     --hidden-import=pyaudio `
     --hidden-import=audio_processor `
-    --hidden-import=dialog_about `
-    --hidden-import=dialog_eq `
-    --hidden-import=dialog_tse_reference `
-    --hidden-import=spectrum_histogram `
     --hidden-import=wav_io `
-    --hidden-import=dialog_vbcable_check `
     --hidden-import=pvplatform.audio.pwpipe_client `
+    --add-data="about;about" `
     --add-data="models\*.onnx;models" `
     --add-data="assets\icons\audio_icon_on.ico;assets\icons" `
     --add-data="assets\icons\audio_icon_off.ico;assets\icons" `
@@ -51,23 +48,12 @@ Set-Content _build_version.py "BUILD_DATE = `"$date`"" -Encoding UTF8
     --add-data="html\wasm\*;html\wasm\" `
     --add-data="server\*.py;server\" `
     --add-data="server\opus.dll;server\" `
-    --exclude-module=pandas,matplotlib,unittest,tensorflow,torch `
-    -y run_pyside6.py
+    --exclude-module=pandas,matplotlib,unittest,tensorflow,torch,PySide6,PyQt5 `
+    -y run_tk.py
 if ($LASTEXITCODE -ne 0) { throw "PyInstaller failed" }
 
-# 3. Remove unused files (~46MB: tcl/tk + unused PySide6 modules)
-#    WARNING: Qt6Qml.dll / Qt6Quick.dll must NEVER be removed here. pyside6.abi3.dll
-#    (the PySide6 core library every Qt*.pyd links) hard-imports Qt6Qml.dll; deleting
-#    it makes `import QtWidgets` fail on Win7 with "DLL load failed ... specified module not found"
-#    (verified 2026-08-09 via pefile + live Win7 EXE test). Qt6VirtualKeyboard.dll /
-#    Qt6QmlModels.dll collected into the bundle also depend on Qml/Quick. Only Qt6Pdf.dll
-#    and Qt6DataVisualization.dll are safe to drop (nothing in the import closure needs them).
-Remove-Item dist\PureVox\_internal\tcl86t.dll, dist\PureVox\_internal\tk86t.dll, dist\PureVox\_internal\_tkinter.pyd -Force -ErrorAction SilentlyContinue
-Remove-Item dist\PureVox\_internal\_tcl_data, dist\PureVox\_internal\_tk_data, dist\PureVox\_internal\tcl8 -Recurse -Force -ErrorAction SilentlyContinue
-Remove-Item dist\PureVox\_internal\PySide6\opengl32sw.dll -Force -ErrorAction SilentlyContinue
-Remove-Item dist\PureVox\_internal\PySide6\Qt6Pdf.dll, dist\PureVox\_internal\PySide6\Qt6DataVisualization.dll -Force -ErrorAction SilentlyContinue
-Remove-Item dist\PureVox\_internal\PySide6\QtOpenGL.pyd, dist\PureVox\_internal\PySide6\QtQuick.pyd, dist\PureVox\_internal\PySide6\QtQml.pyd, dist\PureVox\_internal\PySide6\QtPdf.pyd -Force -ErrorAction SilentlyContinue
-
+# 3. Keep tcl/tk data files: the Tkinter UI loads them at runtime (removing
+#    them breaks startup with "no display / init.tcl not found").
 # MSVC runtime DLLs ship with the bundle so no separate VC++ redistributable needed.
 foreach ($vc in @("msvcp140.dll", "msvcp140_1.dll", "vcruntime140.dll", "vcruntime140_1.dll")) {
     $src = Join-Path $env:WINDIR ("System32\" + $vc)
@@ -79,7 +65,7 @@ foreach ($vc in @("msvcp140.dll", "msvcp140_1.dll", "vcruntime140.dll", "vcrunti
     }
 }
 
-# (no doc copy step: the 关于 dialog embeds the manuals and the changelog
-#  entirely in dialog_about.py; CHANGELOG.md / 用户手册.html are deleted)
+# (no doc copy step: the About dialog embeds the manuals and the changelog
+#  entirely in about_content.py; CHANGELOG.md / user-manual html are deleted)
 
 Write-Host "==> Done: dist/PureVox"

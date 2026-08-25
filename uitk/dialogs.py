@@ -17,37 +17,15 @@
 
 """uitk 对话框：关于（文档标签页）/ EQ 编辑器 / 简易确认。
 
-关于对话框文本用 ast 从 dialog_about.py 源码提取字符串常量，
-不导入该模块——保持 uitk 零 PySide6 依赖。
+关于页大文本是真正的 markdown 文件（about/*.md），经 about_content.load_doc
+按页加载；本模块保持零第三方 GUI 依赖（仅标准库 Tkinter）。
 """
 
-import ast
-import os
 import tkinter as tk
 import math
 
 from . import theme
 from .metrics import make_sizes
-
-
-def _extract_consts(names):
-    """ast 解析 dialog_about.py，取模块级字符串常量。"""
-    src = os.path.join(os.path.dirname(os.path.dirname(
-        os.path.abspath(__file__))), "dialog_about.py")
-    out = {}
-    try:
-        tree = ast.parse(open(src, encoding="utf-8").read())
-        for node in tree.body:
-            if isinstance(node, ast.Assign):
-                for t in node.targets:
-                    if isinstance(t, ast.Name) and t.id in names:
-                        try:
-                            out[t.id] = ast.literal_eval(node.value)
-                        except Exception:
-                            pass
-    except Exception:
-        pass
-    return out
 
 
 class DarkDialog(tk.Toplevel):
@@ -126,7 +104,11 @@ class DarkDialog(tk.Toplevel):
 
 
 def _md_to_text_widget(parent, md_text, fonts):
-    """极简 markdown → Text 控件：#/##/### 标题、- 列表、**粗体**去星号。"""
+    """极简 markdown → Text 控件：#/##/### 标题、- 列表、**粗体**去星号、
+    [文本](URL) 可点击链接。"""
+    import re
+    import webbrowser
+
     txt = tk.Text(parent, bg=theme.BASE, fg=theme.TEXT, bd=0,
                   wrap="word", padx=12, pady=10, cursor="arrow",
                   font=fonts.get("body"))
@@ -139,6 +121,33 @@ def _md_to_text_widget(parent, md_text, fonts):
     txt.tag_configure("li", lmargin1=14, lmargin2=14,
                       spacing3=2)
     txt.tag_configure("dim", foreground=theme.TEXT_DIM)
+    txt.tag_configure("link", foreground=theme.ACCENT, underline=True)
+
+    def _open_link(url):
+        try:
+            webbrowser.open(url)
+        except Exception:
+            pass
+
+    link_re = re.compile(r'\[([^\]]+)\]\((https?://[^)\s]+)\)')
+    link_seq = [0]
+
+    def _insert_with_links(widget, text, base_tags):
+        """按 [文本](URL) 切分插入；URL 部分挂可点击 tag。"""
+        pos = 0
+        for m in link_re.finditer(text):
+            if m.start() > pos:
+                widget.insert("end", text[pos:m.start()], base_tags)
+            name = "lnk%d" % link_seq[0]
+            link_seq[0] += 1
+            widget.tag_configure(name, foreground=theme.ACCENT, underline=True)
+            widget.tag_bind(name, "<Button-1>",
+                            lambda e, u=m.group(2): _open_link(u))
+            widget.insert("end", m.group(1), tuple(base_tags) + (name,))
+            pos = m.end()
+        if pos < len(text):
+            widget.insert("end", text[pos:], base_tags)
+
     for raw in md_text.splitlines():
         line = raw.replace("**", "")
         if line.startswith("### "):
@@ -148,13 +157,16 @@ def _md_to_text_widget(parent, md_text, fonts):
         elif line.startswith("# "):
             txt.insert("end", line[2:] + "\n", "h1")
         elif line.startswith("- "):
-            txt.insert("end", "· " + line[2:] + "\n", "li")
+            _insert_with_links(txt, line[2:], ("li",))
+            txt.insert("end", "\n")
         elif line.startswith("> "):
-            txt.insert("end", line[2:] + "\n", ("li", "dim"))
+            _insert_with_links(txt, line[2:], ("li", "dim"))
+            txt.insert("end", "\n")
         elif line.strip().startswith("<"):
             continue    # 跳过 HTML 片段行
         elif line.strip():
-            txt.insert("end", line + "\n")
+            _insert_with_links(txt, line, ())
+            txt.insert("end", "\n")
         else:
             txt.insert("end", "\n")
     txt.configure(state="disabled")
@@ -180,9 +192,12 @@ def sizes_bar_width():
 
 
 def show_about_dialog(parent, sizes=None, fonts=None):
-    consts = _extract_consts({"CHANGELOG_TEXT", "_WINDOWS_BODY",
-                              "_LINUX_BODY"})
-    dlg = DarkDialog(parent, "关于 PureVox", 680, 620,
+    """关于：整页标签 —— 关于 / Windows 使用 / Linux 使用 / 更新日志 / 许可证。"""
+    import about_content as about
+    app_name = about.APP_NAME
+    build = about.BUILD_DATE or "开发版"
+    intro = about._INTRO_TEXT.replace("{BUILD_DATE}", str(build))
+    dlg = DarkDialog(parent, "关于 %s" % app_name, 680, 620,
                      sizes=sizes, fonts=fonts)
     dlg.minsize(480, 380)
     # 允许拉伸：body/canvas/Text 全部 fill+expand，文本框跟随窗口
@@ -192,9 +207,11 @@ def show_about_dialog(parent, sizes=None, fonts=None):
     holder = tk.Frame(dlg.body, bg=theme.BASE)
     holder.pack(fill=tk.BOTH, expand=True)
     pages = [
-        ("更新日志", consts.get("CHANGELOG_TEXT", "（缺失）")),
-        ("Windows 使用", consts.get("_WINDOWS_BODY", "（缺失）")),
-        ("Linux 使用", consts.get("_LINUX_BODY", "（缺失）")),
+        ("关于", intro),
+        ("Windows 使用", about.load_doc("windows")),
+        ("Linux 使用", about.load_doc("linux")),
+        ("更新日志", about.load_doc("changelog")),
+        ("许可证", about._LICENSE_TEXT),
     ]
     cur = [None]
 
@@ -595,109 +612,3 @@ def open_tse_dialog(parent, engine, config, sizes=None, fonts=None):
     rec_btn.pack(side=tk.LEFT)
     rec_btn.bind("<Button-1>", lambda e: None if recording[0] else do_record())
 
-
-# ── VB-CABLE 检测面板（Windows）──
-
-def vbcable_installed() -> bool:
-    """枚举音频端点找 CABLE（不导入 Qt 版检测模块）。"""
-    try:
-        import pyaudio
-        p = pyaudio.PyAudio()
-        try:
-            for i in range(p.get_device_count()):
-                name = str(p.get_device_info_by_index(i).get("name", ""))
-                if "cable" in name.lower():
-                    return True
-        finally:
-            p.terminate()
-    except Exception:
-        pass
-    return False
-
-
-def open_vbcable_dialog(parent, sizes=None, fonts=None):
-    """对照 dialog_vbcable_check：状态灯 + 双端点说明 + 驱动卡片（三操作）。"""
-    dlg = DarkDialog(parent, "VB-CABLE 虚拟声卡检测", 420, 320,
-                     sizes=sizes, fonts=fonts)
-    installed = vbcable_installed()
-    color = "#3aa76d" if installed else "#d9534f"
-    S = sizes or make_sizes(100)
-    F = fonts or {}
-
-    # ── 状态行 ──
-    head = tk.Frame(dlg.body, bg=theme.WINDOW)
-    head.pack(fill=tk.X, padx=16, pady=(14, 4))
-    dot = tk.Canvas(head, bg=theme.WINDOW, width=14, height=14,
-                    highlightthickness=0)
-    dot.pack(side=tk.LEFT, padx=(0, 8))
-    dot.create_oval(1, 1, 13, 13, fill=color, outline="")
-    tk.Label(head, text=f"VB-CABLE 驱动：{installed and '已安装' or '未安装'}",
-             bg=theme.WINDOW, fg=theme.TEXT,
-             font=F.get("bold")).pack(side=tk.LEFT)
-
-    # ── 双端点说明 ──
-    tk.Label(dlg.body,
-             text="CABLE Input —— 播放设备，PureVox 的「音频输出」选它；\n"
-                  "CABLE Output —— 录制设备，即其他软件里的虚拟麦克风。\n"
-                  "两端均建议固定 48kHz（声音控制面板 → 属性 → 高级）。",
-             bg=theme.BASE, fg=theme.TEXT_DIM, font=F.get("body"),
-             justify="left", anchor="w", padx=12, pady=8).pack(
-        fill=tk.X, padx=16, pady=4)
-
-    # ── 驱动卡片：三操作按钮行为与 PySide 版一致 ──
-    card = tk.Frame(dlg.body, bg=theme.ALT_BASE)
-    card.pack(fill=tk.X, padx=16, pady=10)
-    actions = []
-    if installed:
-        tip = "已安装，可直接使用；如需重装或改采样率再打开控制面板。"
-        actions.append(("打开控制面板", _open_vbcable_cp))
-    else:
-        tip = "未安装——无法向 OBS 等软件提供虚拟麦克风输入。"
-    actions += [
-        ("下载驱动包", lambda: _open_url(
-            "https://download.vb-audio.com/Download_CABLE/"
-            "VBCABLE_Driver_Pack45.zip")),
-        ("视频教程", lambda: _open_url(
-            "https://www.bilibili.com/video/BV1i2bazGEKe/")),
-    ]
-    tk.Label(card, text="驱动", bg=theme.ALT_BASE, fg=theme.TEXT_FAINT,
-             font=F.get("small")).pack(anchor="w", padx=10,
-                                       pady=(8, 0))
-    btn_row = tk.Frame(card, bg=theme.ALT_BASE)
-    btn_row.pack(fill=tk.X, padx=10, pady=(4, 10))
-    for text, cmd in actions:
-        b = tk.Label(btn_row, text=text, bg=theme.BUTTON, fg=theme.TEXT,
-                     font=F.get("body"), padx=12, cursor="hand2",
-                     pady=S["pad_sm"])
-        b.pack(side=tk.LEFT, padx=(0, 8))
-        b.bind("<Button-1>", lambda e, c=cmd: c())
-        b.bind("<Enter>", lambda e, w=b: w.configure(bg=theme.DARK))
-        b.bind("<Leave>", lambda e, w=b: w.configure(bg=theme.BUTTON))
-    tk.Label(dlg.body, text=tip, bg=theme.WINDOW, fg=theme.TEXT_FAINT,
-             font=F.get("small"), justify="left", wraplength=380).pack(
-        anchor="w", padx=16, pady=(0, 10))
-
-
-def _open_vbcable_cp():
-    """打开 VB-CABLE 控制面板（驱动级配置需管理员权限，UAC 提权）。"""
-    import ctypes
-    import os
-    for p in (r"C:\Program Files\VB\CABLE\VBCABLE_ControlPanel.exe",
-              r"C:\Program Files (x86)\VB\CABLE\VBCABLE_ControlPanel.exe"):
-        if os.path.exists(p):
-            try:
-                ctypes.windll.shell32.ShellExecuteW(None, "runas", p,
-                                                    None, None, 1)
-                return
-            except Exception:
-                pass
-    _open_url("ms-settings:sound")
-
-
-def _open_url(url):
-    import webbrowser
-    if url.startswith("ms-settings") or url.startswith("http"):
-        try:
-            webbrowser.open(url)
-        except Exception:
-            pass

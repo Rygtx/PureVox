@@ -1,23 +1,23 @@
 # PureVox
 
-Real-time AI audio processing for your microphone — denoising / target speech extraction /
+Real-time AI audio processing for your microphone 鈥?denoising / target speech extraction /
 echo cancellation, for both the local microphone and remote network streaming.
 
-[中文](README.md) | English
+[涓枃](README.md) | English
 
 ## Docs
 
-- 📖 The manual (Chinese) and the changelog are built into the app — menu "关于" (About: intro / Windows / Linux guides / changelog / license).
+- 馃摉 The manual (Chinese) and the changelog are built into the app 鈥?menu "鍏充簬" (About: intro / Windows / Linux guides / changelog / license).
 
 ## Features
 
-- 🎤 Real-time AI denoising (48 kHz, models loaded on demand)
-- 🗣️ TSE target speech extraction (record a reference clip, then separate your voice from background)
-- 🔊 AEC echo cancellation
-- 🎛️ 61-band (1/6-octave) EQ
-- 📊 AGC automatic gain control / VAD voice activity detection
-- 📱 Remote microphone: phone browser / Android APK streams over LAN to the PC for processing
-- 🖥️ Windows (WASAPI default / MME fallback) and Linux (native PipeWire)
+- 馃帳 Real-time AI denoising (48 kHz, models loaded on demand)
+- 馃棧锔?TSE target speech extraction (record a reference clip, then separate your voice from background)
+- 馃攰 AEC echo cancellation
+- 馃帥锔?61-band (1/6-octave) EQ
+- 馃搳 AGC automatic gain control / VAD voice activity detection
+- 馃摫 Remote microphone: phone browser / Android APK streams over LAN to the PC for processing
+- 馃枼锔?Windows (WASAPI default / MME fallback) and Linux (native PipeWire)
 
 ## Requirements
 
@@ -26,7 +26,7 @@ echo cancellation, for both the local microphone and remote network streaming.
 | Windows | Windows 10/11, Python 3.12+ |
 | Linux | Python 3.12+, PipeWire (native libpipewire audio; virtual mic is a null-sink) |
 
-> **⚠️ Windows 7 no longer supported**: Python 3.13 drops Win7; `v2026.08.14.1643` is the last Win7-compatible tag — download its [Windows asset](https://github.com/a2heng/PureVox/releases/tag/v2026.08.14.1643) and stay on that tag.
+> **鈿狅笍 Windows 7 no longer supported**: Python 3.13 drops Win7; `v2026.08.14.1643` is the last Win7-compatible tag 鈥?download its [Windows asset](https://github.com/a2heng/PureVox/releases/tag/v2026.08.14.1643) and stay on that tag.
 
 ## Quick start
 
@@ -43,7 +43,7 @@ git submodule update --init --depth 1 packages/cpython
 
 # Linux (just run the bootstrap; it compiles)
 ./bootstrap_python312.sh                     # -> packages/python312 (self-contained) + deps
-./py312 run_pyside6.py                       # run
+./py312 run_tk.py                            # run
 ./py312 setup.py build_ext --inplace --force # build libaimic.so + libpvpipe.so (pure C, gcc)
 
 # Windows (PowerShell, NuGet prebuilt download)
@@ -57,7 +57,7 @@ Alternatively, use a system Python 3.12+:
 # On Windows append `-r requirements-win.txt`
 pip install -r requirements.txt
 
-python run_pyside6.py
+python run_tk.py
 ```
 
 ### Linux
@@ -69,21 +69,21 @@ sudo oma install -y gcc pkgconf pipewire libpipewire-0.3-devel
 # Recommended: embedded 3.12 (see above)
 ./bootstrap_python312.sh
 ./py312 setup.py build_ext --inplace --force   # build pure C shared libs (libaimic.so + libpvpipe.so)
-./py312 run_pyside6.py
+./py312 run_tk.py
 
 # Or run directly with system python3:
 pip install --user -r requirements.txt
-python3 run_pyside6.py
+python3 run_tk.py
 ```
 
 Linux audio uses native PipeWire: the format is negotiated as F32 mono 48000 Hz, with
  resampling and channel conversion handled by PipeWire. The virtual microphone is the
  monitor of a mono null-sink named `purevox_out`; other apps can select
-**"PureVox 虚拟麦克风"** (PureVox Virtual Mic) as their input device. The AEC far-end
+**"PureVox 铏氭嫙楹﹀厠椋?** (PureVox Virtual Mic) as their input device. The AEC far-end
 (echo reference) is also captured natively via PipeWire (`stream.capture.sink` on the
 speaker sink).
 **The Linux local interface defaults to PipeWire, with an optional native ALSA backup**
-(`alsa_client.c` → `libpvalsa.so`, F32 mono 48k converted via the `plughw:C,D` plugin;
+(`alsa_client.c` 鈫?`libpvalsa.so`, F32 mono 48k converted via the `plughw:C,D` plugin;
 AEC far-end requires choosing an ALSA capture device that can record the speaker output).
 
 ### Windows remote-mic add-ons
@@ -91,8 +91,8 @@ AEC far-end requires choosing an ALSA capture device that can record the speaker
 The remote-microphone feature requires Opus decoding and the VB-CABLE virtual sound
 card, neither of which is bundled:
 
-1. `opus.dll` — from [DSharpPlus VoiceNext Natives](https://github.com/DSharpPlus/DSharpPlus/raw/master/docs/natives/vnext_natives_win32_x64.zip); rename `libopus.dll` → `opus.dll` and place it in `server/` (or system PATH)
-2. **VB-CABLE** — you need to download and install it yourself: download `VBCABLE_Setup_x64.exe` from [vb-audio.com/Cable](https://vb-audio.com/Cable/) (or the [official driver pack](https://download.vb-audio.com/Download_CABLE/VBCABLE_Driver_Pack45.zip) directly), then double-click the installer and follow the prompts. The first time PureVox detects it is missing, a guide dialog appears (including the [install video tutorial](https://www.bilibili.com/video/BV1i2bazGEKe/)).
+1. `opus.dll` 鈥?from [DSharpPlus VoiceNext Natives](https://github.com/DSharpPlus/DSharpPlus/raw/master/docs/natives/vnext_natives_win32_x64.zip); rename `libopus.dll` 鈫?`opus.dll` and place it in `server/` (or system PATH)
+2. **VB-CABLE** 鈥?you need to download and install it yourself: download `VBCABLE_Setup_x64.exe` from [vb-audio.com/Cable](https://vb-audio.com/Cable/) (or the [official driver pack](https://download.vb-audio.com/Download_CABLE/VBCABLE_Driver_Pack45.zip) directly), then double-click the installer and follow the prompts. The first time PureVox detects it is missing, a guide dialog appears (including the [install video tutorial](https://www.bilibili.com/video/BV1i2bazGEKe/)).
 
 ## Packaging
 
@@ -102,8 +102,7 @@ card, neither of which is bundled:
 powershell -ExecutionPolicy Bypass -File build_win.ps1   # produces dist/PureVox/ (PyInstaller one-folder bundle)
 ```
 
-The script runs the full flow: build `aimic.dll` (mingw gcc) → PyInstaller → tcl/tk + unused PySide6 module cleanup →
-copy docs. Windows CI runs the same flow and uploads `dist/PureVox/`; the `actions/upload-artifact` step compresses it
+The script runs the full flow: build `aimic.dll` (mingw gcc) 鈫?PyInstaller 鈫?tcl/tk + unused PySide6 module cleanup 鈫?copy docs. Windows CI runs the same flow and uploads `dist/PureVox/`; the `actions/upload-artifact` step compresses it
 to a zip automatically.
 
 ### Linux (deb / rpm / AppImage)
@@ -134,10 +133,10 @@ Requires JDK 17, Android SDK platform 34, NDK r27. On first build put the Opus s
 
 ## Remote microphone
 
-Phone / browser → WSS(Opus) → PC server → AI processing chain → speaker / virtual mic
+Phone / browser 鈫?WSS(Opus) 鈫?PC server 鈫?AI processing chain 鈫?speaker / virtual mic
 
 ```
-Phone → https://<PC_IP>:59123 (mDNS broadcast _purevox._tcp.local.) → denoise → output
+Phone 鈫?https://<PC_IP>:59123 (mDNS broadcast _purevox._tcp.local.) 鈫?denoise 鈫?output
 ```
 
 - Browser: phone and PC on the same LAN, visit `https://<PC_IP>:59123`, trust the
@@ -149,17 +148,15 @@ Phone → https://<PC_IP>:59123 (mDNS broadcast _purevox._tcp.local.) → denois
 ## Project layout
 
 ```
-run_pyside6.py            # entry point (single-instance lock)
-ui_pyside6.py             # main UI (PySide6): panels, device selection, mode switching
+run_tk.py                 # entry point (single-instance lock + Tk main window)
+uitk/                     # desktop UI (pure stdlib Tkinter): node panel, EQ editor, About
+about_content.py          # About-page text (changelog / manuals, single source)
 audio_processor.py        # core audio engine + TSE reference recording utilities
-aimic.c + aimic.py         # C audio core → aimic.dll / libaimic.so (mingw gcc) + ctypes binding
-pipewire_client.c + pvpipe.py + alsa_client.c + pvalsa.py  # native PipeWire/ALSA bridges → libpvpipe.so/libpvalsa.so (Linux, pure C + ctypes)
+aimic.c + aimic.py         # C audio core 鈫?aimic.dll / libaimic.so (mingw gcc) + ctypes binding
+pipewire_client.c + pvpipe.py + alsa_client.c + pvalsa.py  # native PipeWire/ALSA bridges 鈫?libpvpipe.so/libpvalsa.so (Linux, pure C + ctypes)
 pvplatform/               # platform abstraction: audio/ (enum, SpeakerCapture), system/ (single-instance, virtual mic)
-config_manager.py         # JSON config (migrates legacy keys)
+config_manager.py         # JSON config (strong config, per-API device keys)
 model_config.py           # ONNX model filename constants
-dialog_about.py           # About dialog
-dialog_eq.py              # EQ dialog
-dialog_tse_reference.py   # TSE reference-recording dialog
 server/                   # remote-mic HTTPS/WSS server (aiohttp + Opus + mDNS + TLS)
 html/                     # browser streaming front-end (AudioWorklet + Opus WASM)
 android/                  # Android client (Kotlin + OkHttp + Opus JNI)
@@ -187,7 +184,7 @@ setup.py                  # pure C shared library build (gcc, produces libaimic.
 
 - **Source code**: [GPL-3.0](LICENSE) (GNU General Public License v3.0 or later)
 - **Built-in AI models**: NOT covered by the GPL. They are the property of a2heng and may
-  only be used with PureVox under authorization — see [MODEL-LICENSE.md](MODEL-LICENSE.md)
+  only be used with PureVox under authorization 鈥?see [MODEL-LICENSE.md](MODEL-LICENSE.md)
 
 Author's MIT-licensed model repos (earlier versions, freely usable):
 

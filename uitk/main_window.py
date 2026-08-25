@@ -36,6 +36,7 @@ def webbrowser_open(url):
 import tkinter as tk
 import tkinter.font as tkfont
 
+from logger import Logger
 from . import theme
 from .metrics import make_sizes, detect_zoom_for_screen, \
     fix_tk_scaling, pick_font_family
@@ -325,7 +326,12 @@ class MainWindowTk:
                                  weight="bold"),
             "small": tkfont.Font(family=family, size=-S["font_small"]),
         }
-        self.root.title("PureVox")
+        try:
+            from _build_version import BUILD_DATE   # 打包脚本生成；源码态缺失
+            _ver = str(BUILD_DATE).strip()
+        except Exception:
+            _ver = ""
+        self.root.title("PureVox" + ((" " + _ver) if _ver else "（开发版）"))
         self.root.configure(bg=theme.WINDOW)
         self.root.geometry(f"{S['win_w']}x{S['win_h']}")
 
@@ -343,7 +349,9 @@ class MainWindowTk:
         bd_l.pack(side=tk.LEFT, fill=tk.Y)
         bd_r.pack(side=tk.RIGHT, fill=tk.Y)
         bd_b.pack(side=tk.BOTTOM, fill=tk.X)
-        title_lbl = tk.Label(bar_title, text="PureVox", bg=theme.TITLE_BG,
+        title_lbl = tk.Label(bar_title,
+                             text="PureVox" + ((" " + _ver) if _ver else ""),
+                             bg=theme.TITLE_BG,
                              fg=theme.TITLE_FG, font=self.fonts["bold"])
         title_lbl.pack(side=tk.LEFT, padx=S["pad_md"])
         # 关闭钮：外壳锁定正方形（titlebar 内切），按钮填满
@@ -389,7 +397,7 @@ class MainWindowTk:
         self.btn_start.pack(side=tk.LEFT, fill=tk.X, expand=True)
 
         self.btn_quit = FlatButton(bar, "退出", command=self.quit_app,
-                                   fg=theme.STOP_BG,
+                                   bg=theme.STOP_BG,
                                    font=self.fonts["body"],
                                    sizes=self.sizes, pad=S["pad_md"])
         self.btn_quit.pack(side=tk.LEFT, padx=(S["pad_sm"], 0))
@@ -413,7 +421,6 @@ class MainWindowTk:
         self.root.bind_all("<MouseWheel>", self._wheel)
         self.root.bind_all("<Button-4>", self._wheel)
         self.root.bind_all("<Button-5>", self._wheel)
-        from logger import Logger
         self.engine = EngineController(Logger(), config=self.config)
         self._viz_widgets: list = []
         self.root.after(33, self._viz_tick)
@@ -435,7 +442,11 @@ class MainWindowTk:
         sh = self.root.winfo_screenheight()
         ww, hh = S["win_w"], S["win_h"]
         self.root.geometry(f"+{(sw - ww) // 2}+{(sh - hh) // 2}")
-        self.root.deiconify()
+        # 启动时自动运行：不弹主窗，直接进托盘（对齐 legacy）
+        if bool(self._cfg_get("auto_start", False)):
+            self._shown = False
+        else:
+            self.root.deiconify()
 
     # ── 托盘（动作经队列转投主线程）──
     def _setup_tray(self):
@@ -553,11 +564,15 @@ class MainWindowTk:
     # ── 工具条行为 ──
     def _on_start(self):
         if self.engine.running:
-            self.engine.stop()
+            try:
+                self.engine.stop()
+            except Exception:
+                pass
             self._set_running_ui(False)
-            self.refresh_devices()
+            self.refresh_devices()      # 停止（无论成败）都刷新设备
             return
         err = self.engine.start(self.to_config())
+        self.refresh_devices()          # 启动尝试后必刷新：空设备时插上设备点启动即可见
         if err:
             if "48kHz" in err:
                 self._warn_48k(err)
@@ -719,7 +734,9 @@ class MainWindowTk:
             msg = wintypes.MSG()
             while user32.GetMessageW(ctypes.byref(msg), None, 0, 0) > 0:
                 if msg.message == WM_HOTKEY and msg.wParam == hk_id:
-                    self._tray_actions.append("toggle")
+                    # 勾选开关生效：关闭快捷键时不触发（对齐 legacy）
+                    if self._cfg_get("hotkey_enabled", True):
+                        self._tray_actions.append("toggle")
                 user32.TranslateMessage(ctypes.byref(msg))
                 user32.DispatchMessageW(ctypes.byref(msg))
 
@@ -783,9 +800,7 @@ class MainWindowTk:
         """虚拟输入设备：audio_input 行 + 自动锁定第一个 CABLE 输入端点。"""
         from pvengine.plugins import get_spec
         self.add_spec(get_spec("audio_input"))
-        row = self.rows[-1]
-        row._prefer_virtual = True
-        self.refresh_devices()
+        self.rows[-1]._prefer_virtual = True
 
     def _make_row(self, cfg, spec):
         row = NodeRow(self.panel, cfg, spec, self.sizes, self.fonts,
@@ -795,9 +810,6 @@ class MainWindowTk:
                       on_param=lambda r, k, v: self._on_param(r, k, v))
         row.set_toggle_cb(self._apply_chain_change)
         row._on_param_cb = self._apply_chain_change
-        # 下拉展开即刷新：与启动/停止/弹框共用同一套 refresh_devices
-        if hasattr(row, "dev_combo"):
-            row.dev_combo.on_open = self.refresh_devices
         row._apply_enabled_look()
         # viz 行：内嵌实时控件
         if spec.kind == "viz" and bool(cfg.get("enabled", True)):
@@ -874,48 +886,158 @@ class MainWindowTk:
         self.root.after(33, self._viz_tick)
 
     def _attach_vb_card(self, row):
-        """VB-CABLE 驱动状态卡：状态灯 + 说明 + 下载/教程（原面板内联化）。"""
-        from .dialogs import vbcable_installed
-        installed = vbcable_installed()
-        color = "#3aa76d" if installed else "#d9534f"
+        """VB-CABLE 卡片——完整实现 legacy 弹框的内容：
+        状态灯 / 双端点说明与数据流向 / 驱动卡片（打开控制面板·下载·教程）/
+        启动检测开关。
+
+        有无检测不在加载时自动跑（绝不等待）：程序启动与点击「启动/停止」
+        触发设备重枚举，refresh_devices 用同一次枚举结果判定双端点并回填状态。
+        """
+        green, red, gray = "#3aa76d", "#d9534f", "#9e9e9e"
+        download_url = ("https://download.vb-audio.com/Download_CABLE/"
+                        "VBCABLE_Driver_Pack45.zip")
+        tutorial_url = "https://www.bilibili.com/video/BV1i2bazGEKe/"
+        wrap = max(320, self.sizes["win_w"] - 80)
+
         card = tk.Frame(row.body_frame, bg=theme.ALT_BASE)
         card.pack(fill=tk.X, padx=self.sizes["pad_sm"],
                   pady=(0, self.sizes["pad_sm"]))
-        dot = tk.Canvas(card, bg=theme.ALT_BASE, width=12, height=12,
+
+        # ── 状态行：指示灯 + 状态文字 ──
+        head = tk.Frame(card, bg=theme.ALT_BASE)
+        head.pack(fill=tk.X, padx=8, pady=(6, 2))
+        dot = tk.Canvas(head, bg=theme.ALT_BASE, width=12, height=12,
                         highlightthickness=0)
-        dot.pack(side=tk.LEFT, padx=(2, 6), pady=4)
-        dot.create_oval(1, 1, 11, 11, fill=color, outline="")
-        tip = ("驱动已安装，下拉选择 CABLE Input 即可。" if installed
-               else "未检测到 VB-CABLE 驱动——安装后重启 PureVox。")
-        tk.Label(card, text=tip, bg=theme.ALT_BASE, fg=theme.TEXT_DIM,
-                 font=self.fonts.get("small")).pack(side=tk.LEFT)
-        acts = []
-        if not installed:
-            acts.append(("下载驱动", lambda: webbrowser_open(
-                "https://download.vb-audio.com/Download_CABLE/"
-                "VBCABLE_Driver_Pack45.zip")))
-            acts.append(("教程", lambda: webbrowser_open(
-                "https://www.bilibili.com/video/BV1i2bazGEKe/")))
-        for text, cmd in acts:
-            # 文字型动作：直接坐在卡片底上，不搞彩色贴片（悬停才变色）
-            b = tk.Label(card, text=text, bg=theme.ALT_BASE,
-                         fg=theme.TEXT_DIM, font=self.fonts.get("small"),
-                         padx=6, pady=4, cursor="hand2")
-            b.pack(side=tk.RIGHT)
-            b.bind("<Button-1>", lambda e, c=cmd: c())
-            b.bind("<Enter>", lambda e, w=b: w.configure(fg=theme.TEXT))
-            b.bind("<Leave>", lambda e, w=b: w.configure(fg=theme.TEXT_DIM))
+        dot.pack(side=tk.LEFT)
+        dot.create_oval(1, 1, 11, 11, fill=gray, outline="")
+        state_lbl = tk.Label(head, text="待检测 —— 启动或停止音频处理时自动检测",
+                             bg=theme.ALT_BASE, fg=theme.TEXT_DIM,
+                             font=self.fonts.get("bold"))
+        state_lbl.pack(side=tk.LEFT, padx=(6, 0))
+
+        # ── 双端点说明（恒显示）──
+        tips = (
+            "VB-CABLE 是 VB-Audio 的虚拟声卡，安装后提供一对端点，"
+            "采样率均设置为 48kHz：\n"
+            "① CABLE Input（输入端）—— 接收 PureVox 处理后的音频，"
+            "经驱动转发到输出端。请在 PureVox「输出设备」中选择它"
+            "（本软件的输出写入这里）。\n"
+            "② CABLE Output（输出端）—— 作为虚拟麦克风使用，可设置为系统默认麦克风，"
+            "供 OBS、直播、聊天、会议等软件选用。\n"
+            "数据流向：PureVox → CABLE Input →（驱动转发）→ CABLE Output → 其它软件。")
+        tk.Label(card, text=tips, bg=theme.ALT_BASE, fg=theme.TEXT_DIM,
+                 font=self.fonts.get("small"), justify="left", anchor="w",
+                 wraplength=wrap).pack(fill=tk.X, padx=8, pady=(2, 4))
+
+        # ── 驱动卡片 ──
+        guide = tk.Label(card,
+                         text="打开上方「输出设备」下拉即可检测驱动有无。",
+                         bg=theme.ALT_BASE, fg=theme.TEXT_FAINT,
+                         font=self.fonts.get("small"), justify="left",
+                         anchor="w", wraplength=wrap)
+
+        btns = tk.Frame(card, bg=theme.BASE,
+                        highlightbackground=theme.MID, highlightthickness=1)
+        btns.pack(fill=tk.X, padx=8, pady=(0, 4))
+        tk.Label(btns, text=" VB-CABLE 驱动 ", bg=theme.TRACK,
+                 fg=theme.TEXT_DIM, font=self.fonts.get("small")
+                 ).pack(side=tk.LEFT, padx=(4, 6), pady=4)
+
+        def _label_btn(parent, text, on_click):
+            b = tk.Label(parent, text=text, bg=parent.cget("bg"),
+                         fg=theme.TEXT, font=self.fonts.get("small"),
+                         padx=8, pady=3, cursor="hand2")
+            b.pack(side=tk.LEFT, padx=(0, 4))
+            b.bind("<Button-1>", lambda e: on_click())
+            b.bind("<Enter>", lambda e: b.configure(fg=theme.ACCENT))
+            b.bind("<Leave>", lambda e: b.configure(fg=theme.TEXT))
+            return b
+
+        panel_state = {"ok": False}
+
+        def _open_panel():
+            if panel_state["ok"]:
+                from pvplatform.system import open_virtual_cable_panel
+                open_virtual_cable_panel(Logger())
+
+        _label_btn(btns, "打开控制面板", _open_panel)
+        _label_btn(btns, "下载官方驱动包", lambda: webbrowser_open(download_url))
+        _label_btn(btns, "安装视频教程", lambda: webbrowser_open(tutorial_url))
+
+        # ── 启动检测开关（写回配置；启动流程据此决定是否提醒）──
+        cb_var = tk.BooleanVar(
+            value=bool(self._cfg_get("vbcable_check_enabled", True)))
+
+        def _toggle_check():
+            self._cfg_set("vbcable_check_enabled", bool(cb_var.get()))
+
+        tk.Checkbutton(card, text="启动时检测虚拟麦克风（未安装才提醒）",
+                       variable=cb_var, command=_toggle_check,
+                       bg=theme.ALT_BASE, fg=theme.TEXT_DIM,
+                       activebackground=theme.ALT_BASE,
+                       highlightthickness=0,
+                       font=self.fonts.get("small")).pack(
+            anchor="w", padx=8, pady=(0, 6))
+
+        # ── 状态套用：由 refresh_devices（启动/启停触发）用同一次
+        #    枚举结果调用，本卡片自身不做任何扫描/等待 ──
+        def _apply(now):
+            try:
+                if not bool(card.winfo_exists()):
+                    return
+            except Exception:
+                return
+            panel_state["ok"] = bool(now)
+            dot.delete("all")
+            dot.create_oval(1, 1, 11, 11,
+                            fill=(green if now else red), outline="")
+            state_lbl.configure(text="已安装" if now else "未安装",
+                                fg=green if now else red)
+            if now:
+                guide.pack_forget()
+            else:
+                guide.configure(text=(
+                    "未检测到 VB-CABLE 驱动：请先下载官方驱动包并安装，"
+                    "装好后点击「启动/停止音频处理」即可识别。"))
+                guide.pack(fill=tk.X, padx=8, pady=(0, 2))
+
+        row.vb_apply = _apply
 
     def refresh_devices(self):
-        """后台枚举设备，回主线程刷新各设备下拉。"""
+        """后台枚举设备，回主线程刷新各设备下拉。
+
+        唯一扫描入口（触发点=程序启动 / 点击启动·停止）。运行中不再枚举：
+        引擎占着 PyAudio 时扫描会失败。VB-CABLE 有无不单独扫描——直接复用
+        本次枚举结果判定双端点，经 row.vb_apply 回填。
+        """
         import threading
+
         def _work():
             try:
                 devs = enum_io_devices()
             except Exception:
                 return
-            self.root.after(0, lambda: [
-                r.set_devices(devs) for r in self.rows])
+            out_names = [t for t, _d in devs.get("outputs", [])]
+            in_names = [t for t, _d in devs.get("inputs", [])]
+            vb_ok = (any("CABLE Input" in t for t in out_names)
+                     and any("CABLE Output" in t for t in in_names))
+
+            def _apply():
+                for r in self.rows:
+                    apply_vb = getattr(r, "vb_apply", None)
+                    if apply_vb is not None:
+                        try:
+                            apply_vb(vb_ok)
+                        except Exception:
+                            pass
+                    r.set_devices(devs)
+
+            try:
+                # 主线程 mainloop 运行中才投递；测试等无 mainloop 场景静默跳过
+                self.root.after(0, _apply)
+            except Exception:
+                pass
+
         threading.Thread(target=_work, daemon=True).start()
 
     def _on_param(self, row, key, value):
@@ -975,6 +1097,9 @@ class MainWindowTk:
                 chain = []
         self.load_chain(chain)
         self.refresh_devices()
+        # 启动时自动运行：稍候自动开始音频处理（窗口已在 __init__ 藏进托盘）
+        if bool(self._cfg_get("auto_start", False)):
+            self.root.after(1000, self._on_start)
         self.root.mainloop()
 
 

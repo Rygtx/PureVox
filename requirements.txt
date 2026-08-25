@@ -14,7 +14,6 @@ scipy==1.18.0
 onnxruntime==1.29.0
 # PyAudio 仅 Windows/macOS 后端使用（Linux 走 pipewire-pulse 桥，见 audio_processor.py），
 # 放在 requirements-win.txt，避免 Linux 建环境时编译它（缺 portaudio.h 会失败）。
-PySide6==6.11.2
 cryptography>=41.0.0
 zeroconf==0.150.0
 aiohttp==3.14.3

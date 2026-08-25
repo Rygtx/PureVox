@@ -42,7 +42,7 @@ git submodule update --init --depth 1 packages/cpython
 
 # Linux（运行引导脚本即可，自动编译）
 ./bootstrap_python312.sh          # -> packages/python312（自包含），并安装依赖
-./py312 run_pyside6.py            # 启动
+./py312 run_tk.py            # 启动
 ./py312 setup.py build_ext --inplace --force   # 编译 libaimic.so + libpvpipe.so（纯 C，gcc）
 
 # Windows（PowerShell，NuGet 下载预编译）
@@ -56,7 +56,7 @@ powershell -ExecutionPolicy Bypass -File bootstrap_python312.ps1   # -> packages
 # Windows 需追加 -r requirements-win.txt
 pip install -r requirements.txt
 
-python run_pyside6.py
+python run_tk.py
 ```
 
 ### Linux（AOSC / 其它发行版）
@@ -67,12 +67,11 @@ sudo oma install -y gcc pkgconf pipewire libpipewire-0.3-devel
 
 # 内嵌 3.12 方式（推荐，见上）：
 ./bootstrap_python312.sh
-./py312 setup.py build_ext --inplace --force   # 编译纯 C 共享库（libaimic.so + libpvpipe.so）
-./py312 run_pyside6.py
+./py312 run_tk.py
 
 # 或用系统 python3 直接运行：
 pip install --user -r requirements.txt
-python3 run_pyside6.py
+python3 run_tk.py
 ```
 
 Linux 音频基于原生 PipeWire：格式协商 F32 单声道 48000Hz，重采样与声道转换由
@@ -151,17 +150,15 @@ cd android
 ## 项目结构
 
 ```
-run_pyside6.py            # 启动入口（单实例锁）
-ui_pyside6.py             # 主 UI（PySide6）：面板、设备选择、模式切换
+run_tk.py                 # 启动入口（单实例锁 + Tk 主窗口）
+uitk/                     # 桌面 UI（纯标准库 Tkinter）：节点面板、EQ 编辑器、关于页
+about_content.py          # 关于页文本（更新日志/使用手册，单一维护位置）
 audio_processor.py        # 核心音频引擎 + TSE 参考录音工具
 aimic.c + aimic.py         # C 音频核心 → aimic.dll / libaimic.so（mingw gcc）+ ctypes 绑定
 pipewire_client.c + pvpipe.py + alsa_client.c + pvalsa.py  # 原生 PipeWire/ALSA 桥 → libpvpipe.so/libpvalsa.so（Linux，纯 C + ctypes）
 pvplatform/               # 平台抽象：audio/（设备枚举、SpeakerCapture）、system/（单实例/虚拟麦克风）
-config_manager.py         # JSON 配置（旧 key 自动迁移）
+config_manager.py         # JSON 配置（强配置，按接口隔离设备键）
 model_config.py           # ONNX 模型文件名常量
-dialog_about.py           # 关于对话框
-dialog_eq.py              # 均衡器对话框
-dialog_tse_reference.py   # TSE 参考音频录音对话框
 server/                   # 远程麦克风 HTTPS/WSS 服务端（aiohttp + Opus + mDNS + TLS）
 html/                     # 浏览器推流前端（AudioWorklet + Opus WASM）
 android/                  # Android 客户端（Kotlin + OkHttp + Opus JNI）

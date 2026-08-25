@@ -31,9 +31,8 @@ mkdir -p "$APPDIR/usr/lib/purevox" "$APPDIR/usr/bin"
 
 echo "==> copy sources/models"
 for f in \
-    audio_processor.py config_manager.py dialog_about.py dialog_eq.py logger.py \
-    model_config.py run_pyside6.py spectrum_histogram.py theme_colors.py \
-    dialog_tse_reference.py ui_pyside6.py user_paths.py wav_io.py \
+    audio_processor.py config_manager.py about_content.py logger.py \
+    model_config.py run_tk.py user_paths.py wav_io.py \
     aimic.py; do
     cp "$f" "$APPDIR/usr/lib/purevox/"
 done
@@ -51,6 +50,8 @@ cp -r html "$APPDIR/usr/lib/purevox/"
 mkdir -p "$APPDIR/usr/lib/purevox/server"
 cp server/*.py "$APPDIR/usr/lib/purevox/server/"
 cp -r pvplatform "$APPDIR/usr/lib/purevox/"
+cp -r uitk "$APPDIR/usr/lib/purevox/"
+cp -r about "$APPDIR/usr/lib/purevox/"
 find "$APPDIR/usr/lib/purevox" -name "__pycache__" -type d -exec rm -rf {} + 2>/dev/null || true
 
 echo "==> generate version stamp _build_version.py (window title; same source as filename)"
@@ -61,9 +62,6 @@ EOF
 
 echo "==> bundle embedded Python 3.12"
 cp -a packages/python312 "$APPDIR/usr/python312"
-
-echo "==> slim PySide6 (same closure as deb, shared script)"
-bash tools/slim_pyside6.sh "$APPDIR/usr/python312/lib/python3.12/site-packages/PySide6"
 
 echo "==> desktop entry (AppImage needs it at AppDir root + usr/share/applications)"
 mkdir -p "$APPDIR/usr/share/applications"
@@ -100,7 +98,7 @@ export PYTHONHOME="$HERE/usr/python312"
 export LD_LIBRARY_PATH="$HERE/usr/lib/purevox${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 export PATH="$HERE/usr/python312/bin:$PATH"
 cd "$HERE/usr/lib/purevox" || exit 1
-exec "$HERE/usr/python312/bin/python3" run_pyside6.py "$@"
+exec "$HERE/usr/python312/bin/python3" run_tk.py "$@"
 EOF
 chmod +x "$APPDIR/AppRun"
 

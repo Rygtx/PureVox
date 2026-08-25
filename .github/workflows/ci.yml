@@ -75,8 +75,8 @@ jobs:
       - name: Install Python deps (numpy / onnxruntime / scipy, unpinned = latest)
         run: |
           PY="python3"; [ "${{ matrix.distro }}" = "python3.12" ] && PY="python"
-          $PY -m pip install --quiet numpy onnxruntime scipy pyside6 zeroconf aiohttp opuslib cryptography pillow 2>/dev/null \
-            || $PY -m pip install --break-system-packages numpy onnxruntime scipy pyside6 zeroconf aiohttp opuslib cryptography pillow || true
+          $PY -m pip install --quiet numpy onnxruntime scipy zeroconf aiohttp opuslib cryptography pillow 2>/dev/null \
+            || $PY -m pip install --break-system-packages numpy onnxruntime scipy zeroconf aiohttp opuslib cryptography pillow || true
 
       # ── 预置缓存：避免每次 CI 重复下载/编译（2026-08-22 纯 py 迁移）──
       - name: Cache embedded python312 build + cpython tarball (skip recompile)
@@ -195,7 +195,7 @@ jobs:
       - name: Compile all Python sources (catch syntax errors before packaging)
         shell: pwsh
         run: |
-          python -m compileall -q aimic.py pvengine audio_processor.py config_manager.py model_config.py ui_pyside6.py run_pyside6.py pvplatform server 2>$null
+          python -m compileall -q aimic.py pvengine audio_processor.py config_manager.py model_config.py about_content.py run_tk.py uitk pvplatform server 2>$null
           Write-Host "compileall OK"
 
       # server/opus.dll 已随仓库提交（预编译 libopus，BSD），无需再下载

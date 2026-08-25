@@ -2,8 +2,8 @@
 
 Windows / Linux 桌面应用 + Android 客户端：实时 AI 音频降噪 / 目标说话人提取 / 回声消除，支持本地麦克风和远程网络推流。
 
-**栈**: Python 3.12+ + PySide6 + 纯 Python 组件化音频引擎（`pvengine` 包：numpy + scipy + onnxruntime，无任何自编译二进制）+ pulsectl（Linux 音频桥，ctypes 系统 libpulse）
-**桌面入口**: `python run_pyside6.py`
+**栈**: Python 3.12+ 标准库 Tkinter（桌面 UI）+ 纯 Python 组件化音频引擎（`pvengine` 包：numpy + scipy + onnxruntime，无任何自编译二进制）+ pulsectl（Linux 音频桥，ctypes 系统 libpulse）
+**桌面入口**: `python run_tk.py`
 **Android 入口**: `android/` — Kotlin + OkHttp + Opus JNI
 
 ---
@@ -13,15 +13,16 @@ Windows / Linux 桌面应用 + Android 客户端：实时 AI 音频降噪 / 目�
 **功能最小化模型** —— 本项目的首要约束：
 
 0. **更新日志写在哪里**：每次发版/改动（新增、删除、行为变化）都在
-   `dialog_about.py` 的 `CHANGELOG_TEXT`（内嵌快照）顶部追加一条「日期 — 标题」记录。
-   仓库**没有独立的 CHANGELOG.md / 用户手册文件**——用户手册与更新日志全部内嵌于
-   `dialog_about.py`（「关于」对话框整页标签展示），写入时保持中文、无 emoji。
+   `about/changelog.md` **顶部**追加一条「日期 — 标题」记录。
+   仓库**没有独立的根级 CHANGELOG.md / 用户手册文件**——更新日志与两份使用手册
+   是关于对话框的三个 markdown 页（`about/changelog.md` / `about/windows.md` /
+   `about/linux.md`，uitk 直接读文件渲染），写入时保持中文、无 emoji。
    **只写用户可感知的技术变更**（功能/修复/行为/性能/兼容面）；纯开发过程事务——
    换行符与编码归一、git 属性/钩子、CI 与打包脚本调整、目录重组、代码挪动等
    不改变产品行为的内容——**禁止写入更新日志，也禁止写进 README**。
 
 1. **一个功能只有一条规范实现路径**。禁止"功能 ABC 三种都能用"的设计——多套平行实现等于高维护成本。新增功能有多个可行做法时，只保留一种并写进文档，其余不进入代码。
-2. **先扩展，再新建**。开新方法 / 新类 / 新文件之前，先搞清楚已有方法能否扩展：优先 改已有函数/类 → 加参数/加配置 → 复用既有抽象；确认确实无法扩展才允许新建，并在更新日志（`dialog_about.py` 的 `CHANGELOG_TEXT`）说明为何不能扩展。
+2. **先扩展，再新建**。开新方法 / 新类 / 新文件之前，先搞清楚已有方法能否扩展：优先 改已有函数/类 → 加参数/加配置 → 复用既有抽象；确认确实无法扩展才允许新建，并在更新日志（`about/changelog.md`）说明为何不能扩展。
 3. **被替代的实现不保留平行代码**。如 Linux 的 PortAudio/GStreamer/JACK、旧虚拟麦克风架构等已弃用方案，直接删除，不留"备选"。
    - **例外：配置键占位不删**。`config_manager.py` / `device_api.py` 里按接口后缀写全的
      设备键（如 `input_device_wasapi` / `input_device_alsa` / …，共 10 接口 × 4 键）属于
@@ -29,7 +30,7 @@ Windows / Linux 桌面应用 + Android 客户端：实时 AI 音频降噪 / 目�
      Windows 只 WASAPI+MME、macOS 只 Core Audio），其余键也**保留不删**——它们不影响运行、
      是强配置结构的一部分，独立于本条的"被替代实现删除"规则；若日后清理，视作待办（TODO）
      而非本次改动目标。
-4. **改动前先读对应模块，尊重既有设计意图**；删除功能需在更新日志（`dialog_about.py` 的 `CHANGELOG_TEXT`）记录。
+4. **改动前先读对应模块，尊重既有设计意图**；删除功能需在更新日志（`about/changelog.md`）记录。
 5. **legacy 历史快照冻结**。`legacy-v2026.08.20.1943/`（提交 c5972ae 的快照，音频链条化重构前的最后一个版本）是**只读历史参考**：
    禁止修改、更新、删除其中任何文件；也不得让它参与构建、CI、打包、测试或任何全局性批量改动
    （格式化、换行符归一、重命名、依赖升级等一律绕过该目录）。需要对照旧实现时只读查阅，
@@ -74,7 +75,7 @@ chcp 65001
 # 方式一（内嵌 3.12，推荐）：
 powershell -ExecutionPolicy Bypass -File bootstrap_python312.ps1
 # 方式二（系统 Python）：pip install -r requirements.txt -r requirements-win.txt
-python run_pyside6.py
+python run_tk.py
 powershell -ExecutionPolicy Bypass -File build_win.ps1   # 打包产物目录 dist/PureVox/（自动用 packages\python312w\python.exe）
 ```
 
@@ -91,7 +92,7 @@ powershell -ExecutionPolicy Bypass -File build_win.ps1   # 打包产物目录 di
 sudo oma install -y python3 pipewire
 # 内嵌 3.12（推荐）：
 ./bootstrap_python312.sh
-./py312 run_pyside6.py
+./py312 run_tk.py
 bash pack_deb.sh                              # deb → dist/PureVox-Linux-x64-<date>-release.deb
 bash pack_rpm.sh                              # rpm → dist/PureVox-Linux-x64-<date>-release.rpm
 bash pack_appimage.sh                         # AppImage → dist/PureVox-Linux-x64-<date>-release.AppImage
@@ -127,13 +128,16 @@ cd android
 - `android` job：ubuntu-latest 编 debug APK（JDK17 + SDK 34 + NDK r27）；下载 opus 源码到 `android/opus-src/`，产物改名 `PureVox-Android-arm64-<yyyy-MM-dd-HHmm>-debug.apk`
 - `release` job：`needs` 三构建 job + `if: startsWith(github.ref,'refs/tags/')`，tag push 时下载全部产物，Windows 目录重打成 zip（`zip -9`），`gh release create` 把 deb / rpm / AppImage / Windows zip / APK 全部 attach
 - **产物命名统一**：`PureVox-<平台>-<架构>-<yyyy-MM-dd-HHmm>-<release|debug>.<ext>`（Windows 上传目录由 CI 自动压缩 / Linux deb / rpm / AppImage 一律 release，Android 为 debug）。文件名时间戳 `yyyy-MM-dd-HHmm`；产物体内版本字段 = `yyyy.MM.dd.HHmm`（如 `2026.08.10.1517`，deb control / rpm / setup.py 一致，**由 tag 名 `v<yyyy.MM.dd.HHmm>` 推导**，避免并发 job 各自 `date` 导致产物版本不一）。
-- **窗口标题版本戳 `_build_version.py` 同样由 tag 推导**：`ui_pyside6.py` 顶部 `try: from _build_version import BUILD_DATE`，缺失回退「开发版」。四个打包脚本（`pack_deb.sh` / `pack_rpm.sh` / `pack_appimage.sh` / `build_win.ps1`）都在打包时把 `BUILD_DATE = "yyyy-MM-dd-HHmm"` 写入产物内的 `_build_version.py`（tag 触发取 `GITHUB_REF_NAME`，本地回退当前时间），保证窗口标题与包版本/文件名同源；该文件已在 `.gitignore`，勿提交。新增打包脚本必须照此生成。
-  - **Windows(PyInstaller) 的 `_build_version.py` 无需 `--add-data`（2026-08-12 实测）**：PyInstaller
-    静态分析 `ui_pyside6.py`/`run_pyside6.py` 顶层的 `from _build_version import BUILD_DATE`，
+- **窗口标题版本戳 `_build_version.py` 同样由 tag 推导**：`uitk/main_window.py` 顶部 `try: from _build_version import BUILD_DATE`，缺失回退「开发版」。四个打包脚本（`pack_deb.sh` / `pack_rpm.sh` / `pack_appimage.sh` / `build_win.ps1`）都在打包时把 `BUILD_DATE = "yyyy-MM-dd-HHmm"` 写入产物内的 `_build_version.py`（tag 触发取 `GITHUB_REF_NAME`，本地回退当前时间），保证窗口标题与包版本/文件名同源；该文件已在 `.gitignore`，勿提交。新增打包脚本必须照此生成。
+  - **Windows(PyInstaller) 的 `_build_version.py` 无需 `--add-data`（2026-08-12 实测，入口切 run_tk 后仍成立）**：PyInstaller
+    静态分析入口顶层的 `from _build_version import BUILD_DATE`，
     会把仓库根的 `_build_version.py` 当作**模块编译进 PYZ**（`dist\PureVox\_internal\` 下看不到
     独立 `.py` 文件，属正常），运行时 import 正常、窗口标题带日期。勿再加 `--add-data="_build_version.py;."`
     ——PYZ 里没有它、且会被 PyInstaller 以模块方式收集，加 add-data 只会让文件重复打包。验证方法：
     启动 `dist\PureVox\PureVox.exe` 后抓窗口标题（Win32 `EnumWindows` + `GetWindowText` 按 PID 过滤）。
+    注意：`about/` 目录与此**不同**——uitk 直接 import `about_content.py`（自动进
+    PYZ），但三个 markdown 页按文件路径读取，PyInstaller 必须显式
+    `--add-data="about;about"`，否则关于页手册/日志缺失（build_win.ps1 已带）。
 - **onnxruntime 走 pip 最新版（2026-08-22 纯 py 迁移）**：不再捆绑预编译 C SDK；
   `requirements.txt` 不锁版本，CI/全新环境安装即最新。模型 opset ≤18，
   onnxruntime 长期向后兼容
@@ -179,8 +183,9 @@ cd android
 
 | 模块 | 职责 |
 |---|---|
-| `run_pyside6.py` | 单实例锁、启动入口，导入 `ui_pyside6.run_app` |
-| `ui_pyside6.py` | 主 UI（PySide6）——**单列节点面板**：顶部单一工具条（启动/退出 · 添加节点▾ · 清空 · 设置▾[原菜单栏并入：快捷键/自动运行/开机自启/系统声音/虚拟声卡/关于]）+ PluginPanel（输入/处理/输出/可视化全部为可增删排序的节点行，三级形态 toggle/inline/expand，viz 行内嵌实时控件；排序走**拖拽手柄**，无上下移按钮）；48kHz 检测弹框保留。设备选择在 input/output 节点行内（Linux 存 node.name）。**外观为单一墨黑深色主题**（theme_colors.py 单份定义 + 系统 accent 高亮），无明暗切换 |
+| `run_tk.py` | 单实例锁、启动入口，导入 `uitk.main_window.MainWindowTk` |
+| `uitk/` | 主 UI（纯标准库 Tkinter）——**单列节点面板**：顶部单一工具条（启动/退出 · 添加节点▾ · 清空 · 设置▾[快捷键/自动运行/开机自启/系统声音/虚拟声卡/关于]）+ PluginPanel（输入/处理/输出/可视化全部为可增删排序的节点行；排序走**拖拽手柄**）；EQ 曲线编辑器 / TSE 参考录音 / 关于页（文档标签）都在 `uitk/dialogs.py`；VB-CABLE 状态卡内嵌在虚拟输出行。设备选择在 input/output 节点行内（Linux 存 node.name）。**外观为星露谷像素浅色主题**（theme.py 单份令牌定义），无明暗切换 |
+| `about_content.py` + `about/` | **关于页文本（无 GUI 依赖的单一来源）**——`about/changelog.md` 更新日志、`about/windows.md`、`about/linux.md` 使用手册（uitk 直接读文件渲染）；`about_content.py` 只存元数据（应用信息/URLS/LIBS）与介绍页、许可证页文本，打包须随包携带 `about/` |
 | `session_plan.py` | **L3 会话层**——`SessionPlan.from_chain(chain_cfg)` 纯函数：链文档 → 校验后的可执行计划（inputs/outputs/remote_url/viz/fx_chain/problems/warnings）。UI 启动流程只消费计划，不做内联解析 |
 | `audio_processor.py` | 核心音频线程 —— `AudioThread`(全双工流/PipeWire 循环/网络循环/**多输入混音+多输出扇出**[Windows extras 回调])、`SpeakerCapture`(AEC loopback)、`RingBuffer`、设备枚举、TSE 参考录音工具(`_recorder`/`load_tse_reference`/`_wsola_time_stretch`) |
 | `pvengine/` | **纯 Python 组件化音频引擎**——Stage 接口（process/reset/release）是唯一契约；`components/`(denoise/aec/tse/gain/eq/vad/agc/compressor/clip/recorder/tap) 每文件一个组件、按 active_modes 声明生效模式；`dsp/`(窗/STFT/环形缓冲/重采样/Mel 频谱/ONNX 会话) 可独立复用；`pipeline.py` 按序执行+模式旁路；`processor.py` 是 AudioProcessor 门面（保持旧 API）。模型：v9 降噪（spec [1,1025,1,2] + enc/dec/tfa/inter 四态）、aec9、tse15，全部 numpy + onnxruntime 实现 |
@@ -189,11 +194,7 @@ cd android
 | `server/` | 远程麦克风 HTTPS/WSS 服务器 —— `https_server.py`、`audio_bridge.py`(RemoteAudioSource)、`opus_codec.py`、`mdns_publisher.py`、`tls_manager.py` |
 | `config_manager.py` | JSON 配置读写（强配置，无迁移）；api_type 平台感知默认值、设备键按接口后缀（`<方向>_device_<接口后缀>` / `aec_far_sink_<接口后缀>`，全部接口显式写全） |
 | `model_config.py` | ONNX 模型文件名常量 |
-| `dialog_about.py` | 关于对话框（单一菜单「关于」打开，整页标签）—— 介绍 / Windows 使用说明 / Linux 使用说明 / 更新日志 / 许可证，内容全部内嵌 py（中文，无 emoji）。**更新日志的唯一维护位置就是本文件的 `CHANGELOG_TEXT`**：无独立 CHANGELOG.md 文件，发版/改动时在快照顶部追加 |
-| `dialog_eq.py` / `dialog_tse_reference.py` | 均衡器 / TSE 参考录音弹框（统一 `dialog_` 前缀） |
 | `html/` | 浏览器端远程推流页面 —— `index.html`、`app.js`、`audio-capture.js`、`ws-client.js`、Opus WASM 编码器 |
-| `dialog_vbcable_check.py` | VB-CABLE 虚拟声卡检测面板（仅 Windows；只检测不自动安装。统一结构：状态灯 + 双端点说明[CABLE Input 接 PureVox 输出 / CABLE Output 作虚拟麦克风，均 48kHz] + 驱动卡片[打开控制面板/下载/教程]）。检测开关默认开启，但**仅未安装才弹框**，取消勾选即跳过不再提示 |
-| `dialog_virtual_mic_linux.py` | Linux 虚拟声卡状态面板 —— 指示灯 + 双出口说明 + 手动「创建/清理」（启动不自动创建，`ensure_virtual_mic`/`remove_virtual_mic` 全幂等） |
 | `build_win.ps1` / `pack_deb.sh` / `pack_rpm.sh` / `pack_appimage.sh` | Windows 产物目录打包（PyInstaller，CI 上传自动压缩）/ Linux deb / rpm / AppImage 打包。全部产物为纯 Python（依赖随内嵌 python312 或系统环境携带），无任何自编译二进制 |
 
 ### Linux 音频架构（pipewire-pulse 兼容层 + pulsectl，强制）
@@ -215,7 +216,7 @@ AEC far-end：独立录制流指向 `far_sink.monitor`（会话内创建/销毁�
   - 出口 1 `purevox_out.monitor`（monitor 源，宽口径）；出口 2 `purevox_mic`
     （真源，`module-remap-source` 重映射而来，供 OBS 等"只列真源"软件）。
   - 生命周期全幂等：`virtual_mic_ready()` → `ensure_virtual_mic()` → `remove_virtual_mic()`。
-  - **启动不自动创建**：菜单「虚拟声卡」→ `dialog_virtual_mic_linux.py` 状态面板手动「创建/清理」。
+  - **启动不自动创建**：菜单「虚拟声卡」→ Tk 状态面板手动「创建/清理」。
 - **禁用/踩坑**（违反任一即弄坏系统托盘/协议）：
   - `pw-loopback`：旧虚拟麦克风架构，已弃用，仅防御性 `pkill` 清残留。
   - `module-null-sink media.class=Audio/Source/Virtual` 建第二路真源：实测把
@@ -299,16 +300,17 @@ AEC far-end：独立录制流指向 `far_sink.monitor`（会话内创建/销毁�
    探测或编译参数干预。`AudioProcessor.backend_effective/reason` 保留为兼容报告
    （恒报 AVX/OK），UI 启动日志照常打印。
 4. **命名** — Python: snake_case 方法和变量；C++: snake_case 方法和 PascalCase 类；Kotlin: camelCase。
-5. **错误处理** — 内部用 `try/except` + `_module_log()` 记录，不冒泡到 UI 线程；UI 用 `QMessageBox` / `QDialog` 提示。
+5. **错误处理** — 内部用 `try/except` + `_module_log()` 记录，不冒泡到 UI 线程；Tk UI 用 `messagebox` 提示。
 6. **日志** — 统一 `logger.py` 的 `Logger` 类，层级 `dev`/`msg`/`warn`/`err`。
 7. **DSP 全部收敛在 `pvengine/`** — numpy/scipy/onnxruntime 只允许出现在 pvengine 包内
-   （组件 + dsp 基础件）；GUI 层（ui_pyside6/dialog_*）与平台层（pvplatform）不做信号处理，
+   （组件 + dsp 基础件）；GUI 层（uitk）与平台层（pvplatform）不做信号处理，
    仅搬运 `List[float]` / numpy 帧。新增音频功能 = 新增一个 Stage 组件，不改管线骨架。
 8. **Android 主题跟随系统** — `Theme.MaterialComponents.DayNight.NoActionBar`，亮色/深色自动切换。
 9. **品牌拼写规约** — 品牌名一律 `PureVox`；`purevox` 全小写仅限平台/协议强制标识（见命名规范），改大小写视为破坏行为。
 10. **许可证头** — 每个源码文件顶部必须带 GPL-3.0 版权头 + 模型声明 + `SPDX-License-Identifier: GPL-3.0-or-later`（照抄 `audio_processor.py` 顶部，按 `#`/`//` 注释风格替换）；新增文件也必须带。
 11. **README 双语约定** — 默认中文 `README.md`，英文单独 `README_EN.md`；改文件名/平台结构/打包命令时两处必须同步，不得改名或删除。
-12. **弹框/检测面板文件统一 `dialog_` 前缀** — 独立弹框一律 `dialog_*.py`（如 `dialog_about.py`、`dialog_eq.py`、`dialog_tse_reference.py`、`dialog_vbcable_check.py`）；新增弹框模块必须遵循此前缀，不得用 `*_check.py` / `*_dialog.py` 等变体。
+12. **弹框集中在 `uitk/dialogs.py`** — 桌面端独立弹框（关于/EQ 编辑器/TSE 录音等）一律放
+    `uitk/dialogs.py`，入口函数走 `open_*` / `show_*` 命名；不得在仓库根重建 `dialog_*.py` 平行实现。
 
 ---
 
@@ -322,10 +324,11 @@ AEC far-end：独立录制流指向 `far_sink.monitor`（会话内创建/销毁�
 - **强配置（无迁移）**: `ConfigManager.load_config` 不做旧配置迁移，只保留已知键；
   旧 `WASAPI_*` / 通用设备键一律丢弃回退默认。设备键为带接口后缀的
   `<方向>_device_<接口后缀>`（如 `input_device_wasapi`、`input_device_mme`）。
-- **设备列表刷新单一入口**：PySide 走 `PluginPanel.refresh_devices()`，
-  Tk 走 `MainWindowTk.refresh_devices()`——后台线程枚举，严禁 UI 线程同步枚举。
-  触发点：启动、停止、虚拟声卡等弹框回调、**任一设备下拉展开**
-  （PySide `DeviceCombo.popupOpening` / Tk `DarkCombo.on_open`）。
+- **设备列表刷新单一入口**：Tk 走 `MainWindowTk.refresh_devices()`——后台线程枚举，
+  严禁 UI 线程同步枚举。
+  触发点仅两个：程序启动、点击「启动/停止音频处理」。运行中引擎占着
+  PyAudio，扫描会失败——**禁止**在下拉展开（`DarkCombo.on_open` 已随此决策移除）、
+  弹框回调等其它时机触发枚举。
   新增触发点必须接到同一入口，禁止自建第二套枚举刷新逻辑。
 
 ### 长时间运行稳定性观察（2026-08-10 走查 + 2026-08-22 纯 py 迁移后复核）

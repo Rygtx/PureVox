@@ -125,24 +125,40 @@ def beep_win(freq_hz: int, duration_ms: int):
 
 
 def open_sound_panel_win(logger):
+    """打开声音控制面板（mmsys.cpl）。
+
+    用 ShellExecuteW 而非 subprocess：GUI 无控制台进程下最可靠，
+    不闪 cmd 黑框、不被会话上下文吞掉。"""
     try:
-        import subprocess
-        control = os.path.join(
-            os.environ.get('SystemRoot', 'C:\\Windows'), 'System32', 'control.exe')
-        subprocess.run([control, "mmsys.cpl"], check=False, shell=True)
-        logger.msg("已打开声音控制面板")
+        import ctypes
+        rc = ctypes.windll.shell32.ShellExecuteW(
+            None, "open", "control.exe", "mmsys.cpl", None, 1)
+        if rc > 32:
+            logger.msg("已打开声音控制面板")
+        else:
+            logger.err(f"打开声音控制面板失败: ShellExecuteW rc={rc}")
     except Exception as e:
         logger.err(f"打开失败: {e}")
 
 
 def open_virtual_cable_panel_win(logger):
-    p = r"C:\Program Files\VB\CABLE\VBCABLE_ControlPanel.exe"
-    if not os.path.exists(p):
-        logger.warn("未找到 VB-CABLE")
+    """打开 VB-CABLE 控制面板（需管理员权限，走 UAC 提权）。"""
+    candidates = (
+        r"C:\Program Files\VB\CABLE\VBCABLE_ControlPanel.exe",
+        r"C:\Program Files (x86)\VB\CABLE\VBCABLE_ControlPanel.exe",
+    )
+    exe = next((p for p in candidates if os.path.exists(p)), None)
+    if exe is None:
+        logger.warn("未找到 VB-CABLE 控制面板——请先安装 VB-CABLE 驱动")
         return
     try:
-        if ctypes.windll.shell32.ShellExecuteW(None, "runas", p, None, None, 1) > 32:
-            logger.msg("已打开 VB-CABLE")
+        rc = ctypes.windll.shell32.ShellExecuteW(None, "runas", exe,
+                                                 None, None, 1)
+        if rc > 32:
+            logger.msg("已打开 VB-CABLE 控制面板")
+        else:
+            logger.warn(f"VB-CABLE 控制面板打开失败: rc={rc}"
+                        "（UAC 取消或驱动异常）")
     except Exception as e:
         logger.err(f"打开失败: {e}")
 

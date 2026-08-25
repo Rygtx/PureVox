@@ -32,9 +32,8 @@ mkdir -p "$ROOT/opt/purevox" "$ROOT/usr/bin" \
 
 echo "==> copy sources/models/icon"
 for f in \
-    audio_processor.py config_manager.py dialog_about.py dialog_eq.py logger.py \
-    model_config.py run_pyside6.py spectrum_histogram.py theme_colors.py \
-    dialog_tse_reference.py ui_pyside6.py user_paths.py wav_io.py \
+    audio_processor.py config_manager.py about_content.py logger.py \
+    model_config.py run_tk.py user_paths.py wav_io.py \
     aimic.py; do
     cp "$f" "$ROOT/opt/purevox/"
 done
@@ -42,12 +41,14 @@ mkdir -p "$ROOT/opt/purevox/models" "$ROOT/opt/purevox/assets/icons"
 cp models/*.onnx "$ROOT/opt/purevox/models/"
 cp assets/icons/*.ico "$ROOT/opt/purevox/assets/icons/"
 
-echo "==> copy html/ server/ pvplatform/ pvengine/"
+echo "==> copy html/ server/ pvplatform/ pvengine/ uitk/ about/"
 cp -r html "$ROOT/opt/purevox/"
 mkdir -p "$ROOT/opt/purevox/server"
 cp server/*.py "$ROOT/opt/purevox/server/"
 cp -r pvplatform "$ROOT/opt/purevox/"
 cp -r pvengine "$ROOT/opt/purevox/"
+cp -r uitk "$ROOT/opt/purevox/"
+cp -r about "$ROOT/opt/purevox/"
 find "$ROOT/opt/purevox" -name "__pycache__" -type d -exec rm -rf {} + 2>/dev/null || true
 
 echo "==> generate version stamp _build_version.py (window title; same source as package version/filename)"
@@ -60,7 +61,7 @@ echo "==> /usr/bin/purevox launcher"
 cat > "$ROOT/usr/bin/purevox" <<'EOF'
 #!/bin/sh
 cd /opt/purevox || exit 1
-exec /usr/bin/python3 /opt/purevox/run_pyside6.py "$@"
+exec /usr/bin/python3 /opt/purevox/run_tk.py "$@"
 EOF
 chmod +x "$ROOT/usr/bin/purevox"
 

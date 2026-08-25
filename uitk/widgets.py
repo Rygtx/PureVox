@@ -41,8 +41,14 @@ class FlatButton(tk.Label):
         self._bg = bg
         self._cmd = command
         self.bind("<Button-1>", self._click)
-        self.bind("<Enter>", lambda e: self.configure(bg=theme.hover(bg)))
-        self.bind("<Leave>", lambda e: self.configure(bg=bg))
+        # 悬停色按【当前】底色计算（运行态会绿↔红切换，不能用构造时快照）
+        self.bind("<Enter>", lambda e: self.configure(bg=theme.hover(self._bg)))
+        self.bind("<Leave>", lambda e: self.configure(bg=self._bg))
+
+    def set_bg(self, bg):
+        """运行态换底色（同步更新悬停基准）。"""
+        self._bg = bg
+        self.configure(bg=bg)
 
     def _click(self, _e):
         if self._cmd:
@@ -191,14 +197,10 @@ class HSlider(tk.Canvas):
 
 class DarkCombo(tk.Frame):
     """深色下拉（弹层与外框严格同宽，长项像素级省略）——参考 lite BlackCombo。
-
-    on_open：下拉展开前的回调——设备下拉用它触发异步重枚举
-    （与启动/停止/弹框共用同一套刷新入口），枚举完成后 set_values
-    会原地重建打开中的弹层，列表即时变新。
     """
 
     def __init__(self, parent, values, var, on_change=None,
-                 sizes=None, fonts=None, on_open=None):
+                 sizes=None, fonts=None):
         self.sizes = sizes if sizes is not None else make_sizes(100)
         self.fonts = fonts if fonts is not None else {}
         # 外壳与宿主同色（不产生第二圈色），边框只由 inner 的 1px 描边承担
@@ -208,7 +210,6 @@ class DarkCombo(tk.Frame):
         self.var = var
         self.values = [v for v in list(values) if v and str(v).strip()]
         self.on_change = on_change
-        self.on_open = on_open
         self._popup = None
         inner = tk.Frame(self, bg=theme.BASE,
                          highlightbackground=theme.MID,
@@ -276,11 +277,6 @@ class DarkCombo(tk.Frame):
         if self._popup and self._popup.winfo_exists():
             self._close()
         else:
-            if self.on_open:
-                try:
-                    self.on_open()
-                except Exception:
-                    pass
             self._open()
 
     def _open(self):
