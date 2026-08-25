@@ -20,8 +20,9 @@
 整条管线 = 用户插件序列（pvengine.plugins 注册表），不再有固定模式。
 基础设施（可视化抽头 / 录制抽头 / 末端限幅）固定挂在首尾，不进插件列表。
 
-对外保留旧 API 兼容垫片（set_pre_gain/set_agc_enabled/set_eq_gains/
-set_aec_*/set_tse_reference/process_eq_only 等），内部按插件名路由到对应实例。
+对外保留旧 API 兼容垫片（set_pre_gain/set_agc_enabled/
+set_aec_*/set_tse_reference/process_eq_only 等），内部按插件名路由到对应实例；
+EQ 增益/高低切走插件 params（update_plugin_param 热更），无专用垫片。
 """
 
 import numpy as np
@@ -77,6 +78,9 @@ class AudioProcessor:
         self._recorder = RecorderTapStage()
         self._clip = ClipStage()
         self._far_sr = SAMPLE_RATE
+        # 频谱预览专用 EQ（独立 IIR 状态，懒建）——绝不能用链内 eq 实例：
+        # 两路不同信号轮流推进同一份 zi 会在每个帧边界产生不连续（可闻杂音）
+        self._eq_preview = None
 
         self._typed = []            # [(type_str, obj)]，obj 为 Stage 或 EffectAdapter
         self._entries = []          # [(type, stage|None, params, enabled)] 与 UI 行 1:1
@@ -329,26 +333,27 @@ class AudioProcessor:
         if c is not None:
             c.stage.enabled = bool(enabled)
 
-    def set_eq_gains(self, gains):
-        eq = self._find("eq")
-        if eq is not None and gains:
-            eq.set_gains(gains)
-
-    def set_eq_filters(self, hp_enabled: bool, hp_hz: float,
-                       lp_enabled: bool, lp_hz: float):
-        """EQ 高切/低切（低切=高通，高切=低通）。链中无 eq 插件时忽略。"""
-        eq = self._find("eq")
-        if eq is not None:
-            eq.set_highpass(bool(hp_enabled), float(hp_hz))
-            eq.set_lowpass(bool(lp_enabled), float(lp_hz))
-
     def process_eq_only(self, in_samples):
-        """前置预览（频谱输入侧）：依次过链中的 gain/eq 插件。"""
+        """前置预览（频谱输入侧）：gain + eq 的**独立状态副本**。
+
+        增益读链内 gain 插件的实时参数；EQ 系数经 mirror() 从链内
+        eq 插件拷贝到私有预览实例——滤波状态（zi）独立连续，
+        与主链互不干扰（共享实例会让主链每帧出现状态跳变 → 杂音）。
+        """
         x = np.asarray(in_samples, dtype=np.float32).reshape(-1).copy()
-        for ptype in ("gain", "eq"):
-            p = self._find(ptype)
-            if p is not None and getattr(p, "enabled", True):
-                x = p.process(x, FrameContext()).astype(np.float32)
+        g = self._find("gain")
+        if g is not None and getattr(g, "enabled", True):
+            db = float((getattr(g, "params", {}) or {}).get("gain_db", 0.0))
+            x = x * np.float32(10.0 ** (db / 20.0))
+        eq = self._find("eq10") or self._find("eq31") or self._find("eq61")
+        if eq is not None and getattr(eq, "enabled", True):
+            st = getattr(getattr(eq, "eff", eq), "stage", None)
+            if st is not None:
+                if self._eq_preview is None:
+                    from pvengine.components.eq import EqStage
+                    self._eq_preview = EqStage()
+                self._eq_preview.mirror(st)
+                x = self._eq_preview.process(x, FrameContext()).astype(np.float32)
         return x.tolist()
 
     # ── AEC ──

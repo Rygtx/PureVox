@@ -34,7 +34,9 @@ engine_cache：AudioProcessor 持有的 dict，AI 插件共享模型 Stage，
 from dataclasses import dataclass, field
 
 from pvengine.components.core_plugins import (
-    GainPlugin, AgcPlugin, GatePlugin, EqPlugin, CompressorPlugin,
+    GainPlugin, AgcPlugin, GatePlugin,
+    Eq10Plugin, Eq31Plugin, Eq61Plugin,
+    CompressorPlugin,
     DenoiserPlugin, EchoCancelPlugin, TsePlugin,
 )
 
@@ -57,14 +59,16 @@ CATALOG: list[type] = [
     TsePlugin,
     GatePlugin,
     AgcPlugin,
-    EqPlugin,
+    Eq10Plugin,
+    Eq31Plugin,
+    Eq61Plugin,
     CompressorPlugin,
 ]
 
 PLUGIN_TYPES: dict[str, type] = {cls.NAME: cls for cls in CATALOG}
 
 # 特殊 UI 钩子：这些类型在行内渲染额外控件（由 ui 层判断类型实现）
-SPECIAL_ROWS = {"eq", "tse"}
+SPECIAL_ROWS = {"eq10", "eq31", "eq61", "tse"}
 
 # ── UI 层级元数据 ──
 # toggle  = 仅开/关（无参数）
@@ -73,13 +77,17 @@ SPECIAL_ROWS = {"eq", "tse"}
 UI_TIERS = {
     "denoiser": "toggle",
     "echo_cancel": "inline",   # 行内含 far 端扬声器设备下拉
-    "eq": "expand",      # 展开：EQ 曲线编辑器
-    "tse": "expand",     # 展开：参考音频录制对话框
+    "eq10": "expand",          # 展开：EQ 曲线编辑器（10 段）
+    "eq31": "expand",          # 展开：EQ 曲线编辑器（31 段）
+    "eq61": "expand",          # 展开：EQ 曲线编辑器（61 段）
+    "tse": "expand",           # 展开：参考音频录制对话框
 }
 
 # 展开对话框标题（ui 层据此路由到对应编辑器）
 EXPAND_TITLES = {
-    "eq": "均衡器",
+    "eq10": "均衡器",
+    "eq31": "均衡器",
+    "eq61": "均衡器",
     "tse": "参考音频",
 }
 

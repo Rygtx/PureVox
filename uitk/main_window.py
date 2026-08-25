@@ -240,9 +240,9 @@ class NodeRow(tk.Frame):
         saved = self.cfg.get("params") or {}
         params = self.spec.params or {}
         # 单参数节点：滑杆直接放进行中间操作区（与下拉同一行）
-        # 多参数/eq/tse/viz：走下方参数区
+        # 多参数/expand（eq/tse）/viz：走下方参数区
         inline_ok = (len(params) == 1
-                     and self.spec.name not in ("eq", "tse")
+                     and self.spec.tier != "expand"
                      and self.spec.kind != "viz")
         for key, pdef in params.items():
             label, lo, hi, default, step = pdef
@@ -673,40 +673,32 @@ class MainWindowTk:
         from .dialogs import show_about_dialog
         show_about_dialog(self.root, sizes=self.sizes, fonts=self.fonts)
 
-    def _open_eq_editor(self):
+    def _open_eq_editor(self, row):
+        """EQ 曲线编辑器（按行规格选栅格）；增益/高低切存该行节点 params。"""
         from .dialogs import open_eq_editor
-        cur = list(self._cfg_get("eq_current_gains", [0.0] * 61) or [0.0] * 61)
-        if len(cur) != 61:
-            cur = [0.0] * 61
-        filters = (bool(self._cfg_get("eq_hp_enabled", False)),
-                   float(self._cfg_get("eq_hp_hz", 80.0)),
-                   bool(self._cfg_get("eq_lp_enabled", False)),
-                   float(self._cfg_get("eq_lp_hz", 16000.0)))
+        from pvengine.components.eq import EQ_VARIANTS
+        freqs, q = EQ_VARIANTS[row.spec.name]
 
         def set_gains(g):
-            self._cfg_set("eq_current_gains", list(g))
-            proc = self.engine.processor
-            if proc:
-                try:
-                    proc.set_eq_gains(list(g))
-                except Exception:
-                    pass
+            self._on_param(row, "gains", [float(x) for x in g])
 
         def set_filters(hp_on, hp_hz, lp_on, lp_hz):
-            self._cfg_set("eq_hp_enabled", bool(hp_on))
-            self._cfg_set("eq_hp_hz", float(hp_hz))
-            self._cfg_set("eq_lp_enabled", bool(lp_on))
-            self._cfg_set("eq_lp_hz", float(lp_hz))
-            proc = self.engine.processor
-            if proc:
-                try:
-                    proc.set_eq_filters(hp_on, hp_hz, lp_on, lp_hz)
-                except Exception:
-                    pass
+            self._on_param(row, "hp_enabled", bool(hp_on))
+            self._on_param(row, "hp_hz", float(hp_hz))
+            self._on_param(row, "lp_enabled", bool(lp_on))
+            self._on_param(row, "lp_hz", float(lp_hz))
 
-        open_eq_editor(self.root, lambda: cur, set_gains,
-                       get_filters=lambda: filters, set_filters=set_filters,
-                       sizes=self.sizes, fonts=self.fonts)
+        p = row.cfg.setdefault("params", {})
+        open_eq_editor(
+            self.root, freqs, q,
+            lambda: list(p.get("gains") or [0.0] * len(freqs)),
+            set_gains,
+            get_filters=lambda: (bool(p.get("hp_enabled", False)),
+                                 float(p.get("hp_hz", 80.0)),
+                                 bool(p.get("lp_enabled", False)),
+                                 float(p.get("lp_hz", 16000.0))),
+            set_filters=set_filters,
+            sizes=self.sizes, fonts=self.fonts)
 
     def _open_tse_dialog(self):
         from .dialogs import open_tse_dialog
@@ -814,15 +806,15 @@ class MainWindowTk:
         # viz 行：内嵌实时控件
         if spec.kind == "viz" and bool(cfg.get("enabled", True)):
             self._attach_viz(row, spec.name)
-        # eq 行：展开区提供曲线编辑入口
-        if spec.name == "eq":
+        # eq 行（三种规格）：展开区提供曲线编辑入口
+        if spec.name in ("eq10", "eq31", "eq61"):
             eb = tk.Label(row.body_frame,
                           text="打开均衡器编辑…", bg=theme.BASE,
                           fg=theme.ACCENT, cursor="hand2",
                           font=self.fonts.get("body"))
             eb.pack(anchor="w", padx=self.sizes["pad_lg"],
                     pady=self.sizes["pad_sm"])
-            eb.bind("<Button-1>", lambda e: self._open_eq_editor())
+            eb.bind("<Button-1>", lambda e, r=row: self._open_eq_editor(r))
         # tse 行：展开区提供参考录音入口
         if spec.name == "tse":
             tb = tk.Label(row.body_frame,

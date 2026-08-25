@@ -48,22 +48,7 @@ class ConfigDefaults:
     agc_enabled: bool = False
     vad_enabled: bool = False
     compressor_enabled: bool = False
-    # 均衡器（8个预设插槽 + 当前激活的插槽 + 当前展示的增益）
-    eq_preset_0: List[float] = field(default_factory=lambda: [0.0] * 61)
-    eq_preset_1: List[float] = field(default_factory=lambda: [0.0] * 61)
-    eq_preset_2: List[float] = field(default_factory=lambda: [0.0] * 61)
-    eq_preset_3: List[float] = field(default_factory=lambda: [0.0] * 61)
-    eq_preset_4: List[float] = field(default_factory=lambda: [0.0] * 61)
-    eq_preset_5: List[float] = field(default_factory=lambda: [0.0] * 61)
-    eq_preset_6: List[float] = field(default_factory=lambda: [0.0] * 61)
-    eq_preset_7: List[float] = field(default_factory=lambda: [0.0] * 61)
-    eq_active_slot: int = 0
-    eq_current_gains: List[float] = field(default_factory=lambda: [0.0] * 61)
-    # EQ 高切/低切（低切=高通默认 80Hz，高切=低通默认 16kHz；默认关闭）
-    eq_hp_enabled: bool = False
-    eq_hp_hz: float = 80.0
-    eq_lp_enabled: bool = False
-    eq_lp_hz: float = 16000.0
+    # 均衡器状态（增益/高切/低切）存各 eq 插件节点的 params（随 plugin_chain 持久化）
     # 插件链（右侧面板，全部处理以插件形式存在）：[{"type","enabled","params"}, ...]
     plugin_chain: List[dict] = field(default_factory=lambda: [
         {"type": "audio_input", "enabled": True, "params": {"device": ""}},
@@ -211,20 +196,6 @@ class ConfigDefaults:
             "registry_auto_start": instance.registry_auto_start,
             "hotkey_enabled": instance.hotkey_enabled,
             "vbcable_check_enabled": instance.vbcable_check_enabled,
-            "eq_preset_0": instance.eq_preset_0.copy(),
-            "eq_preset_1": instance.eq_preset_1.copy(),
-            "eq_preset_2": instance.eq_preset_2.copy(),
-            "eq_preset_3": instance.eq_preset_3.copy(),
-            "eq_preset_4": instance.eq_preset_4.copy(),
-            "eq_preset_5": instance.eq_preset_5.copy(),
-            "eq_preset_6": instance.eq_preset_6.copy(),
-            "eq_preset_7": instance.eq_preset_7.copy(),
-            "eq_active_slot": instance.eq_active_slot,
-            "eq_current_gains": instance.eq_current_gains.copy(),
-            "eq_hp_enabled": instance.eq_hp_enabled,
-            "eq_hp_hz": instance.eq_hp_hz,
-            "eq_lp_enabled": instance.eq_lp_enabled,
-            "eq_lp_hz": instance.eq_lp_hz,
             "plugin_chain": instance.plugin_chain,
         }
 
@@ -303,10 +274,6 @@ class ConfigManager:
         "server_enabled", "server_port",
         "auto_start", "registry_auto_start", "hotkey_enabled",
         "vbcable_check_enabled",
-        "eq_preset_0", "eq_preset_1", "eq_preset_2", "eq_preset_3",
-        "eq_preset_4", "eq_preset_5", "eq_preset_6", "eq_preset_7",
-        "eq_active_slot", "eq_current_gains",
-        "eq_hp_enabled", "eq_hp_hz", "eq_lp_enabled", "eq_lp_hz",
         "plugin_chain",
     ]
 

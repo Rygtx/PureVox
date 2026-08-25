@@ -238,24 +238,28 @@ def show_about_dialog(parent, sizes=None, fonts=None):
     show(0)
 
 
-# ── EQ 编辑器：61 段真实频点 Canvas（引擎单一来源）+ 高切/低切 ──
-from pvengine.components.eq import EQ_FREQS as _EQ_FREQS, response_at as _eq_response_at
+# ── EQ 编辑器：真实频点 Canvas（引擎单一来源，10/31/61 段共用）+ 高切/低切 ──
+from pvengine.components.eq import EQ_FREQS as _EQ_FREQS, EQ_Q as _EQ_Q
+from pvengine.components.eq import response_at as _eq_response_at
 
 HP_DEFAULT_HZ = 80.0     # 低切（高通）默认截止
 LP_DEFAULT_HZ = 16000.0  # 高切（低通）默认截止
 
-# 预设：{频点: dB} 稀疏定义（键取自引擎 EQ_FREQS），加载时展开为 61 段
+# 预设：{频点: dB} 稀疏定义（键为标准频点；展开时按各规格栅格匹配，
+# 栅格里没有的频点自动跳过——同一套预设适配 10/31/61 三种段数）
 _PRESETS_SPARSE = {
     "平直": {},
-    "低音增强": {31.5: 5.0, 63.0: 4.0, 125.0: 2.0},
-    "人声增强": {125.0: -1.5, 250.0: -1.0, 1000.0: 2.0, 2000.0: 2.5, 3150.0: 1.5},
-    "高音增强": {8000.0: 2.0, 11200.0: 3.0, 14000.0: 3.0},
+    "低音增强": {63.0: 4.0, 125.0: 3.0, 250.0: 1.5},
+    "人声增强": {125.0: -1.5, 250.0: -1.0, 1000.0: 2.0, 2500.0: 2.5, 4000.0: 1.5},
+    "高音增强": {8000.0: 2.0, 12500.0: 3.0, 16000.0: 3.0},
 }
 
 
-def _expand_preset(sparse):
+def _expand_preset(sparse, freqs=None):
+    if freqs is None:
+        freqs = _EQ_FREQS
     out = []
-    for f in _EQ_FREQS:
+    for f in freqs:
         g = 0.0
         for bf, bg in sparse.items():
             if abs(math.log10(bf) - math.log10(f)) < 1e-9:
@@ -265,25 +269,25 @@ def _expand_preset(sparse):
     return out
 
 
-PRESETS = {name: _expand_preset(sp) for name, sp in _PRESETS_SPARSE.items()}
-
-
 class EQCurveCanvas(tk.Canvas):
-    """61 段真实频点响应曲线，拖拽/滚轮直接调对应频段；高切/低切虚线标记。"""
+    """真实频点响应曲线（栅格可配：10/31/61 段），拖拽/滚轮直接调
+    对应频段；高切/低切虚线标记。"""
 
     Y_LIMIT = 15
 
-    def __init__(self, parent, gains61, filters=None, on_change=None,
-                 sizes=None, fonts=None):
+    def __init__(self, parent, gains, filters=None, on_change=None,
+                 sizes=None, fonts=None, freqs=None, q=0.0):
         self.sizes = sizes or make_sizes(100)
         self.fonts = fonts or {}
         self.on_change = on_change
-        self._gains = list(gains61)
-        if len(self._gains) != len(_EQ_FREQS):
-            self._gains = [0.0] * len(_EQ_FREQS)
+        self._freqs = tuple(freqs) if freqs is not None else _EQ_FREQS
+        self._q = float(q) if q > 0.0 else _EQ_Q
+        self._gains = list(gains)
+        if len(self._gains) != len(self._freqs):
+            self._gains = [0.0] * len(self._freqs)
         self._drag_idx = None
         s = self.sizes["scale"]
-        # 线宽/手柄/字号随挡位缩放；61 段手柄密集，取小号
+        # 线宽/手柄/字号随挡位缩放
         self._lw = max(2, int(round(2 * s)))
         self._hs = max(2, int(round(3 * s)))          # 手柄半边长
         self._axis_font = ("TkDefaultFont", max(9, int(round(9 * s))))
@@ -319,11 +323,11 @@ class EQCurveCanvas(tk.Canvas):
         return w, h, L, R, T, B
 
     def _x_of_band(self, i, w, L, gw):
-        lo, hi = math.log10(_EQ_FREQS[0]), math.log10(_EQ_FREQS[-1])
-        return L + (math.log10(_EQ_FREQS[i]) - lo) / (hi - lo) * gw
+        lo, hi = math.log10(self._freqs[0]), math.log10(self._freqs[-1])
+        return L + (math.log10(self._freqs[i]) - lo) / (hi - lo) * gw
 
     def _x_of_freq(self, f, w, L, gw):
-        lo, hi = math.log10(_EQ_FREQS[0]), math.log10(_EQ_FREQS[-1])
+        lo, hi = math.log10(self._freqs[0]), math.log10(self._freqs[-1])
         u = min(max(math.log10(f), lo), hi)
         return L + (u - lo) / (hi - lo) * gw
 
@@ -336,11 +340,11 @@ class EQCurveCanvas(tk.Canvas):
         return max(-self.Y_LIMIT, min(self.Y_LIMIT, round(g)))
 
     def _band_at_x(self, x, w, L, gw):
-        lo, hi = math.log10(_EQ_FREQS[0]), math.log10(_EQ_FREQS[-1])
+        lo, hi = math.log10(self._freqs[0]), math.log10(self._freqs[-1])
         u = min(max(x - L, 0.0), gw)
         target = lo + (u / gw) * (hi - lo)
         best, bd = 0, 1e9
-        for i, f in enumerate(_EQ_FREQS):
+        for i, f in enumerate(self._freqs):
             d = abs(math.log10(f) - target)
             if d < bd:
                 best, bd = i, d
@@ -350,7 +354,7 @@ class EQCurveCanvas(tk.Canvas):
     def redraw(self):
         w, h, L, R, T, B = self._geom()
         gw, gh = w - L - R, h - T - B
-        n = len(_EQ_FREQS)
+        n = len(self._freqs)
         self.delete("all")
         # 网格
         for db in (-15, -10, -5, 0, 5, 10, 15):
@@ -365,7 +369,7 @@ class EQCurveCanvas(tk.Canvas):
         for i in range(n):
             x = self._x_of_band(i, w, L, gw)
             if i % label_step == 0:
-                f = _EQ_FREQS[i]
+                f = self._freqs[i]
                 lbl = f"{round(f / 1000)}k" if f >= 10000 \
                     else (f"{f / 1000:g}k" if f >= 1000 else f"{int(f)}")
                 self.create_text(x, T + gh + 2, text=lbl, anchor="n",
@@ -373,21 +377,23 @@ class EQCurveCanvas(tk.Canvas):
                                  font=self._tick_font)
         # 高切/低切截止虚线
         for on, hz in ((self._hp[0], self._hp[1]), (self._lp[0], self._lp[1])):
-            if not on or not (_EQ_FREQS[0] <= hz <= _EQ_FREQS[-1]):
+            if not on or not (self._freqs[0] <= hz <= self._freqs[-1]):
                 continue
             x = self._x_of_freq(hz, w, L, gw)
             self.create_line(x, T, x, T + gh,
                              fill=theme.MID, dash=(4, 3))
-        # 响应曲线：引擎 response_at() 单一来源（含高/低切）
+        # 响应曲线：引擎 response_at() 单一来源（含高/低切，按本规格栅格与 Q）；
+        # 限幅在 ±Y_LIMIT 内——越界会画出绘图区（压过轴标/边框）
         pts = []
         for k in range(160):
             u = k / 159.0
-            freq = (_EQ_FREQS[0]) * ((_EQ_FREQS[-1] / _EQ_FREQS[0]) ** u)
+            freq = (self._freqs[0]) * ((self._freqs[-1] / self._freqs[0]) ** u)
             hp = self._hp[1] if self._hp[0] else 0.0
             lp = self._lp[1] if self._lp[0] else 0.0
-            dbv = max(-float(self.Y_LIMIT) - 3.0,
+            dbv = max(-float(self.Y_LIMIT),
                       min(float(self.Y_LIMIT),
-                          _eq_response_at(freq, self._gains, hp_hz=hp, lp_hz=lp)))
+                          _eq_response_at(freq, self._gains, hp_hz=hp, lp_hz=lp,
+                                          freqs=self._freqs, q=self._q)))
             pts.append((L + u * gw, self._y_of_gain(dbv, T, gh)))
         flat = [c for p in pts for c in p]
         if len(flat) >= 4:
@@ -449,24 +455,25 @@ class EQCurveCanvas(tk.Canvas):
 
     def set_gains(self, gains):
         self._gains = list(gains)
-        if len(self._gains) != len(_EQ_FREQS):
-            self._gains = [0.0] * len(_EQ_FREQS)
+        if len(self._gains) != len(self._freqs):
+            self._gains = [0.0] * len(self._freqs)
         self.redraw()
 
 
-def open_eq_editor(parent, get_gains, set_gains, sizes=None, fonts=None,
-                   get_filters=None, set_filters=None):
-    """均衡器编辑器：真实 61 段频点直接拖拽；高切/低切复选框 + 截止频率。"""
+def open_eq_editor(parent, freqs, q, get_gains, set_gains, sizes=None,
+                   fonts=None, get_filters=None, set_filters=None):
+    """均衡器编辑器：真实频点直接拖拽（栅格随插件规格 10/31/61 段）；
+    高切/低切复选框 + 截止频率。"""
     dlg = DarkDialog(parent, "均衡器", 560, 430, sizes=sizes, fonts=fonts)
-    cur61 = list(get_gains())
-    if len(cur61) != len(_EQ_FREQS):
-        cur61 = [0.0] * len(_EQ_FREQS)
+    cur = list(get_gains())
+    if len(cur) != len(freqs):
+        cur = [0.0] * len(freqs)
     filters0 = tuple(get_filters()) if get_filters else \
         (False, HP_DEFAULT_HZ, False, LP_DEFAULT_HZ)
 
-    curve = EQCurveCanvas(dlg.body, cur61, filters=filters0,
+    curve = EQCurveCanvas(dlg.body, cur, filters=filters0,
                           on_change=lambda v: set_gains(list(v)),
-                          sizes=sizes, fonts=fonts)
+                          sizes=sizes, fonts=fonts, freqs=freqs, q=q)
     curve.pack(fill=tk.BOTH, expand=True, padx=8, pady=(4, 0))
 
     # ── 高切/低切控制行 ──
@@ -503,16 +510,17 @@ def open_eq_editor(parent, get_gains, set_gains, sizes=None, fonts=None,
     _cut_block(hp_var, hp_hz_var, 20, 1000, "低切")
     _cut_block(lp_var, lp_hz_var, 1000, 20000, "高切")
 
-    # ── 预设行 ──
+    # ── 预设行（按本规格栅格展开；栅格没有的频点自动跳过）──
     prow = tk.Frame(dlg.body, bg=theme.WINDOW)
     prow.pack(fill=tk.X, padx=10, pady=(0, 8))
-    for name, vals in PRESETS.items():
+    for name, sparse in _PRESETS_SPARSE.items():
+        vals = _expand_preset(sparse, freqs)
         b = tk.Label(prow, text=name, bg=theme.BUTTON, fg=theme.TEXT,
                      font=(fonts or {}).get("small"), padx=8, pady=2,
                      cursor="hand2")
         b.pack(side=tk.LEFT, padx=2)
         b.bind("<Button-1>",
-               lambda e, vs=list(vals): (curve.set_gains(vs), set_gains(vs)))
+               lambda e, vs=vals: (curve.set_gains(vs), set_gains(vs)))
         b.bind("<Enter>", lambda e, w=b: w.configure(bg=theme.DARK))
         b.bind("<Leave>", lambda e, w=b: w.configure(bg=theme.BUTTON))
 

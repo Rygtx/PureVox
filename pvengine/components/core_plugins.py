@@ -126,33 +126,93 @@ class GatePlugin(Effect):
         self._active = False
 
 
-class EqPlugin(Effect):
-    """均衡器：61 段 peaking EQ。增益矩阵在下方独立曲线面板编辑，
-    本行只负责启用/停用。"""
+class _EqPluginBase(Effect):
+    """均衡器基类：增益列表与高切/低切全部存节点 params（随链持久化），
+    经 set_params 热更到运行中的 Stage。三种规格（10/31/61 段）只是
+    频点栅格与匹配 Q 不同，处理路径完全同一份 EqStage 实现。"""
 
     NAME = "eq"
-    LABEL = "均衡器 EQ"
+    LABEL = "均衡器"
     PARAMS = {}
+    FREQS = None   # 子类指定（pvengine.components.eq 的栅格常量）
+    Q = 0.0
 
     def __init__(self, params=None, engine_cache=None):
-        super().__init__(params)
         from pvengine.components.eq import EqStage
-        self.stage = EqStage()
+        # 先建 stage 再走基类初始化——基类 set_params 会触发 _apply
+        self.stage = EqStage(self.FREQS, self.Q)
+        super().__init__(params)
+        self._apply()
 
-    def set_gains(self, gains):
-        self.stage.set_gains(gains)
+    def set_params(self, params: dict):
+        """覆盖基类：EQ 参数含增益列表/布尔，不走基类的 float 通道。"""
+        for k, v in (params or {}).items():
+            if k == "gains":
+                try:
+                    self.params["gains"] = [float(g) for g in v]
+                except (TypeError, ValueError):
+                    pass
+            elif k in ("hp_enabled", "lp_enabled"):
+                self.params[k] = bool(v)
+            elif k in ("hp_hz", "lp_hz"):
+                try:
+                    self.params[k] = float(v)
+                except (TypeError, ValueError):
+                    pass
+        self.on_params_changed()
 
-    def set_highpass(self, enabled: bool, hz: float):
-        self.stage.set_highpass(enabled, hz)
+    def _apply(self):
+        p = self.params
+        self.stage.set_gains(p.get("gains") or [])
+        self.stage.set_highpass(bool(p.get("hp_enabled", False)),
+                                float(p.get("hp_hz", 80.0)))
+        self.stage.set_lowpass(bool(p.get("lp_enabled", False)),
+                               float(p.get("lp_hz", 16000.0)))
 
-    def set_lowpass(self, enabled: bool, hz: float):
-        self.stage.set_lowpass(enabled, hz)
+    def on_params_changed(self):
+        self._apply()
 
     def process(self, frame, ctx):
         return self.stage.process(frame, ctx)
 
     def reset(self):
         self.stage.reset()
+
+
+class Eq10Plugin(_EqPluginBase):
+    """均衡器 10 段（1 倍频程）。"""
+
+    NAME = "eq10"
+    LABEL = "均衡器 EQ · 10 段"
+
+    def __init__(self, params=None, engine_cache=None):
+        from pvengine.components.eq import EQ10_FREQS, EQ_Q10
+        self.FREQS, self.Q = EQ10_FREQS, EQ_Q10
+        super().__init__(params, engine_cache)
+
+
+class Eq31Plugin(_EqPluginBase):
+    """均衡器 31 段（1/3 倍频程，硬件图示 EQ 通用规格）。"""
+
+    NAME = "eq31"
+    LABEL = "均衡器 EQ · 31 段"
+
+    def __init__(self, params=None, engine_cache=None):
+        from pvengine.components.eq import EQ31_FREQS, EQ_Q31
+        self.FREQS, self.Q = EQ31_FREQS, EQ_Q31
+        super().__init__(params, engine_cache)
+
+
+class Eq61Plugin(_EqPluginBase):
+    """均衡器 61 段（1/6 倍频程）。"""
+
+    NAME = "eq61"
+    LABEL = "均衡器 EQ · 61 段"
+
+    def __init__(self, params=None, engine_cache=None):
+        from pvengine.components.eq import EQ61_FREQS, EQ_Q61
+        self.FREQS, self.Q = EQ61_FREQS, EQ_Q61
+        super().__init__(params, engine_cache)
 
 
 class CompressorPlugin(Effect):

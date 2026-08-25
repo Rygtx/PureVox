@@ -15,13 +15,14 @@
 #
 # SPDX-License-Identifier: GPL-3.0-or-later
 
-"""EQ 组件——61 段 1/6 倍频程图示均衡器 + 高切/低切（标准做法）。
+"""EQ 组件——图示均衡器（10/31/61 段三种规格）+ 高切/低切（标准做法）。
 
-- 频点为 ISO 266 1/6 倍频程标称中心频率（20 Hz ~ 20 kHz，相邻比 2^(1/6)）；
+- 三种规格对应三种倍频程栅格（ISO 266 标称中心频率，20 Hz ~ 20 kHz）：
+  10 段 = 1 倍频程、31 段 = 1/3 倍频程（硬件图示 EQ 通用规格）、
+  61 段 = 1/6 倍频程；相邻频点比 = 2^N；
 - 每段一个 RBJ peaking biquad（audio-eq-cookbook 系式）；
-- Q 与频点栅格带宽匹配：Q = √(2^N)/(2^N − 1)，N = 1/6 倍频程 → ≈8.65。
-  这是图示 EQ 的标准取法——每段 -3 dB 带宽≈本段栅格宽度，
-  调一段只影响自己附近的频带，不向邻段大面积串扰；
+- Q 与频点栅格带宽匹配：Q = √(2^N)/(2^N − 1)——每段 -3 dB 带宽≈本段
+  栅格宽度，相邻段提升在段间自然叠加成平台，调一段只影响附近频带；
 - 高切/低切为可选二阶巴特沃斯（Butterworth Q=1/√2，12 dB/oct），
   信号流顺序：低切 → 峰值段级联 → 高切；
 - 全零增益且无切滤时整体旁路；运行时跳过零增益段（恒等滤波器，跳过不改输出）；
@@ -38,13 +39,24 @@ from scipy.signal import lfilter
 from pvengine.context import FrameContext, SAMPLE_RATE
 from pvengine.stages.base import Stage
 
-EQ_BANDS = 61
 
-# 标准 1/6 倍频程带宽匹配 Q：Q = √(2^N)/(2^N − 1)，N = 1/6 ≈ 8.651
-_EQ_OCTAVES = 1.0 / 6.0
-EQ_Q = (2.0 ** (_EQ_OCTAVES / 2.0)) / (2.0 ** _EQ_OCTAVES - 1.0)
+def _matched_q(n_octaves: float) -> float:
+    """图示 EQ 标准取法：-3dB 带宽 = n_octaves 倍频程的匹配 Q。"""
+    b = 2.0 ** n_octaves
+    return (b ** 0.5) / (b - 1.0)
 
-EQ_FREQS = (
+
+# ── 三种规格的栅格与匹配 Q ──
+EQ10_FREQS = (
+    31.5, 63.0, 125.0, 250.0, 500.0, 1000.0, 2000.0, 4000.0, 8000.0, 16000.0,
+)
+EQ31_FREQS = (
+    20.0, 25.0, 31.5, 40.0, 50.0, 63.0, 80.0, 100.0, 125.0, 160.0,
+    200.0, 250.0, 315.0, 400.0, 500.0, 630.0, 800.0, 1000.0, 1250.0, 1600.0,
+    2000.0, 2500.0, 3150.0, 4000.0, 5000.0, 6300.0, 8000.0, 10000.0, 12500.0, 16000.0,
+    20000.0,
+)
+EQ61_FREQS = (
     20.0, 22.4, 25.0, 28.0, 31.5, 35.5, 40.0, 45.0, 50.0, 56.0,
     63.0, 71.0, 80.0, 90.0, 100.0, 112.0, 125.0, 140.0, 160.0, 180.0,
     200.0, 224.0, 250.0, 280.0, 315.0, 355.0, 400.0, 450.0, 500.0, 560.0,
@@ -53,6 +65,21 @@ EQ_FREQS = (
     6300.0, 7100.0, 8000.0, 9000.0, 10000.0, 11200.0, 12500.0, 14000.0, 16000.0, 18000.0,
     20000.0,
 )
+EQ_Q10 = _matched_q(1.0)     # ≈1.414
+EQ_Q31 = _matched_q(1 / 3)   # ≈4.318
+EQ_Q61 = _matched_q(1 / 6)   # ≈8.651
+
+# 默认栅格 = 31 段（兼容旧常量名）
+EQ_FREQS = EQ31_FREQS
+EQ_Q = EQ_Q31
+EQ_BANDS = len(EQ_FREQS)
+
+# 插件名 → (频点栅格, 匹配 Q)；UI 曲线编辑器据此共用同一份权威实现
+EQ_VARIANTS = {
+    "eq10": (EQ10_FREQS, EQ_Q10),
+    "eq31": (EQ31_FREQS, EQ_Q31),
+    "eq61": (EQ61_FREQS, EQ_Q61),
+}
 
 
 def _peaking_eq(freq: float, gain_db: float, q: float, fs: float):
@@ -90,9 +117,15 @@ def _butter_cut(freq: float, fs: float, highpass: bool):
 
 
 def response_at(freq: float, gains, fs: float = SAMPLE_RATE,
-                hp_hz: float = 0.0, lp_hz: float = 0.0) -> float:
+                hp_hz: float = 0.0, lp_hz: float = 0.0,
+                freqs=None, q: float = 0.0) -> float:
     """全链在 freq 处的总响应（dB）：低切 × 峰值段级联 × 高切。
-    hp_hz/lp_hz 为 0 表示未启用。UI 曲线绘制与本文件共用。"""
+    hp_hz/lp_hz 为 0 表示未启用。freqs/q 缺省用 31 段栅格。
+    UI 曲线绘制与本文件共用（各规格传各自栅格）。"""
+    if freqs is None:
+        freqs = EQ_FREQS
+    if q <= 0.0:
+        q = EQ_Q
     total_db = 0.0
     w = 2.0 * math.pi * freq / fs
     c, s = math.cos(w), math.sin(w)
@@ -108,9 +141,9 @@ def response_at(freq: float, gains, fs: float = SAMPLE_RATE,
     if hp_hz > 0.0:
         total_db += _mag(*_butter_cut(hp_hz, fs, highpass=True))
     for i, g in enumerate(gains):
-        if i >= EQ_BANDS or abs(float(g)) < 1e-9:
+        if i >= len(freqs) or abs(float(g)) < 1e-9:
             continue
-        total_db += _mag(*_peaking_eq(EQ_FREQS[i], float(g), EQ_Q, fs))
+        total_db += _mag(*_peaking_eq(freqs[i], float(g), q, fs))
     if lp_hz > 0.0:
         total_db += _mag(*_butter_cut(lp_hz, fs, highpass=False))
     return total_db
@@ -119,13 +152,18 @@ def response_at(freq: float, gains, fs: float = SAMPLE_RATE,
 class EqStage(Stage):
     name = "eq"
 
-    def __init__(self, sample_rate: float = SAMPLE_RATE):
+    def __init__(self, freqs=None, q: float = 0.0,
+                 sample_rate: float = SAMPLE_RATE):
         super().__init__()
         self.fs = sample_rate
+        self._freqs = tuple(freqs) if freqs is not None else EQ_FREQS
+        self._q = float(q) if q > 0.0 else EQ_Q
+        n = len(self._freqs)
         self.active = False
         self._active_idx: tuple[int, ...] = ()
-        self._coeffs = [_peaking_eq(f, 0.0, EQ_Q, sample_rate) for f in EQ_FREQS]
-        self._zi = [np.zeros(2) for _ in range(EQ_BANDS)]
+        self._coeffs = [_peaking_eq(f, 0.0, self._q, sample_rate)
+                        for f in self._freqs]
+        self._zi = [np.zeros(2) for _ in range(n)]
         # 高切/低切（二阶巴特沃斯）
         self._hp_on = False
         self._lp_on = False
@@ -159,12 +197,14 @@ class EqStage(Stage):
             self._zi_lp = np.zeros(2)
 
     def set_gains(self, gains) -> None:
-        """设置 61 段增益（dB）；全零且无切滤即旁路。新激活段清零滤波器状态。"""
+        """设置全部段增益（dB，长度不足补 0）；全零且无切滤即旁路。
+        新激活段清零滤波器状态。"""
+        n = len(self._freqs)
         active = []
         prev_active = self._active_idx
-        for i in range(EQ_BANDS):
+        for i in range(n):
             g = float(gains[i]) if i < len(gains) else 0.0
-            self._coeffs[i] = _peaking_eq(EQ_FREQS[i], g, EQ_Q, self.fs)
+            self._coeffs[i] = _peaking_eq(self._freqs[i], g, self._q, self.fs)
             if g != 0.0:
                 active.append(i)
         self._active_idx = tuple(active)
@@ -172,6 +212,23 @@ class EqStage(Stage):
             if i not in prev_active:
                 self._zi[i][:] = 0.0
         self.active = bool(active)
+
+    def mirror(self, other: "EqStage") -> None:
+        """复制另一实例的系数/开关（不复制滤波器状态）——预览路径专用。
+
+        频谱预览等旁路消费绝不能共享主链实例：两路不同信号轮流推进
+        同一份 zi 会在每个帧边界产生不连续（可闻杂音）。镜像只取
+        系数与开关，zi 保持自己独立连续。
+        """
+        self._coeffs = list(other._coeffs)
+        self._active_idx = other._active_idx
+        self.active = other.active
+        self._hp_on = other._hp_on
+        self._hp_hz = other._hp_hz
+        self._hp_c = other._hp_c
+        self._lp_on = other._lp_on
+        self._lp_hz = other._lp_hz
+        self._lp_c = other._lp_c
 
     def process(self, frame, ctx: FrameContext):
         if not (self.active or self._hp_on or self._lp_on):
@@ -189,6 +246,6 @@ class EqStage(Stage):
         return y.astype(np.float32)
 
     def reset(self):
-        self._zi = [np.zeros(2) for _ in range(EQ_BANDS)]
+        self._zi = [np.zeros(2) for _ in range(len(self._freqs))]
         self._zi_hp = np.zeros(2)
         self._zi_lp = np.zeros(2)
