@@ -663,6 +663,10 @@ class MainWindowTk:
         cur = list(self._cfg_get("eq_current_gains", [0.0] * 61) or [0.0] * 61)
         if len(cur) != 61:
             cur = [0.0] * 61
+        filters = (bool(self._cfg_get("eq_hp_enabled", False)),
+                   float(self._cfg_get("eq_hp_hz", 80.0)),
+                   bool(self._cfg_get("eq_lp_enabled", False)),
+                   float(self._cfg_get("eq_lp_hz", 16000.0)))
 
         def set_gains(g):
             self._cfg_set("eq_current_gains", list(g))
@@ -673,7 +677,20 @@ class MainWindowTk:
                 except Exception:
                     pass
 
+        def set_filters(hp_on, hp_hz, lp_on, lp_hz):
+            self._cfg_set("eq_hp_enabled", bool(hp_on))
+            self._cfg_set("eq_hp_hz", float(hp_hz))
+            self._cfg_set("eq_lp_enabled", bool(lp_on))
+            self._cfg_set("eq_lp_hz", float(lp_hz))
+            proc = self.engine.processor
+            if proc:
+                try:
+                    proc.set_eq_filters(hp_on, hp_hz, lp_on, lp_hz)
+                except Exception:
+                    pass
+
         open_eq_editor(self.root, lambda: cur, set_gains,
+                       get_filters=lambda: filters, set_filters=set_filters,
                        sizes=self.sizes, fonts=self.fonts)
 
     def _open_tse_dialog(self):
@@ -778,6 +795,9 @@ class MainWindowTk:
                       on_param=lambda r, k, v: self._on_param(r, k, v))
         row.set_toggle_cb(self._apply_chain_change)
         row._on_param_cb = self._apply_chain_change
+        # 下拉展开即刷新：与启动/停止/弹框共用同一套 refresh_devices
+        if hasattr(row, "dev_combo"):
+            row.dev_combo.on_open = self.refresh_devices
         row._apply_enabled_look()
         # viz 行：内嵌实时控件
         if spec.kind == "viz" and bool(cfg.get("enabled", True)):

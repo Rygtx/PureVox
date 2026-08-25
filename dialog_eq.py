@@ -23,13 +23,17 @@ import math
 from typing import Any, Callable, List, Optional
 
 from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton
+    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
+    QCheckBox, QSpinBox
 )
 from PySide6.QtCore import Qt, Signal, QRectF, QTimer
 from PySide6.QtGui import QPainter, QPen, QColor, QFont
 
 # 频点栅格 / Q / 频响计算一律取自引擎（单一实现来源）
 from pvengine.components.eq import EQ_FREQS, response_at
+
+HP_DEFAULT_HZ = 80.0      # 低切（高通）默认截止
+LP_DEFAULT_HZ = 16000.0   # 高切（低通）默认截止
 
 PRESETS = {
     "默认平直": [0,0,0,0,0,0,0,0,0,0, 0,0,0,0,0,0,0,0,0,0, 0,0,0,0,0,0,0,0,0,0, 0,0,0,0,0,0,0,0,0,0, 0,0,0,0,0,0,0,0,0,0, 0,0,0,0,0,0,0,0,0,0,0],
@@ -52,7 +56,8 @@ def format_freq(freq):
     return f"{int(freq)}"
 
 
-class EQCurveWidget(QWidget):
+class _EQCanvas(QWidget):
+    """响应曲线绘制体（61 段拖拽 + 高/低切虚线标记）。"""
     gains_changed = Signal(list)
     Y_RANGE = 30
     Y_LIMIT = 15
@@ -61,10 +66,21 @@ class EQCurveWidget(QWidget):
         super().__init__(parent)
         self._values = [0.0] * len(EQ_FREQS)
         self._dragging = None
+        self._hp = [False, HP_DEFAULT_HZ]
+        self._lp = [False, LP_DEFAULT_HZ]
         self.setMinimumHeight(150)
         self.setMinimumWidth(280)
         self.setMouseTracking(True)
         self.setCursor(Qt.CrossCursor)
+
+    def set_filters(self, hp_on, hp_hz, lp_on, lp_hz):
+        self._hp = [bool(hp_on), max(float(hp_hz), 1.0)]
+        self._lp = [bool(lp_on), max(float(lp_hz), 1.0)]
+        self.repaint()
+
+    def get_filters(self):
+        return (bool(self._hp[0]), float(self._hp[1]),
+                bool(self._lp[0]), float(self._lp[1]))
 
     def paintEvent(self, event):
         p = QPainter(self)
@@ -112,6 +128,14 @@ class EQCurveWidget(QWidget):
                     p.drawText(int(x - 12), T - 12, 24, 10, Qt.AlignCenter, format_freq(freq))
 
             accent = pal.highlight().color()
+
+            # ── 高/低切截止虚线 ──
+            for on, hz in ((self._hp[0], self._hp[1]), (self._lp[0], self._lp[1])):
+                if not on or not (20.0 <= hz <= 20000.0):
+                    continue
+                x = L + self._freq_x(hz, gw)
+                p.setPen(QPen(accent, 1, Qt.DashLine))
+                p.drawLine(int(x), T, int(x), h - B)
 
             # ── 真实响应曲线（200 点 _response 计算）──
             from PySide6.QtGui import QPainterPath
@@ -171,7 +195,9 @@ class EQCurveWidget(QWidget):
         return min(range(len(EQ_FREQS)), key=lambda i: abs(math.log10(freq) - math.log10(EQ_FREQS[i])))
 
     def _response(self, freq):
-        return response_at(freq, self._values)
+        hp = self._hp[1] if self._hp[0] else 0.0
+        lp = self._lp[1] if self._lp[0] else 0.0
+        return response_at(freq, self._values, hp_hz=hp, lp_hz=lp)
 
     def _emit_debounced(self):
         """防抖发射：合并 50ms 内的多次变更，只发一次信号。"""
@@ -284,4 +310,99 @@ class EQCurveWidget(QWidget):
         self._values = [0.0] * len(EQ_FREQS)
         self.repaint()
         self.gains_changed.emit(self._values[:])
+
+
+class EQCurveWidget(QWidget):
+    """对外控件：响应曲线画布 + 高切/低切控制行。
+
+    信号：
+        gains_changed(list)                          —— 61 段增益（防抖）
+        filters_changed(bool, float, bool, float)    —— 低切开/Hz、高切开/Hz（防抖）
+    """
+
+    gains_changed = Signal(list)
+    filters_changed = Signal(bool, float, bool, float)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(4)
+
+        self.canvas = _EQCanvas()
+        lay.addWidget(self.canvas, 1)
+        self.canvas.gains_changed.connect(self.gains_changed.emit)
+
+        # ── 高/低切控制行 ──
+        row = QHBoxLayout()
+        row.setSpacing(6)
+        self.hp_check = QCheckBox("低切")
+        self.hp_hz = QSpinBox()
+        self.hp_hz.setRange(20, 1000)
+        self.hp_hz.setValue(int(HP_DEFAULT_HZ))
+        self.hp_hz.setSingleStep(10)
+        self.hp_hz.setSuffix(" Hz")
+        self.lp_check = QCheckBox("高切")
+        self.lp_hz = QSpinBox()
+        self.lp_hz.setRange(1000, 20000)
+        self.lp_hz.setValue(int(LP_DEFAULT_HZ))
+        self.lp_hz.setSingleStep(500)
+        self.lp_hz.setSuffix(" Hz")
+        row.addWidget(self.hp_check)
+        row.addWidget(self.hp_hz)
+        row.addSpacing(14)
+        row.addWidget(self.lp_check)
+        row.addWidget(self.lp_hz)
+        row.addStretch()
+        lay.addLayout(row)
+
+        self.hp_hz.setEnabled(False)
+        self.lp_hz.setEnabled(False)
+        self.hp_check.toggled.connect(self._on_hp_toggle)
+        self.lp_check.toggled.connect(self._on_lp_toggle)
+        self.hp_hz.valueChanged.connect(lambda _: self._on_filter_ui())
+        self.lp_hz.valueChanged.connect(lambda _: self._on_filter_ui())
+
+    def _on_hp_toggle(self, on: bool):
+        self.hp_hz.setEnabled(on)
+        self._on_filter_ui()
+
+    def _on_lp_toggle(self, on: bool):
+        self.lp_hz.setEnabled(on)
+        self._on_filter_ui()
+
+    def _on_filter_ui(self):
+        f = (self.hp_check.isChecked(), float(self.hp_hz.value()),
+             self.lp_check.isChecked(), float(self.lp_hz.value()))
+        self.canvas.set_filters(*f)
+        self.filters_changed.emit(*f)
+
+    def set_gains(self, gains):
+        self.canvas.set_gains(gains)
+
+    def get_gains(self):
+        return self.canvas.get_gains()
+
+    def reset(self):
+        self.canvas.reset()
+
+    def set_filters(self, hp_on, hp_hz, lp_on, lp_hz):
+        """程序化设置（不触发信号回环）。"""
+        widgets = (self.hp_check, self.hp_hz, self.lp_check, self.lp_hz)
+        for w in widgets:
+            w.blockSignals(True)
+        try:
+            self.hp_check.setChecked(bool(hp_on))
+            self.hp_hz.setValue(int(hp_hz))
+            self.lp_check.setChecked(bool(lp_on))
+            self.lp_hz.setValue(int(lp_hz))
+        finally:
+            for w in widgets:
+                w.blockSignals(False)
+        self.hp_hz.setEnabled(bool(hp_on))
+        self.lp_hz.setEnabled(bool(lp_on))
+        self.canvas.set_filters(hp_on, hp_hz, lp_on, lp_hz)
+
+    def get_filters(self):
+        return self.canvas.get_filters()
 

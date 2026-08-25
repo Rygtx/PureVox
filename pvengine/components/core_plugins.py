@@ -142,6 +142,12 @@ class EqPlugin(Effect):
     def set_gains(self, gains):
         self.stage.set_gains(gains)
 
+    def set_highpass(self, enabled: bool, hz: float):
+        self.stage.set_highpass(enabled, hz)
+
+    def set_lowpass(self, enabled: bool, hz: float):
+        self.stage.set_lowpass(enabled, hz)
+
     def process(self, frame, ctx):
         return self.stage.process(frame, ctx)
 

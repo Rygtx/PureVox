@@ -426,6 +426,17 @@ class VUPanel(QWidget):
 #  主面板
 # ═══════════════════════════════════════════════════════════════
 
+class DeviceCombo(QComboBox):
+    """设备下拉：每次展开（showPopup）即发出 popupOpening——面板接到后
+    异步重枚举设备。这是设备列表唯一的刷新触发点，启动/停止/弹框均不刷。"""
+
+    popupOpening = Signal()
+
+    def showPopup(self):
+        self.popupOpening.emit()
+        super().showPopup()
+
+
 class PluginRow(QWidget):
     """节点行——kind 决定形态：
     fx      处理插件，三级 UI（toggle / inline / expand）
@@ -516,7 +527,7 @@ class PluginRow(QWidget):
             gl = QLabel("设备")
             gl.setStyleSheet("color: palette(mid); font-size: 8pt;")
             h.addWidget(gl)
-            self.dev_combo = QComboBox()
+            self.dev_combo = DeviceCombo()
             self.dev_combo.setSizeAdjustPolicy(
                 QComboBox.AdjustToMinimumContentsLengthWithIcon)
             self.dev_combo.setMinimumContentsLength(6)
@@ -534,7 +545,7 @@ class PluginRow(QWidget):
                 gl = QLabel("回声参考设备")
                 gl.setStyleSheet("color: palette(mid); font-size: 8pt;")
                 grid.addWidget(gl, r, 0)
-                self.dev_combo = QComboBox()
+                self.dev_combo = DeviceCombo()
                 self.dev_combo.setSizeAdjustPolicy(
                     QComboBox.AdjustToMinimumContentsLengthWithIcon)
                 self.dev_combo.setMinimumContentsLength(6)
@@ -641,6 +652,7 @@ class PluginPanel(QWidget):
 
     chainChanged = Signal(list)
     structureChanged = Signal()   # 端点签名变化（DESIGN.md §7）→ 触发自动重启
+    devicesArrived = Signal(dict, int)   # 后台枚举完成 → 队列投递回 UI 线程
 
     def __init__(self, config, saver=None, get_processor=None,
                  get_devices=None, logger=None, parent=None):
@@ -651,6 +663,8 @@ class PluginPanel(QWidget):
         # 返回 {"inputs": [(text,data)...], "outputs": [(text,data)...]}
         self._get_devices = get_devices or (lambda: {"inputs": [], "outputs": []})
         self._log = logger or get_logger()
+        self._dev_gen = 0
+        self.devicesArrived.connect(self._apply_devices)
 
         root = QVBoxLayout(self)
         root.setContentsMargins(4, 4, 4, 4)
@@ -699,6 +713,9 @@ class PluginPanel(QWidget):
             row.toggled.connect(self._on_row_toggle)
             row.actionRequested.connect(self._on_action)
             row.expandRequested.connect(self._on_expand)
+            if hasattr(row, "dev_combo"):
+                # 下拉展开即刷新：与启动/停止/弹框共用同一套 refresh_devices
+                row.dev_combo.popupOpening.connect(self.refresh_devices)
             row.grip._plugin_row = row
             row.grip.installEventFilter(self)
             self._rows.append(row)
@@ -717,23 +734,33 @@ class PluginPanel(QWidget):
     def refresh_devices(self):
         """后台线程枚举设备，完成后回 UI 线程刷新行内下拉。
 
+        设备列表刷新的唯一入口：触发点=启动/停止/虚拟声卡等弹框回调/
+        任一设备下拉展开。新增触发点一律接这里，禁止自建第二套枚举逻辑。
+
         同步枚举（PyAudio 扫描全部 WASAPI/MME 端点）在首启/慢驱动机器上
         可能长时间阻塞 UI 线程——表现为进程在、无窗口无托盘、单实例锁
         被占。此处严禁改回同步调用。
         """
         import threading
 
+        self._dev_gen = getattr(self, "_dev_gen", 0) + 1
+        gen = self._dev_gen
+
         def _work():
             try:
                 devs = self._get_devices()
             except Exception:
                 return
-            QTimer.singleShot(0, lambda: self._apply_devices(devs))
+            # 跨线程必须走信号（自动排队到 UI 线程）——
+            # 非 Qt 线程里 QTimer.singleShot 不可靠
+            self.devicesArrived.emit(dict(devs or {}), gen)
 
         threading.Thread(target=_work, daemon=True).start()
 
-    def _apply_devices(self, devs):
-        """把枚举结果应用到各行（UI 线程内执行）。"""
+    def _apply_devices(self, devs, gen=None):
+        """把枚举结果应用到各行（UI 线程内执行）；过期结果丢弃。"""
+        if gen is not None and getattr(self, "_dev_gen", gen) != gen:
+            return
         self._devices = dict(devs or {})
         for r in self._rows:
             if hasattr(r, "set_devices"):
@@ -1405,6 +1432,11 @@ def start_processing(state, log):
             gains = state.config.get("eq_current_gains", [0.0] * 61)
             if gains:
                 proc.set_eq_gains(gains)
+            proc.set_eq_filters(
+                bool(state.config.get("eq_hp_enabled", False)),
+                float(state.config.get("eq_hp_hz", 80.0)),
+                bool(state.config.get("eq_lp_enabled", False)),
+                float(state.config.get("eq_lp_hz", 16000.0)))
 
         # ── 加载插件链 ──
         try:
@@ -1933,13 +1965,21 @@ class MainApp:
             lay = QVBoxLayout(dlg)
             curve = EQCurveWidget()
             curve.set_gains(list(gains))
+            curve.set_filters(
+                bool(config.get("eq_hp_enabled", False)),
+                float(config.get("eq_hp_hz", 80.0)),
+                bool(config.get("eq_lp_enabled", False)),
+                float(config.get("eq_lp_hz", 16000.0)))
 
-            def on_change(g):
-                config.set("eq_current_gains", list(g))
+            def _apply_and_save():
                 if saver:
                     saver.request_save()
                 else:
                     config.save_config()
+
+            def on_change(g):
+                config.set("eq_current_gains", list(g))
+                _apply_and_save()
                 proc = _state.processor
                 if proc:
                     try:
@@ -1947,7 +1987,21 @@ class MainApp:
                     except Exception:
                         pass
 
+            def on_filters(hp_on, hp_hz, lp_on, lp_hz):
+                config.set("eq_hp_enabled", bool(hp_on))
+                config.set("eq_hp_hz", float(hp_hz))
+                config.set("eq_lp_enabled", bool(lp_on))
+                config.set("eq_lp_hz", float(lp_hz))
+                _apply_and_save()
+                proc = _state.processor
+                if proc:
+                    try:
+                        proc.set_eq_filters(hp_on, hp_hz, lp_on, lp_hz)
+                    except Exception:
+                        pass
+
             curve.gains_changed.connect(on_change)
+            curve.filters_changed.connect(on_filters)
             lay.addWidget(curve, 1)
             row = QHBoxLayout()
             reset_btn = QPushButton("重置")

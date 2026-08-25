@@ -115,6 +115,21 @@ class EngineController:
                     log.warn(f"[插件] {perr}")
             proc.set_plugins([dict(e) for e in chain_cfg])
 
+            # EQ：增益 + 高切/低切（配置持久化，与 PySide 启动路径一致）
+            cfg = self.config
+            if cfg:
+                try:
+                    gains = list(cfg.get("eq_current_gains", []) or [])
+                    if len(gains) == 61:
+                        proc.set_eq_gains(gains)
+                    proc.set_eq_filters(
+                        bool(cfg.get("eq_hp_enabled", False)),
+                        float(cfg.get("eq_hp_hz", 80.0)),
+                        bool(cfg.get("eq_lp_enabled", False)),
+                        float(cfg.get("eq_lp_hz", 16000.0)))
+                except Exception as e:
+                    log.warn(f"[EQ] 应用失败: {e}")
+
             pw_ports = ([], [])
             inp = out = None
             if use_pw:

@@ -190,10 +190,15 @@ class HSlider(tk.Canvas):
 
 
 class DarkCombo(tk.Frame):
-    """深色下拉（弹层与外框严格同宽，长项像素级省略）——参考 lite BlackCombo。"""
+    """深色下拉（弹层与外框严格同宽，长项像素级省略）——参考 lite BlackCombo。
+
+    on_open：下拉展开前的回调——设备下拉用它触发异步重枚举
+    （与启动/停止/弹框共用同一套刷新入口），枚举完成后 set_values
+    会原地重建打开中的弹层，列表即时变新。
+    """
 
     def __init__(self, parent, values, var, on_change=None,
-                 sizes=None, fonts=None):
+                 sizes=None, fonts=None, on_open=None):
         self.sizes = sizes if sizes is not None else make_sizes(100)
         self.fonts = fonts if fonts is not None else {}
         # 外壳与宿主同色（不产生第二圈色），边框只由 inner 的 1px 描边承担
@@ -203,6 +208,7 @@ class DarkCombo(tk.Frame):
         self.var = var
         self.values = [v for v in list(values) if v and str(v).strip()]
         self.on_change = on_change
+        self.on_open = on_open
         self._popup = None
         inner = tk.Frame(self, bg=theme.BASE,
                          highlightbackground=theme.MID,
@@ -256,6 +262,10 @@ class DarkCombo(tk.Frame):
         if self.var.get() not in self.values and self.values:
             self.var.set(self.values[0])
         self._sync_display()
+        # 弹层开着时原地重建——异步枚举回来后列表即时变新
+        if self._popup is not None and self._popup.winfo_exists():
+            self._close()
+            self._open()
 
     def apply_sizes(self):
         self.inner.configure(height=self.sizes["combo_h"])
@@ -266,6 +276,11 @@ class DarkCombo(tk.Frame):
         if self._popup and self._popup.winfo_exists():
             self._close()
         else:
+            if self.on_open:
+                try:
+                    self.on_open()
+                except Exception:
+                    pass
             self._open()
 
     def _open(self):

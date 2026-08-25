@@ -221,37 +221,62 @@ def show_about_dialog(parent, sizes=None, fonts=None):
     show(0)
 
 
-# ── EQ 编辑器：Canvas 响应曲线 + 拖拽手柄（legacy EQCurveWidget 移植）──
-EQ_BANDS = [31, 62, 125, 250, 500, 1000, 2000, 4000, 8000, 16000]
-PRESETS = {"平直": [0] * 10,
-           "低音增强": [6, 5, 3, 1, 0, 0, 0, 0, 0, 0],
-           "人声增强": [-2, -1, 0, 2, 4, 4, 3, 1, 0, -1],
-           "高音增强": [0, 0, 0, 0, 0, 1, 3, 5, 6, 6]}
+# ── EQ 编辑器：61 段真实频点 Canvas（引擎单一来源）+ 高切/低切 ──
+from pvengine.components.eq import EQ_FREQS as _EQ_FREQS, response_at as _eq_response_at
+
+HP_DEFAULT_HZ = 80.0     # 低切（高通）默认截止
+LP_DEFAULT_HZ = 16000.0  # 高切（低通）默认截止
+
+# 预设：{频点: dB} 稀疏定义（键取自引擎 EQ_FREQS），加载时展开为 61 段
+_PRESETS_SPARSE = {
+    "平直": {},
+    "低音增强": {31.5: 5.0, 63.0: 4.0, 125.0: 2.0},
+    "人声增强": {125.0: -1.5, 250.0: -1.0, 1000.0: 2.0, 2000.0: 2.5, 3150.0: 1.5},
+    "高音增强": {8000.0: 2.0, 11200.0: 3.0, 14000.0: 3.0},
+}
 
 
-def _log_frac(f, lo=20.0, hi=20000.0):
-    import math
-    return (math.log10(f) - math.log10(lo)) / (math.log10(hi) - math.log10(lo))
+def _expand_preset(sparse):
+    out = []
+    for f in _EQ_FREQS:
+        g = 0.0
+        for bf, bg in sparse.items():
+            if abs(math.log10(bf) - math.log10(f)) < 1e-9:
+                g = bg
+                break
+        out.append(g)
+    return out
+
+
+PRESETS = {name: _expand_preset(sp) for name, sp in _PRESETS_SPARSE.items()}
 
 
 class EQCurveCanvas(tk.Canvas):
-    """61 带响应曲线（由 10 手柄对数插值），拖拽/滚轮调增益。粗细/字号随缩放挡位。"""
+    """61 段真实频点响应曲线，拖拽/滚轮直接调对应频段；高切/低切虚线标记。"""
 
-    def __init__(self, parent, gains10, on_change=None,
+    Y_LIMIT = 15
+
+    def __init__(self, parent, gains61, filters=None, on_change=None,
                  sizes=None, fonts=None):
         self.sizes = sizes or make_sizes(100)
         self.fonts = fonts or {}
         self.on_change = on_change
-        self._gains = list(gains10)
+        self._gains = list(gains61)
+        if len(self._gains) != len(_EQ_FREQS):
+            self._gains = [0.0] * len(_EQ_FREQS)
         self._drag_idx = None
         s = self.sizes["scale"]
-        # 线宽/手柄/字号随挡位缩放
+        # 线宽/手柄/字号随挡位缩放；61 段手柄密集，取小号
         self._lw = max(2, int(round(2 * s)))
-        self._hs = max(4, int(round(5 * s)))          # 手柄半边长
+        self._hs = max(2, int(round(3 * s)))          # 手柄半边长
         self._axis_font = ("TkDefaultFont", max(9, int(round(9 * s))))
-        self._tick_font = ("TkDefaultFont", max(8, int(round(8 * s))))
+        self._tick_font = ("TkDefaultFont", max(7, int(round(7 * s))))
         super().__init__(parent, bg="#FFFFFF", highlightthickness=0,
                          bd=0, cursor="hand2")
+        self._hp = [False, HP_DEFAULT_HZ]
+        self._lp = [False, LP_DEFAULT_HZ]
+        if filters:
+            self.set_filters(*filters)
         self.bind("<Configure>", lambda e: self.redraw())
         self.bind("<ButtonPress-1>", self._press)
         self.bind("<B1-Motion>", self._motion)
@@ -259,6 +284,15 @@ class EQCurveCanvas(tk.Canvas):
         self.bind("<MouseWheel>", self._wheel)
         self.bind("<Button-4>", self._wheel)
         self.bind("<Button-5>", self._wheel)
+
+    def set_filters(self, hp_on, hp_hz, lp_on, lp_hz):
+        self._hp = [bool(hp_on), float(hp_hz)]
+        self._lp = [bool(lp_on), float(lp_hz)]
+        self.redraw()
+
+    def get_filters(self):
+        return (bool(self._hp[0]), float(self._hp[1]),
+                bool(self._lp[0]), float(self._lp[1]))
 
     # ── 几何 ──
     def _geom(self):
@@ -268,22 +302,29 @@ class EQCurveCanvas(tk.Canvas):
         return w, h, L, R, T, B
 
     def _x_of_band(self, i, w, L, gw):
-        f = EQ_BANDS[i]
-        lo, hi = math.log10(EQ_BANDS[0]), math.log10(EQ_BANDS[-1])
-        return L + (math.log10(f) - lo) / (hi - lo) * gw
+        lo, hi = math.log10(_EQ_FREQS[0]), math.log10(_EQ_FREQS[-1])
+        return L + (math.log10(_EQ_FREQS[i]) - lo) / (hi - lo) * gw
+
+    def _x_of_freq(self, f, w, L, gw):
+        lo, hi = math.log10(_EQ_FREQS[0]), math.log10(_EQ_FREQS[-1])
+        u = min(max(math.log10(f), lo), hi)
+        return L + (u - lo) / (hi - lo) * gw
 
     def _y_of_gain(self, g, T, gh):
-        # ±12dB 满幅
-        return T + gh / 2 - (g / 12.0) * (gh / 2)
+        # ±15dB 满幅
+        return T + gh / 2 - (g / float(self.Y_LIMIT)) * (gh / 2)
 
     def _gain_at_y(self, y, T, gh):
-        g = (1 - (y - T) / gh) * 24.0 - 12.0
-        return max(-12.0, min(12.0, round(g)))
+        g = (1 - (y - T) / gh) * 2 * self.Y_LIMIT - self.Y_LIMIT
+        return max(-self.Y_LIMIT, min(self.Y_LIMIT, round(g)))
 
     def _band_at_x(self, x, w, L, gw):
+        lo, hi = math.log10(_EQ_FREQS[0]), math.log10(_EQ_FREQS[-1])
+        u = min(max(x - L, 0.0), gw)
+        target = lo + (u / gw) * (hi - lo)
         best, bd = 0, 1e9
-        for i in range(10):
-            d = abs(x - self._x_of_band(i, w, L, gw))
+        for i, f in enumerate(_EQ_FREQS):
+            d = abs(math.log10(f) - target)
             if d < bd:
                 best, bd = i, d
         return best
@@ -292,9 +333,10 @@ class EQCurveCanvas(tk.Canvas):
     def redraw(self):
         w, h, L, R, T, B = self._geom()
         gw, gh = w - L - R, h - T - B
+        n = len(_EQ_FREQS)
         self.delete("all")
         # 网格
-        for db in (-12, -6, 0, 6, 12):
+        for db in (-15, -10, -5, 0, 5, 10, 15):
             y = self._y_of_gain(db, T, gh)
             solid = db == 0
             self.create_line(L, y, L + gw, y,
@@ -302,28 +344,47 @@ class EQCurveCanvas(tk.Canvas):
             self.create_text(L - 4, y, text=f"{db:+d}" if db else "0",
                              anchor="e", fill=theme.TEXT_FAINT,
                              font=self._tick_font)
-        for i in range(10):
+        label_step = 5
+        for i in range(n):
             x = self._x_of_band(i, w, L, gw)
-            lbl = f"{EQ_BANDS[i]//1000}k" if EQ_BANDS[i] >= 1000 \
-                else str(EQ_BANDS[i])
-            self.create_text(x, T + gh + 2, text=lbl, anchor="n",
-                             fill=theme.TEXT_FAINT,
-                             font=self._tick_font)
-        # 响应曲线（分段线性，像素风不抗锯齿）
+            if i % label_step == 0:
+                f = _EQ_FREQS[i]
+                lbl = f"{round(f / 1000)}k" if f >= 10000 \
+                    else (f"{f / 1000:g}k" if f >= 1000 else f"{int(f)}")
+                self.create_text(x, T + gh + 2, text=lbl, anchor="n",
+                                 fill=theme.TEXT_FAINT,
+                                 font=self._tick_font)
+        # 高切/低切截止虚线
+        for on, hz in ((self._hp[0], self._hp[1]), (self._lp[0], self._lp[1])):
+            if not on or not (_EQ_FREQS[0] <= hz <= _EQ_FREQS[-1]):
+                continue
+            x = self._x_of_freq(hz, w, L, gw)
+            self.create_line(x, T, x, T + gh,
+                             fill=theme.MID, dash=(4, 3))
+        # 响应曲线：引擎 response_at() 单一来源（含高/低切）
         pts = []
-        for i in range(10):
-            x = self._x_of_band(i, w, L, gw)
-            y = self._y_of_gain(self._gains[i], T, gh)
-            pts.append((x, y))
+        for k in range(160):
+            u = k / 159.0
+            freq = (_EQ_FREQS[0]) * ((_EQ_FREQS[-1] / _EQ_FREQS[0]) ** u)
+            hp = self._hp[1] if self._hp[0] else 0.0
+            lp = self._lp[1] if self._lp[0] else 0.0
+            dbv = max(-float(self.Y_LIMIT) - 3.0,
+                      min(float(self.Y_LIMIT),
+                          _eq_response_at(freq, self._gains, hp_hz=hp, lp_hz=lp)))
+            pts.append((L + u * gw, self._y_of_gain(dbv, T, gh)))
         flat = [c for p in pts for c in p]
         if len(flat) >= 4:
             self.create_line(*flat, fill=theme.ACCENT, width=self._lw)
-        # 手柄：正方形像素点
+        # 频段手柄：正方形像素点（按增益着色深浅）
         s = self._hs
-        for i, (x, y) in enumerate(pts):
+        for i in range(n):
+            x = self._x_of_band(i, w, L, gw)
+            y = self._y_of_gain(self._gains[i], T, gh)
             active = i == getattr(self, "_drag_idx", None)
+            fill = theme.START_BG if active else (
+                theme.ACCENT if abs(self._gains[i]) > 1e-9 else theme.TRACK)
             self.create_rectangle(x - s, y - s, x + s, y + s,
-                                  fill=theme.START_BG if active else theme.ACCENT,
+                                  fill=fill,
                                   outline=theme.MID, width=1)
 
     # ── 交互 ──
@@ -357,7 +418,7 @@ class EQCurveCanvas(tk.Canvas):
             return
         w, h, L, R, T, B = self._geom()
         i = self._band_at_x(e.x, w, L, w - L - R)
-        self._gains[i] = max(-12, min(12, self._gains[i] + d))
+        self._gains[i] = max(-self.Y_LIMIT, min(self.Y_LIMIT, self._gains[i] + d))
         self.redraw()
         if self.on_change:
             try:
@@ -371,62 +432,70 @@ class EQCurveCanvas(tk.Canvas):
 
     def set_gains(self, gains):
         self._gains = list(gains)
+        if len(self._gains) != len(_EQ_FREQS):
+            self._gains = [0.0] * len(_EQ_FREQS)
         self.redraw()
 
 
-def open_eq_editor(parent, get_gains, set_gains, sizes=None, fonts=None):
-    """曲线编辑器：拖手柄/滚轮微调；对数插值映射为 61 带增益实时下发。"""
-    import math
-    dlg = DarkDialog(parent, "均衡器", 480, 380, sizes=sizes, fonts=fonts)
+def open_eq_editor(parent, get_gains, set_gains, sizes=None, fonts=None,
+                   get_filters=None, set_filters=None):
+    """均衡器编辑器：真实 61 段频点直接拖拽；高切/低切复选框 + 截止频率。"""
+    dlg = DarkDialog(parent, "均衡器", 560, 430, sizes=sizes, fonts=fonts)
     cur61 = list(get_gains())
-    freqs61 = [20 * (1000 ** (i / 60.0)) for i in range(61)]
+    if len(cur61) != len(_EQ_FREQS):
+        cur61 = [0.0] * len(_EQ_FREQS)
+    filters0 = tuple(get_filters()) if get_filters else \
+        (False, HP_DEFAULT_HZ, False, LP_DEFAULT_HZ)
 
-    def interp10(vals10):
-        log10f = [math.log10(f) for f in freqs61]
-        pts = [(math.log10(f), v) for f, v in zip(EQ_BANDS, vals10)]
-        out = []
-        for lf in log10f:
-            if lf <= pts[0][0]:
-                out.append(pts[0][1])
-                continue
-            for i in range(len(pts) - 1):
-                a, b2 = pts[i], pts[i + 1]
-                if a[0] <= lf <= b2[0]:
-                    t = (lf - a[0]) / (b2[0] - a[0])
-                    out.append(a[1] + (b2[1] - a[1]) * t)
-                    break
-            else:
-                out.append(pts[-1][1])
-        return out
-
-    def band_from_61(gains61):
-        out = []
-        for fb in EQ_BANDS:
-            j = min(range(61), key=lambda k: abs(freqs61[k] - fb))
-            out.append(float(gains61[j]))
-        return out
-
-    init10 = band_from_61(cur61)
-
-    def apply(vals10):
-        set_gains(interp10(vals10))
-
-    holder = {}
-    curve = EQCurveCanvas(dlg.body, init10,
-                          on_change=lambda v: apply(v),
+    curve = EQCurveCanvas(dlg.body, cur61, filters=filters0,
+                          on_change=lambda v: set_gains(list(v)),
                           sizes=sizes, fonts=fonts)
-    holder["c"] = curve
     curve.pack(fill=tk.BOTH, expand=True, padx=8, pady=(4, 0))
 
+    # ── 高切/低切控制行 ──
     row = tk.Frame(dlg.body, bg=theme.WINDOW)
-    row.pack(fill=tk.X, padx=10, pady=(0, 8))
+    row.pack(fill=tk.X, padx=10, pady=(0, 2))
+    hp_var = tk.BooleanVar(value=bool(filters0[0]))
+    lp_var = tk.BooleanVar(value=bool(filters0[2]))
+    hp_hz_var = tk.DoubleVar(value=float(filters0[1]))
+    lp_hz_var = tk.DoubleVar(value=float(filters0[3]))
+
+    def push_filters(*_a):
+        vals = (bool(hp_var.get()), float(hp_hz_var.get()),
+                bool(lp_var.get()), float(lp_hz_var.get()))
+        curve.set_filters(*vals)
+        if set_filters:
+            try:
+                set_filters(*vals)
+            except Exception:
+                pass
+
+    def _cut_block(var_on, var_hz, lo, hi, label):
+        box = tk.Frame(row, bg=theme.WINDOW)
+        box.pack(side=tk.LEFT, padx=(0, 14))
+        tk.Checkbutton(box, text=label, variable=var_on, command=push_filters,
+                       bg=theme.WINDOW, fg=theme.TEXT,
+                       activebackground=theme.WINDOW, highlightthickness=0,
+                       font=(fonts or {}).get("small")).pack(side=tk.LEFT)
+        tk.Scale(box, variable=var_hz, from_=lo, to=hi, resolution=10,
+                 orient=tk.HORIZONTAL, length=150, showvalue=True,
+                 command=push_filters, bg=theme.WINDOW, fg=theme.TEXT_DIM,
+                 troughcolor=theme.TRACK, highlightthickness=0,
+                 bd=0, font=(fonts or {}).get("small")).pack(side=tk.LEFT)
+
+    _cut_block(hp_var, hp_hz_var, 20, 1000, "低切")
+    _cut_block(lp_var, lp_hz_var, 1000, 20000, "高切")
+
+    # ── 预设行 ──
+    prow = tk.Frame(dlg.body, bg=theme.WINDOW)
+    prow.pack(fill=tk.X, padx=10, pady=(0, 8))
     for name, vals in PRESETS.items():
-        b = tk.Label(row, text=name, bg=theme.BUTTON, fg=theme.TEXT,
+        b = tk.Label(prow, text=name, bg=theme.BUTTON, fg=theme.TEXT,
                      font=(fonts or {}).get("small"), padx=8, pady=2,
                      cursor="hand2")
         b.pack(side=tk.LEFT, padx=2)
         b.bind("<Button-1>",
-               lambda e, vs=vals: (curve.set_gains(vs), apply(vs)))
+               lambda e, vs=list(vals): (curve.set_gains(vs), set_gains(vs)))
         b.bind("<Enter>", lambda e, w=b: w.configure(bg=theme.DARK))
         b.bind("<Leave>", lambda e, w=b: w.configure(bg=theme.BUTTON))
 

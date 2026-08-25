@@ -334,6 +334,14 @@ class AudioProcessor:
         if eq is not None and gains:
             eq.set_gains(gains)
 
+    def set_eq_filters(self, hp_enabled: bool, hp_hz: float,
+                       lp_enabled: bool, lp_hz: float):
+        """EQ 高切/低切（低切=高通，高切=低通）。链中无 eq 插件时忽略。"""
+        eq = self._find("eq")
+        if eq is not None:
+            eq.set_highpass(bool(hp_enabled), float(hp_hz))
+            eq.set_lowpass(bool(lp_enabled), float(lp_hz))
+
     def process_eq_only(self, in_samples):
         """前置预览（频谱输入侧）：依次过链中的 gain/eq 插件。"""
         x = np.asarray(in_samples, dtype=np.float32).reshape(-1).copy()

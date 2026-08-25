@@ -59,6 +59,11 @@ class ConfigDefaults:
     eq_preset_7: List[float] = field(default_factory=lambda: [0.0] * 61)
     eq_active_slot: int = 0
     eq_current_gains: List[float] = field(default_factory=lambda: [0.0] * 61)
+    # EQ 高切/低切（低切=高通默认 80Hz，高切=低通默认 16kHz；默认关闭）
+    eq_hp_enabled: bool = False
+    eq_hp_hz: float = 80.0
+    eq_lp_enabled: bool = False
+    eq_lp_hz: float = 16000.0
     # 插件链（右侧面板，全部处理以插件形式存在）：[{"type","enabled","params"}, ...]
     plugin_chain: List[dict] = field(default_factory=lambda: [
         {"type": "audio_input", "enabled": True, "params": {"device": ""}},
@@ -216,6 +221,10 @@ class ConfigDefaults:
             "eq_preset_7": instance.eq_preset_7.copy(),
             "eq_active_slot": instance.eq_active_slot,
             "eq_current_gains": instance.eq_current_gains.copy(),
+            "eq_hp_enabled": instance.eq_hp_enabled,
+            "eq_hp_hz": instance.eq_hp_hz,
+            "eq_lp_enabled": instance.eq_lp_enabled,
+            "eq_lp_hz": instance.eq_lp_hz,
             "plugin_chain": instance.plugin_chain,
         }
 
@@ -297,6 +306,7 @@ class ConfigManager:
         "eq_preset_0", "eq_preset_1", "eq_preset_2", "eq_preset_3",
         "eq_preset_4", "eq_preset_5", "eq_preset_6", "eq_preset_7",
         "eq_active_slot", "eq_current_gains",
+        "eq_hp_enabled", "eq_hp_hz", "eq_lp_enabled", "eq_lp_hz",
         "plugin_chain",
     ]
 
