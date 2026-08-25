@@ -1,5 +1,26 @@
 # 更新日志
 
+## 2026-08-25 — Linux 内嵌 Python 改用预编译包，bootstrap 不再编译
+
+- **bootstrap_python312.sh 从源码编译改为预编译分发**：改下载
+  python-build-standalone（Astral/uv 生态）的 CPython install_only 包，
+  解压即得完整解释器（含 ssl/_ctypes/pip），内嵌 Python 版本由 3.12.11
+  升至 3.12.14。首次准备时间从数十分钟编译缩短到一次约 30MB 下载；
+  CI 的 AppImage job 不再需要 libssl-dev/libffi-dev/zlib1g-dev/build-essential。
+  离线环境仍可用 `PUREVOX_CPYTHON_TARBALL` 指定本地包。
+
+## 2026-08-25 — CI 与本地构建对齐：Linux 依赖改用 requirements.txt，新增本地全流程脚本
+
+- **CI Linux 依赖改为 requirements.txt 同源安装**：此前 Linux job 用临时
+  pip install 列表装最新版 numpy/onnxruntime 等，与本机 pin 版本不一致，
+  存在产物行为漂移风险。现与 Windows job 一致，从 requirements.txt 安装
+  （pillow 仍单独安装，仅打包脚本需要）。
+- **新增本地全流程脚本**（无需推 tag 即可复现整条 CI）：
+  `ci_local.sh`（Linux 内跑 Linux job 全套——系统依赖、依赖安装、引擎冒烟、
+  deb/AppImage/rpm 打包；在 vboxsf/9p 共享目录上运行时自动切到原生文件系统
+  构建，规避其不支持软链的限制）；`ci_local.ps1`（Windows 入口，一条命令依次
+  经 WSL(Ubuntu-24.04) 跑 Linux 段、本机跑 PyInstaller 打包与 Android APK）。
+
 ## 2026-08-25 — 修复设置菜单与 VB 驱动卡片点击无效，「启动时自动运行」落地
 
 - **修复「系统声音」点击无反应**：日志器误写成构造函数内的局部导入，

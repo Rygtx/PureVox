@@ -64,9 +64,13 @@ Windows / Linux 桌面应用 + Android 客户端：实时 AI 音频降噪 / 目�
 产物统一放 `packages/`。
 
 - `./bootstrap_python312.sh`（Linux，幂等）→ 生成自包含 `packages/python312/` + 装依赖
+  （**不编译**：下载 python-build-standalone 预编译 CPython install_only 包，
+  版本锁定 cpython-3.12.14+20260814，可用 `PUREVOX_CPYTHON_TARBALL` 指定离线包）
 - `./bootstrap_python312.ps1`（Windows）→ 生成 `packages\python312w\`（NuGet 完整版，含头文件/链接库）
 - 内嵌解释器与系统 Python 互相独立；`packages/python312*`、`.py312-src/` 不进版本库（gitignore）
-- **不再使用 git 子模块**（2026-08-23 移除 packages/cpython）：CI 缓存 key 固定为 cpython 版本号
+- **不再使用 git 子模块、也不再源码编译**（2026-08-25 改预编译）：bootstrap 下载
+  python-build-standalone install_only 包解压即用；CI 缓存 key 固定为 pbs 包版本号；
+  Linux job 系统依赖不再需要 libssl-dev/libffi-dev/zlib1g-dev/build-essential
 
 ### Windows (PowerShell)
 
