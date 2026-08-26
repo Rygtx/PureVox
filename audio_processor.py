@@ -80,11 +80,11 @@ def _rms_of(samples: List[float]) -> float:
     return (sum(x * x for x in samples) / len(samples)) ** 0.5
 
 try:
-    import aimic
+    from pvengine import AudioProcessor, RingBuffer, Resampler
     ENGINE_AVAILABLE = True
 except ImportError:
     ENGINE_AVAILABLE = False
-    _module_log("[音频] 引擎模块 aimic/pvengine 不可用（缺 numpy/onnxruntime？）")
+    _module_log("[音频] 引擎模块 pvengine 不可用（缺 numpy/onnxruntime？）")
 
 SAMPLE_RATE = 48000
 FRAME_SIZE = 2048
@@ -214,7 +214,7 @@ class AudioThread(threading.Thread):
         self._pw_bridge: Optional[_PwBridge] = None
         self._pw_ports: Tuple[List[str], List[str]] = ([], [])  # (输入列表, 输出列表)
         self._channels: int = 1                     # 设备通道数，在 _create_stream 中确定
-        self._output_buffer = None  # L3:网络输出缓冲 (aimic.RingBuffer 或 None)
+        self._output_buffer = None  # L3:网络输出缓冲 (RingBuffer 或 None)
         self._output_stream: Optional[Any] = None
         self._out_channels: int = 1
         self._accum: List[float] = []  # 回调帧累积（frame_count→hop_length）
@@ -401,7 +401,7 @@ class AudioThread(threading.Thread):
         # 后续由 _pw_loop（本地）或 _network_loop（网络）读取→降噪→写入。
         if IS_LINUX and self._use_pw:
             self._last_output_frame = [0.0] * HOP_LENGTH
-            self._output_buffer = aimic.RingBuffer(SAMPLE_RATE)
+            self._output_buffer = RingBuffer(SAMPLE_RATE)
             self._output_stream = None
             self._extra_out_streams = []
             in_names, out_names = self._pw_ports
@@ -452,7 +452,7 @@ class AudioThread(threading.Thread):
         # 网络输入模式：只创建输出流（48kHz），由 _network_loop 写缓冲。
         if in_id is None:
             self._last_output_frame = [0.0] * HOP_LENGTH
-            self._output_buffer = aimic.RingBuffer(SAMPLE_RATE)  # 1秒缓冲吸收网络抖动
+            self._output_buffer = RingBuffer(SAMPLE_RATE)  # 1秒缓冲吸收网络抖动
             self._output_buffer.write([0.0] * HOP_LENGTH * 3)  # ~64ms 预填充防 underrun
             self._out_channels = max(1, out_max_ch)
             _module_log(f"[输出] {out_max_ch}ch（网络输入模式）")
@@ -737,7 +737,7 @@ class AudioThread(threading.Thread):
                         len(self._extra_out_streams), ch))
                 s.start_stream()
                 self._extra_out_streams.append(s)
-                self._extra_out_buffers.append(aimic.RingBuffer(SAMPLE_RATE // 5))
+                self._extra_out_buffers.append(RingBuffer(SAMPLE_RATE // 5))
                 self._extra_out_chs.append(ch)
                 _module_log(f"[多输出] 已连接额外输出设备 #{dev_id} ({ch}ch)")
             except (OSError, ValueError) as e:
@@ -1348,7 +1348,7 @@ def load_tse_reference(processor, wav_path: str) -> bool:
             from wav_io import read_wav
             audio, sr = read_wav(wav_path)
             if sr != TSE_SAMPLE_RATE:
-                r = aimic.Resampler()
+                r = Resampler()
                 audio = r.process(audio, float(TSE_SAMPLE_RATE) / sr, True)
             # WSOLA 时间压缩：10s → 2s，保持音调
             audio = _process_reference_audio(audio)
@@ -1376,25 +1376,14 @@ def load_tse_reference(processor, wav_path: str) -> bool:
         return False
 
 
-def create_audio_processor(pre_gain_db: float,
-                           noise_model_path: str,
-                           tse_model_path: str = "",
-                           aec_model_path: str = ""):
+def create_audio_processor(pre_gain_db: float = 0.0):
     """创建音频处理器实例（pvengine 纯 Python 组件化引擎）。
-    返回 aimic.AudioProcessor（直接使用，无 Python 包装）。
+
+    模型路径由插件内部按 model_config 常量解析，无需外部传入。
     """
     if not ENGINE_AVAILABLE:
-        raise RuntimeError("engine module aimic not available")
-    if noise_model_path and not os.path.exists(noise_model_path):
-        raise FileNotFoundError(f"Model not found: {noise_model_path}")
-    if tse_model_path and not os.path.exists(tse_model_path):
-        raise FileNotFoundError(f"TSE model not found: {tse_model_path}")
-    if aec_model_path and not os.path.exists(aec_model_path):
-        raise FileNotFoundError(f"AEC model not found: {aec_model_path}")
-
-    return aimic.AudioProcessor(pre_gain_db,
-                                noise_model_path, tse_model_path,
-                                aec_model_path)
+        raise RuntimeError("pvengine not available")
+    return AudioProcessor(pre_gain_db)
 
 
 def start_audio_stream(input_id: Optional[int], output_id: int,
@@ -1409,7 +1398,7 @@ def start_audio_stream(input_id: Optional[int], output_id: int,
     参数:
         input_id: 输入设备 ID（网络输入模式下为 None）。
         output_id: 输出设备 ID。
-        processor: aimic.AudioProcessor 实例（处理器，直接使用）。
+        processor: pvengine.AudioProcessor 实例（处理器，直接使用）。
         hop_length: 处理 hop 长度（默认 1024）。
         network_source: 网络输入模式下的 RemoteAudioSource（可选）。
         ready_msg: 音频流就绪后由 AudioThread 记录的日志消息。

@@ -49,9 +49,7 @@ mkdir -p "$ROOT/opt/purevox" \
 echo "==> 拷贝源码/图标"
 for f in \
     audio_processor.py config_manager.py about_content.py logger.py \
-    model_config.py run_tk.py \
-    user_paths.py wav_io.py \
-    aimic.py; do
+    model_config.py run_tk.py user_paths.py wav_io.py; do
     cp "$f" "$ROOT/opt/purevox/"
 done
 mkdir -p "$ROOT/opt/purevox/models" "$ROOT/opt/purevox/assets/icons"

@@ -19,15 +19,13 @@
 
 整条管线 = 用户插件序列（pvengine.plugins 注册表），不再有固定模式。
 基础设施（可视化抽头 / 录制抽头 / 末端限幅）固定挂在首尾，不进插件列表。
-
-对外保留旧 API 兼容垫片（set_pre_gain/set_agc_enabled/
-set_aec_*/set_tse_reference/process_eq_only 等），内部按插件名路由到对应实例；
-EQ 增益/高低切走插件 params（update_plugin_param 热更），无专用垫片。
+EQ 增益/高低切走插件 params（update_plugin_param 热更）；频谱预览走
+process_eq_only 的独立状态副本。
 """
 
 import numpy as np
 
-from pvengine.context import FrameContext, HOP_LENGTH, SAMPLE_RATE, MODE_DENOISE
+from pvengine.context import FrameContext, HOP_LENGTH, SAMPLE_RATE
 from pvengine.pipeline import Pipeline
 from pvengine.plugins import create_plugin, DEFAULT_CHAIN
 from pvengine.components.misc import (BufferTapStage, ClipStage,
@@ -63,11 +61,7 @@ class AudioProcessor:
     """插件链音频处理器。链配置：[{"type","enabled","params"}, ...]，
     顺序即信号流顺序；AI 插件模型引擎跨重建共享（不重复加载）。"""
 
-    def __init__(self, pre_gain_db: float = 0.0, denoise_model_path: str = "",
-                 tse_model_path: str = "", aec_model_path: str = ""):
-        # 旧签名兼容：模型路径参数已由插件内部按 model_config 常量解析，忽略
-        del denoise_model_path, tse_model_path, aec_model_path
-
+    def __init__(self, pre_gain_db: float = 0.0):
         self._stage_cache = {}      # AI Stage 缓存（denoise/aec/tse）
         self._viz_in = BufferTapStage()
         self._viz_out = BufferTapStage()
@@ -93,7 +87,6 @@ class AudioProcessor:
                 if e["type"] == "gain":
                     e["params"] = {"gain_db": float(pre_gain_db)}
         self.set_plugins(cfg)
-        self.set_mode(MODE_DENOISE)  # 兼容占位（模式概念已废弃）
 
     # ── 链构建 ──
     def set_plugins(self, chain_cfg):
@@ -294,45 +287,6 @@ class AudioProcessor:
     def get_and_clear_viz_output(self):
         return self._viz_out.take()
 
-    def set_viz_enabled(self, enabled: bool):
-        pass  # 抽头有界，无需暂停采集
-
-    # ── 兼容垫片：旧 setter/getter 按插件名路由 ──
-    def set_pre_gain(self, db: float):
-        g = self._find("gain")
-        if g is not None:
-            g.set_params({"gain_db": float(db)})
-
-    def set_mode(self, mode):
-        """已废弃：模式概念移除，插件链即全部行为。保留为 no-op 兼容旧调用。"""
-
-    def get_mode(self):
-        return MODE_DENOISE
-
-    def set_io_sample_rates(self, in_sr, out_sr):
-        pass
-
-    def set_agc_enabled(self, enabled: bool, initial_gain_db: float = 0.0):
-        a = self._find("agc")
-        if a is None:
-            return
-        a.enabled = bool(enabled)
-        if enabled:
-            a.agc.reset()
-            a.agc.set_enabled(True, float(initial_gain_db))
-
-    def set_vad_enabled(self, enabled: bool):
-        g = self._find("gate")
-        if g is not None:
-            g.enabled = bool(enabled)
-            if enabled:
-                g.reset()
-
-    def set_compressor_enabled(self, enabled: bool):
-        c = self._find("compressor")
-        if c is not None:
-            c.stage.enabled = bool(enabled)
-
     def process_eq_only(self, in_samples):
         """前置预览（频谱输入侧）：gain + eq 的**独立状态副本**。
 
@@ -357,9 +311,6 @@ class AudioProcessor:
         return x.tolist()
 
     # ── AEC ──
-    def is_aec_available(self):
-        return "echo_cancel" in dict(self._typed)
-
     def set_aec_enabled(self, enabled: bool):
         a = self._find("echo_cancel")
         if a is not None:
@@ -371,19 +322,7 @@ class AudioProcessor:
         if a is not None and hasattr(a, "set_far_sample_rate"):
             a.set_far_sample_rate(self._far_sr)
 
-    def get_aec_far_sample_rate(self):
-        return getattr(self, "_far_sr", SAMPLE_RATE)
-
-    def set_aec_far_rms_target(self, v):
-        pass
-
-    def get_aec_far_rms_target(self):
-        return 0.05
-
     # ── TSE ──
-    def is_tse_available(self):
-        return "tse" in dict(self._typed)
-
     def set_tse_reference(self, ref):
         for t, st in self._typed:
             if t == "tse":
@@ -408,16 +347,6 @@ class AudioProcessor:
 
     def is_recording_enabled(self):
         return self._recorder.recording_enabled
-
-    # ── 后端报告（onnxruntime 内部调度，恒报 AVX/OK）──
-    def backend_effective(self):
-        return 0
-
-    def backend_reason(self):
-        return 0
-
-    def backend_info(self):
-        return (0, 0)
 
     # ── 生命周期 ──
     def cleanup(self):

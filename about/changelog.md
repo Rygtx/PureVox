@@ -1,5 +1,22 @@
 # 更新日志
 
+## 2026-08-26 — 清理历史兼容层：删除 aimic 垫片与引擎旧接口残留
+
+- **删除 `aimic.py` 兼容垫片模块**：纯 Python 引擎（pvengine）自 2026-08-22
+  接管全部实现后，该文件仅剩旧模块名转发；唯一在库调用方已改为直接导入
+  pvengine，打包脚本与 CI/本地引擎冒烟同步切换。
+- **删除引擎旧接口兼容垫片**：AudioProcessor 上无调用方的旧 setter/getter
+  （set_mode/get_mode/set_pre_gain/set_agc_enabled/set_vad_enabled/
+  set_compressor_enabled/set_io_sample_rates/is_aec_available/is_tse_available/
+  set_aec_far_rms_target 等）与恒定值的 backend_effective/backend_reason/
+  backend_info 后端报告一并移除；运行中参数热更统一走 update_plugin_param，
+  构造函数不再接收被忽略的模型路径参数（模型路径由插件按 model_config 解析）。
+- **清理其余兼容残留**：日志器旧式 `log()`/`Logger.__call__` 标签自动识别入口、
+  Resampler 构造函数中被忽略的 converter_type 参数、uitk 主题 ALT_BASE 旧别名
+  （统一为 PANEL）、lite_mic 中无人调用的 list_devices_compat；
+  第三方许可证文档移除已不再随包分发的组件条目（PySide6/libsamplerate/pffft/
+  7-Zip）。
+
 ## 2026-08-25 — Linux 内嵌 Python 改用预编译包，bootstrap 不再编译
 
 - **bootstrap_python312.sh 从源码编译改为预编译分发**：改下载

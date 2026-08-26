@@ -31,7 +31,7 @@ HOP_LENGTH = 1024
 NFFT = 2048
 FREQ = NFFT // 2 + 1          # 1025
 
-# ── 处理模式（与旧 aimic.MODE_* 数值一致）──
+# ── 处理模式常量（组件 active_modes 用；历史数值保持不变）──
 MODE_PASSTHROUGH = 0
 MODE_DENOISE = 1
 MODE_AEC = 2

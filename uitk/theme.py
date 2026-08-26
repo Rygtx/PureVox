@@ -24,7 +24,6 @@
 # ── 基础面（lite 同源；层级：深棕标题栏 > 羊皮纸窗底 > 面板行 > 纯白输入区）──
 WINDOW      = "#FFF8E1"   # 羊皮纸窗底
 PANEL       = "#FFECB3"   # 行/卡片面板
-ALT_BASE    = PANEL       # 兼容旧名
 BASE        = "#FFFFFF"   # 输入区/下拉弹层（纯白）
 BUTTON      = "#FFB74D"   # 南瓜橙主按钮
 DARK        = "#FFE0B2"   # 悬停底

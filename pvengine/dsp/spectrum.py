@@ -58,7 +58,7 @@ _FILTERBANK = None
 
 
 def spectrum_warmup():
-    """预建滤波器组（启动时调用一次；保持旧 API 兼容）。"""
+    """预建 Mel 滤波器组（compute_spectrum 首帧懒建，亦可提前调用预热）。"""
     global _FILTERBANK
     if _FILTERBANK is None:
         _FILTERBANK = _build_filterbank()

@@ -24,7 +24,7 @@ echo cancellation, for both the local microphone and remote network streaming.
 | Platform | Requirements |
 |---|---|
 | Windows | Windows 10/11, Python 3.12+ |
-| Linux | Python 3.12+, PipeWire (native libpipewire audio; virtual mic is a null-sink) |
+| Linux | Python 3.12+, PipeWire (audio via the pipewire-pulse compatibility layer; virtual mic is a null-sink) |
 
 > **鈿狅笍 Windows 7 no longer supported**: Python 3.13 drops Win7; `v2026.08.14.1643` is the last Win7-compatible tag 鈥?download its [Windows asset](https://github.com/a2heng/PureVox/releases/tag/v2026.08.14.1643) and stay on that tag.
 
@@ -33,18 +33,14 @@ echo cancellation, for both the local microphone and remote network streaming.
 ### Embedded Python 3.12 (recommended, independent of the system)
 
 The project can bundle its own Python 3.12, fully isolated from the system Python.
-**Windows** downloads a prebuilt package (NuGet); **Linux** CPython source is vendored as a **git submodule**
-`packages/cpython` (CPython@v3.12.11, shallow) and built once by the bootstrap
-(out-of-tree, without dirtying the submodule). Everything lives under `packages/`.
+The bootstrap script fetches official prebuilt CPython packages on demand (Windows uses
+the NuGet full package; Linux downloads the python-build-standalone install_only tarball
+and extracts it - no compilation). Everything lives under `packages/`.
 
 ```bash
-# After cloning, fetch the submodule (CPython source):
-git submodule update --init --depth 1 packages/cpython
-
-# Linux (just run the bootstrap; it compiles)
+# Linux:
 ./bootstrap_python312.sh                     # -> packages/python312 (self-contained) + deps
 ./py312 run_tk.py                            # run
-./py312 setup.py build_ext --inplace --force # build libaimic.so + libpvpipe.so (pure C, gcc)
 
 # Windows (PowerShell, NuGet prebuilt download)
 powershell -ExecutionPolicy Bypass -File bootstrap_python312.ps1   # -> packages\python312w
@@ -68,7 +64,6 @@ sudo oma install -y gcc pkgconf pipewire libpipewire-0.3-devel
 
 # Recommended: embedded 3.12 (see above)
 ./bootstrap_python312.sh
-./py312 setup.py build_ext --inplace --force   # build pure C shared libs (libaimic.so + libpvpipe.so)
 ./py312 run_tk.py
 
 # Or run directly with system python3:
@@ -82,9 +77,9 @@ Linux audio uses native PipeWire: the format is negotiated as F32 mono 48000 Hz,
 **"PureVox 铏氭嫙楹﹀厠椋?** (PureVox Virtual Mic) as their input device. The AEC far-end
 (echo reference) is also captured natively via PipeWire (`stream.capture.sink` on the
 speaker sink).
-**The Linux local interface defaults to PipeWire, with an optional native ALSA backup**
-(`alsa_client.c` 鈫?`libpvalsa.so`, F32 mono 48k converted via the `plughw:C,D` plugin;
-AEC far-end requires choosing an ALSA capture device that can record the speaker output).
+Linux input/output/device enumeration/AEC all go through the pipewire-pulse
+compatibility layer (pulsectl via ctypes to the system libpulse); no self-compiled
+binaries are involved.
 
 ### Windows remote-mic add-ons
 
@@ -102,13 +97,14 @@ card, neither of which is bundled:
 powershell -ExecutionPolicy Bypass -File build_win.ps1   # produces dist/PureVox/ (PyInstaller one-folder bundle)
 ```
 
-The script runs the full flow: build `aimic.dll` (mingw gcc) 鈫?PyInstaller 鈫?tcl/tk + unused PySide6 module cleanup 鈫?copy docs. Windows CI runs the same flow and uploads `dist/PureVox/`; the `actions/upload-artifact` step compresses it
+The script runs the full flow: PyInstaller one-folder bundling (automatically using
+packages\python312w\python.exe) 鈫?tcl/tk + unused module cleanup 鈫?copy docs. Windows CI runs the same flow and uploads `dist/PureVox/`; the `actions/upload-artifact` step compresses it
 to a zip automatically.
 
 ### Linux (deb / rpm / AppImage)
 
 ```bash
-bash pack_deb.sh        # produces dist/PureVox-Linux-x64-<yyyy-MM-dd-HHmm>-release.deb (source + .so + models + html)
+bash pack_deb.sh        # produces dist/PureVox-Linux-x64-<yyyy-MM-dd-HHmm>-release.deb (source + models + html)
 bash pack_rpm.sh        # produces dist/PureVox-Linux-x64-<yyyy-MM-dd-HHmm>-release.rpm (Fedora/RHEL)
 bash pack_appimage.sh   # produces dist/PureVox-Linux-x64-<yyyy-MM-dd-HHmm>-release.AppImage (bundles embedded Python 3.12)
 ```
@@ -151,9 +147,8 @@ Phone 鈫?https://<PC_IP>:59123 (mDNS broadcast _purevox._tcp.local.) 鈫?denois
 run_tk.py                 # entry point (single-instance lock + Tk main window)
 uitk/                     # desktop UI (pure stdlib Tkinter): node panel, EQ editor, About
 about_content.py          # About-page text (changelog / manuals, single source)
-audio_processor.py        # core audio engine + TSE reference recording utilities
-aimic.c + aimic.py         # C audio core 鈫?aimic.dll / libaimic.so (mingw gcc) + ctypes binding
-pipewire_client.c + pvpipe.py + alsa_client.c + pvalsa.py  # native PipeWire/ALSA bridges 鈫?libpvpipe.so/libpvalsa.so (Linux, pure C + ctypes)
+audio_processor.py        # core audio thread (capture/playback/network loops) + TSE reference recording utilities
+pvengine/                 # pure-Python componentized audio engine (numpy + scipy + onnxruntime)
 pvplatform/               # platform abstraction: audio/ (enum, SpeakerCapture), system/ (single-instance, virtual mic)
 config_manager.py         # JSON config (strong config, per-API device keys)
 model_config.py           # ONNX model filename constants
@@ -163,18 +158,17 @@ android/                  # Android client (Kotlin + OkHttp + Opus JNI)
 pack_deb.sh               # Linux deb packaging
 pack_rpm.sh               # Linux rpm packaging (Fedora/RHEL)
 pack_appimage.sh          # Linux AppImage packaging (bundles embedded Python 3.12)
-build_win.ps1             # Windows packaging (aimic.dll + PyInstaller bundle dir)
-bootstrap_python312.sh / .ps1  # embedded Python 3.13 bootstrap (Linux builds from submodule, Windows fetches NuGet)
-setup.py                  # pure C shared library build (gcc, produces libaimic.so + libpvpipe.so / aimic.dll)
+build_win.ps1             # Windows packaging (PyInstaller bundle dir)
+bootstrap_python312.sh / .ps1  # embedded Python 3.12 bootstrap (Linux downloads prebuilt tarball, Windows fetches NuGet)
 ```
 
 ## Tech stack
 
 | Component | Technology |
 |---|---|
-| Desktop GUI | Python + PySide6 |
-| Audio processing | Pure C shared libs (gcc) + ONNX Runtime C API (all spectrum/FFT in C; Python only does ctypes data marshalling) |
-| Linux audio | Native PipeWire (libpipewire) |
+| Desktop GUI | Python stdlib Tkinter (uitk, Stardew-pixel light theme) |
+| Audio processing | Pure-Python engine pvengine (numpy + scipy + onnxruntime) |
+| Linux audio | PipeWire (pipewire-pulse compatibility layer; pulsectl via ctypes to system libpulse) |
 | Windows audio | WASAPI full-duplex (default) / MME fallback |
 | Server | Python aiohttp + zeroconf + cryptography |
 | Audio codec | Opus (PC: opuslib, APK: NDK build, Web: WASM) |
@@ -191,7 +185,7 @@ Author's MIT-licensed model repos (earlier versions, freely usable):
 - <https://github.com/a2heng/lightweight-denoise-48k>
 - <https://github.com/a2heng/lightweight-aec-48k>
 
-Third-party components (PySide6, ONNX Runtime, Opus, etc.) are under their own
+Third-party components (ONNX Runtime, Opus, etc.) are under their own
 licenses; see [LICENSE-THIRD-PARTY.txt](LICENSE-THIRD-PARTY.txt).
 
 ## Contact

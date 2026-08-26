@@ -333,7 +333,7 @@ class DarkCombo(tk.Frame):
         canvas.bind("<Configure>", _sync_w)
         for idx, disp in enumerate(self.values):
             is_sel = disp == self.var.get()
-            bgc = theme.ALT_BASE if is_sel else theme.BASE
+            bgc = theme.PANEL if is_sel else theme.BASE
             # 外壳锁定行高（pack_propagate 关闭），与 lite BlackCombo 同构
             item = tk.Frame(inner, bg=bgc, bd=0, height=row_h)
             item.pack(fill=tk.X, padx=1, pady=1)
@@ -348,11 +348,11 @@ class DarkCombo(tk.Frame):
                 w.bind("<Button-1>", lambda e, i=idx: self._pick(i))
                 w.bind("<Enter>",
                        lambda e, f=item, lb=l1, sel=is_sel: (
-                           f.configure(bg=theme.DARK if not sel else theme.ALT_BASE),
+                           f.configure(bg=theme.DARK if not sel else theme.PANEL),
                            lb.configure(bg=f.cget("bg"))))
                 w.bind("<Leave>",
                        lambda e, f=item, lb=l1, sel=is_sel: (
-                           f.configure(bg=theme.BASE if not sel else theme.ALT_BASE),
+                           f.configure(bg=theme.BASE if not sel else theme.PANEL),
                            lb.configure(bg=f.cget("bg"))))
         inner.update_idletasks()
         h = min(len(self.values), S["popup_rows"]) * (row_h + 2)

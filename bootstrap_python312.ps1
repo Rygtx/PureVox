@@ -1,7 +1,6 @@
 # PureVox - bundled Python 3.12 bootstrap script (Windows)
-# Downloads the full prebuilt Python 3.12 from NuGet (includes dev headers/libs to build
-# aimic.pyd and PyInstaller bundling) into packages\python312w\, independent of any
-# system Python.
+# Downloads the full prebuilt Python 3.12 from NuGet (includes dev headers/libs for
+# PyInstaller bundling) into packages\python312w\, independent of any system Python.
 # Idempotent: skips download if already present; only installs pip deps.
 #
 # Usage: powershell -ExecutionPolicy Bypass -File bootstrap_python312.ps1

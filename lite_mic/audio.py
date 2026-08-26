@@ -57,11 +57,6 @@ def check_api_match(in_idx, out_idx):
         return False, f"组合非法：输入为 {a1}，输出为 {a2}，需同为 {a1} 或同为 {a2}（WASAPI/MME 不能混用）"
     return True, ""
 
-def list_devices_compat():
-    # 兼容旧接口：返回 [(disp,idx),...]
-    ins, outs = list_devices()
-    return [(d,i) for d,i,_ in ins], [(d,i) for d,i,_ in outs]
-
 def list_devices():
     if pyaudio is None:
         return [], []

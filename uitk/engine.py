@@ -108,7 +108,7 @@ class EngineController:
 
             from audio_processor import create_audio_processor, \
                 start_audio_stream, HOP_LENGTH, get_device_id, default_api_type
-            proc = create_audio_processor(0.0, "", "", "")
+            proc = create_audio_processor()
             self.processor = proc
             if getattr(proc, "plugin_errors", None):
                 for perr in proc.plugin_errors:

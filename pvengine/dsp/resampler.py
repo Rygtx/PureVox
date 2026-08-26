@@ -26,7 +26,7 @@ import numpy as np
 
 
 class Resampler:
-    def __init__(self, converter_type=None):  # converter_type 兼容旧签名，忽略
+    def __init__(self):
         self.reset()
 
     def reset(self):

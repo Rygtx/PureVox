@@ -32,8 +32,7 @@ mkdir -p "$APPDIR/usr/lib/purevox" "$APPDIR/usr/bin"
 echo "==> copy sources/models"
 for f in \
     audio_processor.py config_manager.py about_content.py logger.py \
-    model_config.py run_tk.py user_paths.py wav_io.py \
-    aimic.py; do
+    model_config.py run_tk.py user_paths.py wav_io.py; do
     cp "$f" "$APPDIR/usr/lib/purevox/"
 done
 mkdir -p "$APPDIR/usr/lib/purevox/models" "$APPDIR/usr/lib/purevox/assets/icons"

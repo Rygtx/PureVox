@@ -23,7 +23,7 @@
 | 平台 | 要求 |
 |---|---|
 | Windows | Windows 10/11，Python 3.12+ |
-| Linux | Python 3.12+，PipeWire（音频走原生 libpipewire，虚拟麦克风为 null-sink） |
+| Linux | Python 3.12+，PipeWire（音频走 pipewire-pulse 兼容层，虚拟麦克风为 null-sink） |
 
 > **⚠️ Windows 7 支持已终止**：自 Python 3.13 起不再支持 Win7；`v2026.08.14.1643` 是最后支持 Win7 的版本，需继续在 Win7 使用请下载 [此 tag 的 Windows 产物](https://github.com/a2heng/PureVox/releases/tag/v2026.08.14.1643) 并停用更新。
 
@@ -32,18 +32,13 @@
 ### 内嵌 Python 3.12（推荐，独立于系统环境）
 
 项目可自带一份独立的 Python 3.12，与系统 Python 完全隔离，不会互相影响。
-**Windows** 直接下载预编译包（NuGet）；**Linux** 源码以 **git 子模块**
-`packages/cpython`（CPython@v3.12.11，浅克隆）锁定，由引导脚本一次性编译
-（out-of-tree，不污染子模块）。产物都放在 `packages/` 下。
+引导脚本按需下载官方预编译 CPython 包（Windows 走 NuGet 完整包；Linux 下载
+python-build-standalone install_only 包，解压即用、不编译）。产物都放在 `packages/` 下。
 
 ```bash
-# 克隆后先拉子模块（含 CPython 源码）：
-git submodule update --init --depth 1 packages/cpython
-
-# Linux（运行引导脚本即可，自动编译）
+# Linux：
 ./bootstrap_python312.sh          # -> packages/python312（自包含），并安装依赖
 ./py312 run_tk.py            # 启动
-./py312 setup.py build_ext --inplace --force   # 编译 libaimic.so + libpvpipe.so（纯 C，gcc）
 
 # Windows（PowerShell，NuGet 下载预编译）
 powershell -ExecutionPolicy Bypass -File bootstrap_python312.ps1   # -> packages\python312w
@@ -78,9 +73,8 @@ Linux 音频基于原生 PipeWire：格式协商 F32 单声道 48000Hz，重采�
  PipeWire 负责。虚拟麦克风是单声道 null-sink `purevox_out` 的 monitor，
 其它应用可选 **"PureVox 虚拟麦克风"** 作为输入设备。AEC 远端采集（回声参考）
 同样是原生 PipeWire（`stream.capture.sink` 监听扬声器输出）。
-**Linux 本地接口默认 PipeWire，也可选原生 ALSA 备选**（`alsa_client.c` →
-`libpvalsa.so`，F32 单声道 48k 经 `plughw:C,D` 插件转换；AEC far 需自选一个可
-捕获扬声器输出的 ALSA capture 设备）。
+Linux 输入/输出/设备枚举/AEC 全部走 pipewire-pulse 兼容层（pulsectl），
+无任何自编译二进制。
 
 ### Windows 远程麦克风附加组件
 
@@ -100,13 +94,13 @@ Linux 音频基于原生 PipeWire：格式协商 F32 单声道 48000Hz，重采�
 powershell -ExecutionPolicy Bypass -File build_win.ps1   # 产出 dist/PureVox/（PyInstaller one-folder 产物）
 ```
 
-脚本包含完整流程：编译 `aimic.dll`（mingw gcc）→ PyInstaller 打包 → tcl/tk 与无用 PySide6 模块清理 → 拷贝文档。
+脚本包含完整流程：PyInstaller one-folder 打包（自动使用 packages\python312w\python.exe）→ tcl/tk 与无用模块清理 → 拷贝文档。
 Windows CI 会执行同样流程，上传 `dist/PureVox/` 目录（`actions/upload-artifact` 自动压缩为 zip）。
 
 ### Linux（deb / rpm / AppImage）
 
 ```bash
-bash pack_deb.sh        # 产出 dist/PureVox-Linux-x64-<yyyy-MM-dd-HHmm>-release.deb，内含源码+.so+模型+html
+bash pack_deb.sh        # 产出 dist/PureVox-Linux-x64-<yyyy-MM-dd-HHmm>-release.deb，内含源码+模型+html
 bash pack_rpm.sh        # 产出 dist/PureVox-Linux-x64-<yyyy-MM-dd-HHmm>-release.rpm（Fedora/RHEL）
 bash pack_appimage.sh   # 产出 dist/PureVox-Linux-x64-<yyyy-MM-dd-HHmm>-release.AppImage（捆绑内嵌 Python3.12）
 ```
@@ -153,9 +147,8 @@ cd android
 run_tk.py                 # 启动入口（单实例锁 + Tk 主窗口）
 uitk/                     # 桌面 UI（纯标准库 Tkinter）：节点面板、EQ 编辑器、关于页
 about_content.py          # 关于页文本（更新日志/使用手册，单一维护位置）
-audio_processor.py        # 核心音频引擎 + TSE 参考录音工具
-aimic.c + aimic.py         # C 音频核心 → aimic.dll / libaimic.so（mingw gcc）+ ctypes 绑定
-pipewire_client.c + pvpipe.py + alsa_client.c + pvalsa.py  # 原生 PipeWire/ALSA 桥 → libpvpipe.so/libpvalsa.so（Linux，纯 C + ctypes）
+audio_processor.py        # 核心音频线程（采集/播放/网络循环）+ TSE 参考录音工具
+pvengine/                 # 纯 Python 组件化音频引擎（numpy + scipy + onnxruntime）
 pvplatform/               # 平台抽象：audio/（设备枚举、SpeakerCapture）、system/（单实例/虚拟麦克风）
 config_manager.py         # JSON 配置（强配置，按接口隔离设备键）
 model_config.py           # ONNX 模型文件名常量
@@ -165,18 +158,17 @@ android/                  # Android 客户端（Kotlin + OkHttp + Opus JNI）
 pack_deb.sh               # Linux deb 打包
 pack_rpm.sh               # Linux rpm 打包（Fedora/RHEL）
 pack_appimage.sh          # Linux AppImage 打包（捆绑内嵌 Python 3.12）
-build_win.ps1             # Windows 打包（aimic.dll + PyInstaller 产物目录）
-bootstrap_python312.sh / .ps1  # 内嵌 Python 3.12 引导（Linux 编译自子模块，Windows 拉 NuGet）
-setup.py                  # 纯 C 共享库构建（gcc，产出 libaimic.so + libpvpipe.so / aimic.dll）
+build_win.ps1             # Windows 打包（PyInstaller 产物目录）
+bootstrap_python312.sh / .ps1  # 内嵌 Python 3.12 引导（Linux 下载预编译包，Windows 拉 NuGet）
 ```
 
 ## 技术栈
 
 | 组件 | 技术 |
 |---|---|
-| 桌面 GUI | Python + PySide6 |
-| 音频处理 | 纯 C 共享库（gcc）+ ONNX Runtime C API（频谱/FFT 全在 C 端，Python 仅 ctypes 数据搬运） |
-| Linux 音频 | 原生 PipeWire（libpipewire） |
+| 桌面 GUI | Python 标准库 Tkinter（uitk，星露谷像素浅色主题） |
+| 音频处理 | 纯 Python 引擎 pvengine（numpy + scipy + onnxruntime） |
+| Linux 音频 | PipeWire（pipewire-pulse 兼容层，pulsectl 经 ctypes 调系统 libpulse） |
 | Windows 音频 | WASAPI 全双工（默认）/ MME 备选 |
 | 服务端 | Python aiohttp + zeroconf + cryptography |
 | 音频编码 | Opus（PC: opuslib，APK: NDK 编译，Web: WASM） |

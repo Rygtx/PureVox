@@ -39,8 +39,7 @@ Windows / Linux 桌面应用 + Android 客户端：实时 AI 音频降噪 / 目�
 **本项目的单一实现路径（强制执行）**：
 
 - 音频引擎为**纯 Python 组件化管线**（`pvengine/` 包）：Stage 接口（process/reset/release）
-  是组件唯一契约，组件按 active_modes 声明生效模式，可随意增删替换；`aimic.py` 仅是
-  兼容垫片（re-export pvengine），旧调用方零改动。
+  是组件唯一契约，组件按 active_modes 声明生效模式，可随意增删替换；所有调用方直接用 pvengine。
 - Linux 音频采集/输出走 **pipewire-pulse 兼容层**（`pvplatform/audio/pwpipe_client.py`，
   pulsectl 经 ctypes 调系统 libpulse）。ALSA 备选接口已整体移除（2026-08-22 纯 py 迁移）。
 - 虚拟麦克风（Linux）= 单一生产者 + 双出口，全部健康，详见下方「Linux 音频架构」：
@@ -192,8 +191,7 @@ cd android
 | `about_content.py` + `about/` | **关于页文本（无 GUI 依赖的单一来源）**——`about/changelog.md` 更新日志、`about/windows.md`、`about/linux.md` 使用手册（uitk 直接读文件渲染）；`about_content.py` 只存元数据（应用信息/URLS/LIBS）与介绍页、许可证页文本，打包须随包携带 `about/` |
 | `session_plan.py` | **L3 会话层**——`SessionPlan.from_chain(chain_cfg)` 纯函数：链文档 → 校验后的可执行计划（inputs/outputs/remote_url/viz/fx_chain/problems/warnings）。UI 启动流程只消费计划，不做内联解析 |
 | `audio_processor.py` | 核心音频线程 —— `AudioThread`(全双工流/PipeWire 循环/网络循环/**多输入混音+多输出扇出**[Windows extras 回调])、`SpeakerCapture`(AEC loopback)、`RingBuffer`、设备枚举、TSE 参考录音工具(`_recorder`/`load_tse_reference`/`_wsola_time_stretch`) |
-| `pvengine/` | **纯 Python 组件化音频引擎**——Stage 接口（process/reset/release）是唯一契约；`components/`(denoise/aec/tse/gain/eq/vad/agc/compressor/clip/recorder/tap) 每文件一个组件、按 active_modes 声明生效模式；`dsp/`(窗/STFT/环形缓冲/重采样/Mel 频谱/ONNX 会话) 可独立复用；`pipeline.py` 按序执行+模式旁路；`processor.py` 是 AudioProcessor 门面（保持旧 API）。模型：v9 降噪（spec [1,1025,1,2] + enc/dec/tfa/inter 四态）、aec9、tse15，全部 numpy + onnxruntime 实现 |
-| `aimic.py` | 兼容垫片 —— re-export pvengine（AudioProcessor/RingBuffer/Resampler/compute_spectrum 等），旧调用方零改动；新代码请直接用 pvengine |
+| `pvengine/` | **纯 Python 组件化音频引擎**——Stage 接口（process/reset/release）是唯一契约；`components/`(denoise/aec/tse/gain/eq/vad/agc/compressor/clip/recorder/tap) 每文件一个组件、按 active_modes 声明生效模式；`dsp/`(窗/STFT/环形缓冲/重采样/Mel 频谱/ONNX 会话) 可独立复用；`pipeline.py` 按序执行+模式旁路；`processor.py` 是 AudioProcessor 门面。模型：v9 降噪（spec [1,1025,1,2] + enc/dec/tfa/inter 四态）、aec9、tse15，全部 numpy + onnxruntime 实现 |
 | `pvplatform/` | 平台抽象层 —— `audio/`(SpeakerCapture 三端、device_api、pwpipe_client[纯 py pulsectl 桥])、`system/`(单实例/自启动/防火墙/虚拟麦克风，win+posix) |
 | `server/` | 远程麦克风 HTTPS/WSS 服务器 —— `https_server.py`、`audio_bridge.py`(RemoteAudioSource)、`opus_codec.py`、`mdns_publisher.py`、`tls_manager.py` |
 | `config_manager.py` | JSON 配置读写（强配置，无迁移）；api_type 平台感知默认值、设备键按接口后缀（`<方向>_device_<接口后缀>` / `aec_far_sink_<接口后缀>`，全部接口显式写全） |
@@ -300,9 +298,8 @@ AEC far-end：独立录制流指向 `far_sink.monitor`（会话内创建/销毁�
 2. **模型规格 48kHz / 2048 NFFT / 1024 hop** — 任何缓冲区/块大小与此冲突的以此为准。
 3. **配置 key 按接口加后缀** — 设备键为 `<方向>_device_<接口后缀>` 与 `aec_far_sink_<接口后缀>`（如 `input_device_wasapi` / `input_device_mme` / `input_device_pulse` / `aec_far_sink_pulse`），后缀表见 `device_api.API_CONFIG_SUFFIX`；`config_manager.py` 的 `ConfigDefaults` 与 `_KEY_ORDER` 把全部接口的键**显式写全**（不做动态生成，阅读直观）；不用 `WASAPI_` 前缀，也不留无后缀的通用设备键。monitor（监听）与 AEC far 各存各的键。
 3a. **推理后端（2026-08-22 起）** — 纯 Python 引擎用 onnxruntime Python 包，
-   CPU 内核 dispatch 由 onnxruntime 运行时自动完成，无需也不应再做 AVX/SSE/NPU
-   探测或编译参数干预。`AudioProcessor.backend_effective/reason` 保留为兼容报告
-   （恒报 AVX/OK），UI 启动日志照常打印。
+   CPU 内核 dispatch 由 onnxruntime 运行时自动完成，禁止再做 AVX/SSE/NPU
+   探测或编译参数干预（后端探测与恒值兼容报告接口已删除）。
 4. **命名** — Python: snake_case 方法和变量；C++: snake_case 方法和 PascalCase 类；Kotlin: camelCase。
 5. **错误处理** — 内部用 `try/except` + `_module_log()` 记录，不冒泡到 UI 线程；Tk UI 用 `messagebox` 提示。
 6. **日志** — 统一 `logger.py` 的 `Logger` 类，层级 `dev`/`msg`/`warn`/`err`。

@@ -106,14 +106,14 @@ class NodeRow(tk.Frame):
         self._on_drag_commit = on_drag_commit
         self.cfg = cfg            # {type, enabled, params} 引用
         self.spec = spec
-        super().__init__(parent.body, bg=theme.ALT_BASE, bd=0)
-        head = tk.Frame(self, bg=theme.ALT_BASE)
+        super().__init__(parent.body, bg=theme.PANEL, bd=0)
+        head = tk.Frame(self, bg=theme.PANEL)
         head.pack(fill=tk.X, padx=self.sizes["pad_md"], pady=2)
         self.head = head
         # 布局（左→右）：手柄 · 开关 · 名称 ······ 用户操作区（下拉/滑杆）· 删除 ×
         # 类型名不再占横向空间；中间全部让给用户操作控件
         self.grip = tk.Label(head, text=self.GRIP_GLYPH,
-                             bg=theme.ALT_BASE, fg=theme.MID,
+                             bg=theme.PANEL, fg=theme.MID,
                              font=fonts.get("bold"), cursor="fleur")
         self.grip.pack(side=tk.LEFT, padx=(0, self.sizes["pad_sm"]))
         self.grip.bind("<ButtonPress-1>", self._drag_begin)
@@ -123,11 +123,11 @@ class NodeRow(tk.Frame):
         self.check = DarkCheck(head, "", self.on_var, command=self._toggled,
                                sizes=sizes, fonts=fonts)
         self.check.pack(side=tk.LEFT, padx=(0, self.sizes["pad_sm"]))
-        self.title_lbl = tk.Label(head, text=f"{spec.label}", bg=theme.ALT_BASE,
+        self.title_lbl = tk.Label(head, text=f"{spec.label}", bg=theme.PANEL,
                                   fg=theme.TEXT, anchor="w",
                                   font=fonts.get("body"))
         self.title_lbl.pack(side=tk.LEFT, padx=(0, self.sizes["pad_sm"]))
-        rm = tk.Label(head, text=self.CLOSE_GLYPH, bg=theme.ALT_BASE,
+        rm = tk.Label(head, text=self.CLOSE_GLYPH, bg=theme.PANEL,
                       fg=theme.TEXT_DIM, font=fonts.get("bold"),
                       cursor="hand2")
         if on_remove:
@@ -137,7 +137,7 @@ class NodeRow(tk.Frame):
         rm.pack(side=tk.RIGHT)   # × 永远最后（最右）
         self.rm_lbl = rm
         # 中间操作区：设备下拉 / 单参数滑杆都放这里，吃掉全部剩余宽度
-        self.mid = tk.Frame(head, bg=theme.ALT_BASE)
+        self.mid = tk.Frame(head, bg=theme.PANEL)
         self.mid.pack(side=tk.LEFT, fill=tk.BOTH, expand=True,
                       padx=(0, self.sizes["pad_sm"]))
         self.dev_combo = None
@@ -891,19 +891,19 @@ class MainWindowTk:
         tutorial_url = "https://www.bilibili.com/video/BV1i2bazGEKe/"
         wrap = max(320, self.sizes["win_w"] - 80)
 
-        card = tk.Frame(row.body_frame, bg=theme.ALT_BASE)
+        card = tk.Frame(row.body_frame, bg=theme.PANEL)
         card.pack(fill=tk.X, padx=self.sizes["pad_sm"],
                   pady=(0, self.sizes["pad_sm"]))
 
         # ── 状态行：指示灯 + 状态文字 ──
-        head = tk.Frame(card, bg=theme.ALT_BASE)
+        head = tk.Frame(card, bg=theme.PANEL)
         head.pack(fill=tk.X, padx=8, pady=(6, 2))
-        dot = tk.Canvas(head, bg=theme.ALT_BASE, width=12, height=12,
+        dot = tk.Canvas(head, bg=theme.PANEL, width=12, height=12,
                         highlightthickness=0)
         dot.pack(side=tk.LEFT)
         dot.create_oval(1, 1, 11, 11, fill=gray, outline="")
         state_lbl = tk.Label(head, text="待检测 —— 启动或停止音频处理时自动检测",
-                             bg=theme.ALT_BASE, fg=theme.TEXT_DIM,
+                             bg=theme.PANEL, fg=theme.TEXT_DIM,
                              font=self.fonts.get("bold"))
         state_lbl.pack(side=tk.LEFT, padx=(6, 0))
 
@@ -917,14 +917,14 @@ class MainWindowTk:
             "② CABLE Output（输出端）—— 作为虚拟麦克风使用，可设置为系统默认麦克风，"
             "供 OBS、直播、聊天、会议等软件选用。\n"
             "数据流向：PureVox → CABLE Input →（驱动转发）→ CABLE Output → 其它软件。")
-        tk.Label(card, text=tips, bg=theme.ALT_BASE, fg=theme.TEXT_DIM,
+        tk.Label(card, text=tips, bg=theme.PANEL, fg=theme.TEXT_DIM,
                  font=self.fonts.get("small"), justify="left", anchor="w",
                  wraplength=wrap).pack(fill=tk.X, padx=8, pady=(2, 4))
 
         # ── 驱动卡片 ──
         guide = tk.Label(card,
                          text="打开上方「输出设备」下拉即可检测驱动有无。",
-                         bg=theme.ALT_BASE, fg=theme.TEXT_FAINT,
+                         bg=theme.PANEL, fg=theme.TEXT_FAINT,
                          font=self.fonts.get("small"), justify="left",
                          anchor="w", wraplength=wrap)
 
@@ -965,8 +965,8 @@ class MainWindowTk:
 
         tk.Checkbutton(card, text="启动时检测虚拟麦克风（未安装才提醒）",
                        variable=cb_var, command=_toggle_check,
-                       bg=theme.ALT_BASE, fg=theme.TEXT_DIM,
-                       activebackground=theme.ALT_BASE,
+                       bg=theme.PANEL, fg=theme.TEXT_DIM,
+                       activebackground=theme.PANEL,
                        highlightthickness=0,
                        font=self.fonts.get("small")).pack(
             anchor="w", padx=8, pady=(0, 6))

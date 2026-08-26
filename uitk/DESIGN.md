@@ -9,7 +9,7 @@
 | 令牌 | 值 | 用途 |
 |---|---|---|
 | `WINDOW` | `#FFF8E1` | 窗底（羊皮纸） |
-| `PANEL` / `ALT_BASE` | `#FFECB3` | 行/卡片面板 |
+| `PANEL` | `#FFECB3` | 行/卡片面板 |
 | `BASE` | `#FFFFFF` | 输入区、下拉弹层、图表画布（纯白） |
 | `BUTTON` | `#FFB74D` | 主按钮 / 可点标签常态底 |
 | `DARK` | `#FFE0B2` | 悬停变体（配 `theme.hover(bg)`） |

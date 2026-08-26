@@ -28,7 +28,7 @@ function Invoke-Windows {
     if ($LASTEXITCODE -ne 0) { throw "pip install failed" }
 
     Write-Host "==> [windows] compileall (syntax check)"
-    python -m compileall -q aimic.py pvengine audio_processor.py config_manager.py model_config.py about_content.py run_tk.py uitk pvplatform server 2>$null
+    python -m compileall -q pvengine audio_processor.py config_manager.py model_config.py about_content.py run_tk.py uitk pvplatform server 2>$null
     if ($LASTEXITCODE -ne 0) { throw "compileall failed" }
     Write-Host "compileall OK"
 
@@ -37,7 +37,7 @@ function Invoke-Windows {
     if ($LASTEXITCODE -ne 0) { throw "build_win.ps1 failed" }
 
     Write-Host "==> [windows] engine smoke test"
-    python -c "import aimic, numpy as _np; ap = aimic.AudioProcessor(0.0, 'models/v9_fft2048_band256_epoch_261.onnx'); out = ap.process([0.0] * 1024); assert len(out) == 1024; print('pvengine OK')"
+    python -c "from pvengine import AudioProcessor; ap = AudioProcessor(0.0); out = ap.process([0.0] * 1024); assert len(out) == 1024; print('pvengine OK')"
     if ($LASTEXITCODE -ne 0) { throw "engine smoke failed" }
 
     Write-Host "==> [windows] done: dist/PureVox/"

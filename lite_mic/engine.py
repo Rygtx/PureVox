@@ -2,7 +2,7 @@
 # Copyright (C) 2024-2026 a2heng <752848283@qq.com>
 # SPDX-License-Identifier: GPL-3.0-or-later
 #
-# 不复用 aimic.py / aimic.c，直接用 onnxruntime + numpy 实现
+# 直接用 onnxruntime + numpy 实现（与主程序 pvengine 同规格、独立精简副本）
 # 规格: 48kHz, NFFT 2048, HOP 1024, Freq 1025, sqrt-Hann 窗, OLA 归一化
 # 模型: v9_fft2048_band256_epoch_261.onnx (输入 spec [1,1025,1,2] + 4 状态, 输出 enhanced_spec + 4 状态)
 

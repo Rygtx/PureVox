@@ -145,34 +145,6 @@ class Logger:
         """模式相关"""
         self._log(TAG_MODE, message)
 
-    def __call__(self, message: str) -> None:
-        """兼容旧的 log() 调用方式"""
-        # 自动识别标签
-        if message.startswith('[TSE]'):
-            self._log(TAG_TSE, message[5:].strip())
-        elif message.startswith('[音频]'):
-            self._log(TAG_MSG, message[4:].strip())
-        elif message.startswith('[模型]'):
-            self._log(TAG_INFO, message[4:].strip())
-        elif message.startswith('[设备]'):
-            self._log(TAG_DEV, message[4:].strip())
-        elif message.startswith('[增益]'):
-            self._log(TAG_GAIN, message[4:].strip())
-        elif message.startswith('[降噪]'):
-            self._log(TAG_MODE, message[4:].strip())
-        elif message.startswith('[直通]'):
-            self._log(TAG_MODE, message[4:].strip())
-        elif message.startswith('[监听]'):
-            self._log(TAG_DEV, message[4:].strip())
-        elif message.startswith('[EQ]'):
-            self._log(TAG_EQ, message[4:].strip())
-        elif message.startswith('[系统]'):
-            self._log(TAG_SYS, message[4:].strip())
-        elif message.startswith('[AGC]'):
-            self._log(TAG_AGC, message[5:].strip())
-        else:
-            self._log(TAG_MSG, message)
-
 
 # 全局日志实例
 _logger = Logger()
@@ -181,11 +153,6 @@ _logger = Logger()
 def get_logger() -> Logger:
     """获取全局日志实例"""
     return _logger
-
-
-def log(message: str) -> None:
-    """兼容旧的 log() 调用方式"""
-    _logger(message)
 
 
 # 便捷函数

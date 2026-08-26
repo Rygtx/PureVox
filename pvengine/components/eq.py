@@ -69,7 +69,7 @@ EQ_Q10 = _matched_q(1.0)     # ≈1.414
 EQ_Q31 = _matched_q(1 / 3)   # ≈4.318
 EQ_Q61 = _matched_q(1 / 6)   # ≈8.651
 
-# 默认栅格 = 31 段（兼容旧常量名）
+# 默认栅格 = 31 段（1/3 倍频程，硬件图示 EQ 通用规格）
 EQ_FREQS = EQ31_FREQS
 EQ_Q = EQ_Q31
 EQ_BANDS = len(EQ_FREQS)

@@ -91,12 +91,12 @@ install_pydeps() {
 }
 
 smoke() {
-    echo "==> 引擎冒烟：导入 aimic 并跑一帧降噪"
+    echo "==> 引擎冒烟：导入 pvengine 并跑一帧降噪"
     py - <<'EOF'
 import sys
 import numpy as np
-import aimic
-ap = aimic.AudioProcessor(0.0, 'models/v9_fft2048_band256_epoch_261.onnx')
+from pvengine import AudioProcessor
+ap = AudioProcessor(0.0)
 x = (np.sin(np.arange(1024) * 0.05) * 0.3).astype('float32')
 out = ap.process(x.tolist())
 assert len(out) == 1024
