@@ -83,12 +83,14 @@ jobs:
             || $PY -m pip install -q --break-system-packages -r requirements.txt pillow \
             || $PY -m pip install -q --user -r requirements.txt pillow
 
-      # ── 预置缓存（唯一一处）：~/.cache/purevox = pbs cpython tarball + appimagetool。
+      # ── 预置缓存：~/.cache/purevox = pbs cpython tarball + appimagetool。
       # key 固定为组件版本，命中即免下载；解压产物 packages/python312 不缓存——
       # bootstrap 见到 tarball 就地重解压（秒级），不值得双倍缓存体积 ──
-      - name: Cache ~/.cache/purevox (cpython tarball + appimagetool)
+      # restore 由全部 Linux 打包 job 共享；save 仅 appimage job 单点写入（否则
+      # 并发同 key 各存一份，出现内容漂移的重复条目）──
+      - name: Restore ~/.cache/purevox (cpython tarball + appimagetool)
         if: matrix.pkg_deb || matrix.pkg_appimage || matrix.pkg_rpm
-        uses: actions/cache@v6
+        uses: actions/cache/restore@v6
         with:
           path: ~/.cache/purevox
           key: purevox-linux-cache-v1-cpython-3.12.14-appimagetool-x64
@@ -155,6 +157,14 @@ jobs:
           name: PureVox-Linux-x64-${{ steps.ts.outputs.stamp }}-release-appimage
           path: dist/PureVox-Linux-x64-*.AppImage
           if-no-files-found: ignore
+
+      # 单一写入点：打包全部结束后落盘（tarball + appimagetool 齐备）
+      - name: Save ~/.cache/purevox cache (single writer)
+        if: matrix.pkg_appimage && !cancelled()
+        uses: actions/cache/save@v6
+        with:
+          path: ~/.cache/purevox
+          key: purevox-linux-cache-v1-cpython-3.12.14-appimagetool-x64
 
   windows:
     name: Windows (pure-Python bundle directory)
