@@ -145,8 +145,14 @@ gtk-update-icon-cache /usr/share/icons/hicolor 2>/dev/null || true
 EOF
 
 echo "==> rpmbuild"
+# 载荷是自包含的预编译运行时（pbs 内嵌 Python，含 tcl/tk 等自带库），
+# 必须关闭发行版默认的构建后处理（brp-strip/brp-compress/check-rpaths 等）：
+# check-rpaths 会因 pbs 自带库中的死 RPATH（构建机路径）判违规终止，
+# strip 也无谓地改动捆绑二进制——与 dpkg 打包 deb 时不做任何此类处理一致。
 mkdir -p "$STAGE"/{BUILD,RPMS,SOURCES,SPECS,SRPMS}
 rpmbuild --define "_topdir $STAGE" --define "buildroot $ROOT" \
+    --define "__os_install_post %{nil}" \
+    --define "source_date_epoch_from_changelog 0" \
     -bb "$SPEC" >/dev/null
 RPMSRC="$STAGE/RPMS/$ARCH/${PKG_NAME}-${VERSION}-${REV}.$ARCH.rpm"
 [ -f "$RPMSRC" ] || { echo "rpm not produced"; exit 1; }
