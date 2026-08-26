@@ -18,11 +18,13 @@ jobs:
       matrix:
         include:
           # Universal packages: deb (Ubuntu) + AppImage; fedora -> rpm; python3.12 baseline.
-          - distro: ubuntu-22.04
-            container: ubuntu:22.04
+          - distro: ubuntu-24.04
+            container: ubuntu:24.04
             # 预编译内嵌 Python（python-build-standalone install_only 包，见
             # bootstrap_python312.sh），无需编译——不再需要 libssl-dev/libffi-dev。
             # file: appimagetool requires the `file` command at packaging time.
+            # 注意须用 noble（自带 Python 3.12 + 新 pip）：pin 的 numpy 2.5 无
+            # 3.10 轮子，jammy 跑不了引擎冒烟。
             sysdeps: "make pkg-config libopus0 python3 python3-pip python3-setuptools imagemagick wget git file"
             pkg_deb: true
             pkg_appimage: true
@@ -52,12 +54,13 @@ jobs:
             fi
           fi
 
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
         # bootstrap_python312.sh 按需下载 python-build-standalone 预编译包
         # （cpython 3.12.14，~/.cache/purevox 可跨任务缓存），无需编译
 
       - name: Set build timestamp (tag v* -> tag version; else now)
         id: ts
+        shell: bash
         run: |
           if [[ "${GITHUB_REF_NAME:-}" == v* ]]; then
             stamp="${GITHUB_REF_NAME#v}"
@@ -67,31 +70,27 @@ jobs:
             echo "stamp=$(date +'%Y-%m-%d-%H%M')" >> "$GITHUB_OUTPUT"
           fi
 
-      # 与本地同一套 pin 版本（requirements.txt），避免 CI 与本地行为漂移
+      # 与本地同一套 pin 版本（requirements.txt），避免 CI 与本地行为漂移。
+      # 三段回退：普通安装 → PEP668 系统用 --break-system-packages → --user。
+      # 不加 || true：依赖装不上必须让步骤红，否则冒烟必挂且难排查
+      # （ubuntu:22.04 容器老 pip 不认 --break-system-packages 的教训）。
       - name: Install Python deps (pinned, from requirements.txt)
+        shell: bash
         run: |
           PY="python3"; [ "${{ matrix.distro }}" = "python3.12" ] && PY="python"
-          $PY -m pip install --quiet -r requirements.txt 2>/dev/null \
-            || $PY -m pip install --break-system-packages -r requirements.txt || true
-          # pillow 仅打包脚本需要（图标生成），不属引擎运行依赖
-          $PY -m pip install --quiet pillow 2>/dev/null \
-            || $PY -m pip install --break-system-packages pillow || true
+          $PY -m pip install -q -r requirements.txt pillow \
+            || $PY -m pip install -q --break-system-packages -r requirements.txt pillow \
+            || $PY -m pip install -q --user -r requirements.txt pillow
 
-      # ── 预置缓存：避免每次 CI 重复下载（预编译内嵌 python312）──
-      - name: Cache embedded python312 (python-build-standalone)
+      # ── 预置缓存（唯一一处）：~/.cache/purevox = pbs cpython tarball + appimagetool。
+      # key 固定为组件版本，命中即免下载；解压产物 packages/python312 不缓存——
+      # bootstrap 见到 tarball 就地重解压（秒级），不值得双倍缓存体积 ──
+      - name: Cache ~/.cache/purevox (cpython tarball + appimagetool)
         if: matrix.pkg_appimage
-        uses: actions/cache@v4
-        with:
-          path: |
-            packages/python312
-            ~/.cache/purevox
-          key: py312-embedded-ubuntu22-pbs-cpython-3.12.14-20260814
-      - name: Cache appimagetool binary
-        if: matrix.pkg_appimage
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ~/.cache/purevox
-          key: appimagetool-continuous-x64
+          key: purevox-linux-cache-v1-cpython-3.12.14-appimagetool-x64
 
       - name: Import smoke test (pure-Python engine loads a model and denoises one frame)
         run: |
@@ -120,7 +119,7 @@ jobs:
 
       - name: Upload deb artifact
         if: matrix.pkg_deb
-        uses: actions/upload-artifact@v7.0.1
+        uses: actions/upload-artifact@v7
         with:
           name: PureVox-Linux-x64-${{ steps.ts.outputs.stamp }}-release-deb
           path: dist/PureVox-Linux-x64-*.deb
@@ -134,7 +133,7 @@ jobs:
 
       - name: Upload rpm artifact
         if: matrix.pkg_rpm
-        uses: actions/upload-artifact@v7.0.1
+        uses: actions/upload-artifact@v7
         with:
           name: PureVox-Linux-x64-${{ steps.ts.outputs.stamp }}-release-rpm
           path: dist/PureVox-Linux-x64-*.rpm
@@ -150,7 +149,7 @@ jobs:
       - name: Upload AppImage artifact
         if: matrix.pkg_appimage
         continue-on-error: true
-        uses: actions/upload-artifact@v7.0.1
+        uses: actions/upload-artifact@v7
         with:
           name: PureVox-Linux-x64-${{ steps.ts.outputs.stamp }}-release-appimage
           path: dist/PureVox-Linux-x64-*.AppImage
@@ -160,7 +159,7 @@ jobs:
     name: Windows (pure-Python bundle directory)
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       - name: Set build timestamp (tag v* -> tag version; else now)
         id: ts
@@ -174,7 +173,7 @@ jobs:
           "stamp=$stamp" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
 
       - name: Set up Python 3.12
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@v7
         with:
           python-version: "3.12"
           cache: pip
@@ -206,7 +205,7 @@ jobs:
           python -c "from pvengine import AudioProcessor; ap = AudioProcessor(0.0); out = ap.process([0.0] * 1024); assert len(out) == 1024; print('pvengine OK on Python', __import__('sys').version.split()[0])"
 
       - name: Upload Windows bundle
-        uses: actions/upload-artifact@v7.0.1
+        uses: actions/upload-artifact@v7
         with:
           # upload-artifact already compresses to a zip; a separate 7z pass is pure waste.
           name: PureVox-Windows-x64-${{ steps.ts.outputs.stamp }}-release
@@ -217,7 +216,7 @@ jobs:
     name: Android (debug APK)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       - name: Set build timestamp (tag v* -> tag version; else now)
         id: ts
@@ -231,7 +230,7 @@ jobs:
           fi
 
       - name: Set up JDK 17
-        uses: actions/setup-java@v5.7.0
+        uses: actions/setup-java@v6
         with:
           distribution: temurin
           java-version: "17"
@@ -247,10 +246,10 @@ jobs:
 
       # 缓存 opus 源码：命中则跳过下载（2026-08-22 纯 py 迁移）
       - name: Cache opus source
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: android/opus-src
-          key: opus-src-1.5.2
+          key: purevox-android-opus-src-1.5.2
 
       - name: Download Opus source (android/opus-src is gitignored)
         run: |
@@ -279,7 +278,7 @@ jobs:
           mv android/app/build/outputs/apk/debug/app-debug.apk "PureVox-Android-arm64-$stamp-debug.apk"
 
       - name: Upload APK
-        uses: actions/upload-artifact@v7.0.1
+        uses: actions/upload-artifact@v7
         with:
           name: PureVox-Android-arm64-${{ steps.ts.outputs.stamp }}-debug-apk
           path: PureVox-Android-arm64-*.apk
@@ -296,12 +295,12 @@ jobs:
       contents: write
     steps:
       - name: Checkout full history (commit log for release notes)
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
       - name: Download all build artifacts
-        uses: actions/download-artifact@v7.0.0
+        uses: actions/download-artifact@v8
         with:
           path: artifacts
 
