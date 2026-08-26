@@ -285,7 +285,8 @@ def main():
                 try:
                     from PIL import ImageFont
                     import os
-                    font_path = os.path.join(os.path.dirname(__file__), "fonts", "ark-pixel-12px-monospaced-zh_cn.ttf")
+                    font_path = os.path.join(os.path.dirname(__file__), "..", "assets", "fonts",
+                                             "ark-pixel-12px-monospaced-zh_cn.ttf")
                     if os.path.isfile(font_path):
                         pf = ImageFont.truetype(font_path, 56)
                         bbox = d.textbbox((0, 0), "P", font=pf, stroke_width=3)

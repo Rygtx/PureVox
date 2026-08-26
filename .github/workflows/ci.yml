@@ -30,7 +30,8 @@ jobs:
             pkg_appimage: true
           - distro: fedora
             container: fedora:latest
-            sysdeps: "make python3 python3-pip python3-setuptools rpm-build"
+            # wget: bootstrap tarball download; ImageMagick: icon ico->png
+            sysdeps: "make python3 python3-pip python3-setuptools rpm-build wget ImageMagick"
             pkg_rpm: true
           # Python 3.12 baseline: verify the pure-Python engine imports and runs there
           # (CI matrix uses 3.12; bundled runtime is 3.12).
@@ -86,7 +87,7 @@ jobs:
       # key 固定为组件版本，命中即免下载；解压产物 packages/python312 不缓存——
       # bootstrap 见到 tarball 就地重解压（秒级），不值得双倍缓存体积 ──
       - name: Cache ~/.cache/purevox (cpython tarball + appimagetool)
-        if: matrix.pkg_appimage
+        if: matrix.pkg_deb || matrix.pkg_appimage || matrix.pkg_rpm
         uses: actions/cache@v6
         with:
           path: ~/.cache/purevox

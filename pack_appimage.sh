@@ -35,9 +35,12 @@ for f in \
     model_config.py run_tk.py user_paths.py wav_io.py; do
     cp "$f" "$APPDIR/usr/lib/purevox/"
 done
-mkdir -p "$APPDIR/usr/lib/purevox/models" "$APPDIR/usr/lib/purevox/assets/icons"
+mkdir -p "$APPDIR/usr/lib/purevox/models" "$APPDIR/usr/lib/purevox/assets/icons" \
+         "$APPDIR/usr/lib/purevox/assets/fonts"
 cp models/*.onnx "$APPDIR/usr/lib/purevox/models/"
 cp assets/icons/*.ico "$APPDIR/usr/lib/purevox/assets/icons/"
+# 内置像素字体（Linux 运行时经 fontconfig 用户目录注册，见 uitk/metrics.py）
+cp assets/fonts/*.ttf "$APPDIR/usr/lib/purevox/assets/fonts/"
 cp -r pvengine "$APPDIR/usr/lib/purevox/"
 
 # 捆绑系统 libopus（opuslib 经 ctypes find_library 加载；AppImage 自带一份，

@@ -113,17 +113,22 @@ def _enable_hidpi():
 
 def _load_pixel_font():
     try:
-        if not sys.platform.startswith("win"):
-            return
-        import ctypes
-        font_dir = os.path.join(os.path.dirname(__file__), "fonts")
-        if not os.path.isdir(font_dir):
-            return
-        for fn in os.listdir(font_dir):
-            if fn.lower().endswith((".ttf", ".otf")):
-                path = os.path.abspath(os.path.join(font_dir, fn))
-                ctypes.windll.gdi32.AddFontResourceExW(path, 0x10, 0)
-        ctypes.windll.user32.SendMessageW(0xFFFF, 0x001D, 0, 0)
+        # 字体唯一副本在仓库 assets/fonts/（与主程序 uitk、打包脚本共用）
+        font_dir = os.path.normpath(os.path.join(
+            os.path.dirname(__file__), "..", "assets", "fonts"))
+        if sys.platform.startswith("win"):
+            import ctypes
+            if not os.path.isdir(font_dir):
+                return
+            for fn in os.listdir(font_dir):
+                if fn.lower().endswith((".ttf", ".otf")):
+                    path = os.path.abspath(os.path.join(font_dir, fn))
+                    ctypes.windll.gdi32.AddFontResourceExW(path, 0x10, 0)
+            ctypes.windll.user32.SendMessageW(0xFFFF, 0x001D, 0, 0)
+        elif os.path.isdir(font_dir):
+            # Linux/macOS：fontconfig 用户字体目录注册（无需 root）
+            from uitk.metrics import install_fonts_fontconfig
+            install_fonts_fontconfig(font_dir)
     except Exception:
         pass
 
@@ -502,7 +507,8 @@ class LiteUI:
             _dr = ImageDraw.Draw(_icon)
             try:
                 from PIL import ImageFont
-                _fp = _os2.path.join(_os2.path.dirname(__file__), "fonts", "ark-pixel-12px-monospaced-zh_cn.ttf")
+                _fp = _os2.path.join(_os2.path.dirname(__file__), "..", "assets", "fonts",
+                                     "ark-pixel-12px-monospaced-zh_cn.ttf")
                 if _os2.path.isfile(_fp):
                     _pf = ImageFont.truetype(_fp, 56)
                     _bbox = _dr.textbbox((0, 0), "P", font=_pf, stroke_width=3)

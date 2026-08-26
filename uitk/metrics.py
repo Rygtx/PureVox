@@ -116,24 +116,88 @@ def fix_tk_scaling(root):
 
 FONT_FAMILY_CANDIDATES = ["Ark Pixel 12px Monospaced zh_cn",
                           "Ark Pixel 12px Mono zh_cn",
+                          "Ark Pixel 12px Mono",
                           "Microsoft YaHei UI", "Microsoft YaHei",
                           "PingFang SC", "Noto Sans CJK SC", "Segoe UI"]
 
-# 像素字体文件（随 lite_mic 提交在仓库，uitk 直接复用，不复制）
-PIXEL_FONT_TTF = os.path.join(os.path.dirname(os.path.dirname(
-    os.path.abspath(__file__))), "lite_mic", "fonts",
-    "ark-pixel-12px-monospaced-zh_cn.ttf")
+# 像素字体（仓库唯一副本 assets/fonts/；lite_mic/lite_net 与打包脚本共用）
+_FONT_FILE = "ark-pixel-12px-monospaced-zh_cn.ttf"
+
+
+def find_pixel_font_ttf() -> str:
+    """定位内置像素字体：PyInstaller 资源目录 → 应用根/仓库根 → 上级目录。
+
+    源码态仓库根 = uitk/ 上一级；打包态（deb/rpm/AppImage）= /opt/purevox
+    等应用根，字体随 assets/fonts/ 携带。找不到返回空串。
+    """
+    here = os.path.dirname(os.path.abspath(__file__))
+    roots = []
+    meipass = getattr(sys, "_MEIPASS", None)
+    if meipass:
+        roots.append(meipass)
+    roots.append(os.path.dirname(here))
+    roots.append(os.path.dirname(os.path.dirname(here)))
+    for r in roots:
+        p = os.path.join(r, "assets", "fonts", _FONT_FILE)
+        if os.path.isfile(p):
+            return p
+    return ""
+
+
+def install_fonts_fontconfig(font_dir: str) -> None:
+    """Linux/macOS：把目录内 ttf/otf 安装到用户字体目录并刷新 fontconfig。
+
+    freedesktop 标准用户字体机制（$XDG_DATA_HOME/fonts/purevox），
+    不需要 root、不污染系统字体；内容相同则跳过拷贝，fc-cache 失败静默。
+    """
+    import hashlib
+    import shutil
+    import subprocess
+    data_home = os.environ.get("XDG_DATA_HOME") or os.path.expanduser("~/.local/share")
+    dst_root = os.path.join(data_home, "fonts", "purevox")
+    try:
+        os.makedirs(dst_root, exist_ok=True)
+        changed = False
+        for fn in os.listdir(font_dir):
+            if not fn.lower().endswith((".ttf", ".otf")):
+                continue
+            s = os.path.join(font_dir, fn)
+            d = os.path.join(dst_root, fn)
+
+            def _md5(p):
+                h = hashlib.md5()
+                with open(p, "rb") as f:
+                    h.update(f.read())
+                return h.hexdigest()
+
+            if os.path.isfile(d) and _md5(s) == _md5(d):
+                continue
+            shutil.copyfile(s, d)
+            changed = True
+        if changed:
+            subprocess.run(["fc-cache", "-f", dst_root], check=False,
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except Exception:
+        pass
 
 
 def load_pixel_font():
-    """注册内置 Ark Pixel 字体（仅 Windows；失败静默回退系统字体）。"""
-    if not sys.platform.startswith("win"):
+    """注册内置 Ark Pixel 字体（跨平台；失败静默回退系统字体）。
+
+    Windows: GDI AddFontResourceExW(FR_PRIVATE) 仅本进程可见；
+    Linux/macOS: 经 fontconfig 用户字体目录注册——此前仅 Windows 生效，
+    Linux 包内又未携带字体文件，无 CJK 字体的系统会中文豆腐/缺字形。
+    """
+    src = find_pixel_font_ttf()
+    if not src:
         return
     try:
-        import ctypes
-        if os.path.isfile(PIXEL_FONT_TTF):
+        if sys.platform.startswith("win"):
+            import ctypes
             # 0x10 = FR_PRIVATE：仅本进程可见，不污染系统
-            ctypes.windll.gdi32.AddFontResourceExW(PIXEL_FONT_TTF, 0x10, 0)
+            ctypes.windll.gdi32.AddFontResourceExW(src, 0x10, 0)
+        else:
+            install_fonts_fontconfig(os.path.dirname(src))
     except Exception:
         pass
 

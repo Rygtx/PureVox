@@ -52,9 +52,12 @@ for f in \
     model_config.py run_tk.py user_paths.py wav_io.py; do
     cp "$f" "$ROOT/opt/purevox/"
 done
-mkdir -p "$ROOT/opt/purevox/models" "$ROOT/opt/purevox/assets/icons"
+mkdir -p "$ROOT/opt/purevox/models" "$ROOT/opt/purevox/assets/icons" \
+         "$ROOT/opt/purevox/assets/fonts"
 cp models/*.onnx "$ROOT/opt/purevox/models/"
 cp assets/icons/*.ico "$ROOT/opt/purevox/assets/icons/"
+# 内置像素字体（Linux 运行时经 fontconfig 用户目录注册，见 uitk/metrics.py）
+cp assets/fonts/*.ttf "$ROOT/opt/purevox/assets/fonts/"
 
 echo "==> 捆绑内嵌 Python 3.12（packages/python312，含全部 pip 依赖；GUI 为标准库 Tkinter）"
 # 与 pack_appimage.sh 一致：若内嵌 python 未编译则先引导（幂等）。CI 的

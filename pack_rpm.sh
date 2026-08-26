@@ -1,7 +1,10 @@
 #!/bin/bash
 # PureVox - Fedora/RHEL RPM packaging script
 # Output: dist/PureVox-Linux-x64-<yyyy-MM-dd-HHmm>-release.rpm
-# Requires: gcc, pkg-config, libpipewire-0.3-devel, rpm-build, python3 (for icon)
+# Layout (same single path as deb/AppImage): sources+models+html+bundled
+# embedded Python 3.12 (packages/python312, all pip deps inside) under
+# /opt/purevox; /usr/bin/purevox execs the bundled interpreter.
+# Requires: rpm-build, wget/curl (bootstrap download), ImageMagick or PIL (icon)
 set -e
 cd "$(dirname "$0")"
 
@@ -36,11 +39,23 @@ for f in \
     model_config.py run_tk.py user_paths.py wav_io.py; do
     cp "$f" "$ROOT/opt/purevox/"
 done
-mkdir -p "$ROOT/opt/purevox/models" "$ROOT/opt/purevox/assets/icons"
+mkdir -p "$ROOT/opt/purevox/models" "$ROOT/opt/purevox/assets/icons" \
+         "$ROOT/opt/purevox/assets/fonts"
 cp models/*.onnx "$ROOT/opt/purevox/models/"
 cp assets/icons/*.ico "$ROOT/opt/purevox/assets/icons/"
+# 内置像素字体（Linux 运行时经 fontconfig 用户目录注册，见 uitk/metrics.py）
+cp assets/fonts/*.ttf "$ROOT/opt/purevox/assets/fonts/"
 
 echo "==> copy html/ server/ pvplatform/ pvengine/ uitk/ about/"
+
+echo "==> bundle embedded Python 3.12 (packages/python312, all pip deps inside)"
+# Same single path as deb/AppImage: bootstrap is idempotent (prebuilt pbs
+# tarball, cached in ~/.cache/purevox); no compilation involved.
+if [ ! -x "packages/python312/bin/python3" ]; then
+    ./bootstrap_python312.sh
+fi
+cp -a packages/python312 "$ROOT/opt/purevox/python312"
+
 cp -r html "$ROOT/opt/purevox/"
 mkdir -p "$ROOT/opt/purevox/server"
 cp server/*.py "$ROOT/opt/purevox/server/"
@@ -59,8 +74,13 @@ EOF
 echo "==> /usr/bin/purevox launcher"
 cat > "$ROOT/usr/bin/purevox" <<'EOF'
 #!/bin/sh
+# PureVox — AI 麦克风降噪
+# 使用捆绑的内嵌 Python 3.12（numpy/onnxruntime 等全部依赖已随包携带，
+# GUI 为标准库 Tkinter），与系统 Python/发行版包名完全隔离。
+export PYTHONHOME="/opt/purevox/python312"
+export PATH="/opt/purevox/python312/bin:$PATH"
 cd /opt/purevox || exit 1
-exec /usr/bin/python3 /opt/purevox/run_tk.py "$@"
+exec /opt/purevox/python312/bin/python3.12 /opt/purevox/run_tk.py "$@"
 EOF
 chmod +x "$ROOT/usr/bin/purevox"
 
@@ -104,7 +124,9 @@ Requires:       pipewire, opus
 
 %description
 Real-time AI microphone noise reduction, echo cancellation and target
-speaker extraction. Installs under /opt/purevox.
+speaker extraction. Installs under /opt/purevox with a bundled embedded
+Python 3.12 runtime (all Python dependencies included); only PipeWire
+and libopus come from the host system.
 
 %install
 cp -a $ROOT/. %{buildroot}/

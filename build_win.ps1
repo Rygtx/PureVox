@@ -42,6 +42,7 @@ Set-Content _build_version.py "BUILD_DATE = `"$date`"" -Encoding UTF8
     --add-data="models\*.onnx;models" `
     --add-data="assets\icons\audio_icon_on.ico;assets\icons" `
     --add-data="assets\icons\audio_icon_off.ico;assets\icons" `
+    --add-data="assets\fonts\*.ttf;assets\fonts" `
     --add-data="html\*.html;html\" `
     --add-data="html\css\*.css;html\css\" `
     --add-data="html\js\*.js;html\js\" `

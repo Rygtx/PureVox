@@ -103,6 +103,7 @@ bash pack_appimage.sh                         # AppImage → dist/PureVox-Linux-
 
 deb 布局：`/opt/purevox/` 放全部源码+模型+html+捆绑的内嵌 `python312`（含 numpy/onnxruntime/scipy 等
 全部 pip 依赖，无任何自编译 .so）；`/usr/bin/purevox` 启动脚本直接 exec。
+rpm（pack_rpm.sh）与 AppImage 是同一实现路径，同样捆绑内嵌 python312，Requires/无系统 Python 依赖。
 `/usr/share/applications/purevox.desktop` + hicolor 图标。Depends 只留 pipewire。
 Linux 输入/输出/设备枚举/AEC 全走 pipewire-pulse（pulsectl）；opuslib 缺失时 `pip install --user`。
 

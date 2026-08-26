@@ -1,5 +1,26 @@
 # 更新日志
 
+## 2026-08-26 — 修复 Linux 未注册内置像素字体（无 CJK 字体的系统中文豆腐）
+
+- **内置 Ark Pixel 字体改为跨平台注册**：此前仅 Windows 生效（GDI 私有
+  加载），Linux 从不注册、且 deb/rpm/AppImage 包内根本没带字体文件，
+  系统缺中文字体时界面中文显示为豆腐块。现字体收敛到仓库唯一副本
+  `assets/fonts/`（删除 lite_mic/lite_net 各自的重复副本），Linux/macOS
+  运行时经 freedesktop 用户字体目录（`~/.local/share/fonts/purevox`）+
+  `fc-cache` 注册，无需 root、不污染系统字体；deb/rpm/AppImage/Windows
+  打包均随包携带。附带修复：Windows 打包版此前因字体文件未进产物而一直
+  静默回退系统雅黑，现像素字体真正生效。
+
+## 2026-08-26 — 修复 RPM 包未捆绑运行时（体积异常小且装完无法运行）
+
+- **RPM 与 deb/AppImage 对齐为同一实现路径**：`pack_rpm.sh` 此前只打包
+  源码+模型（约 13MB），启动脚本直接调系统 `python3`，numpy/onnxruntime 等
+  依赖要求用户自行解决（Fedora PEP668 下 pip 安装被系统拒绝），
+  装到干净系统上无法启动。现改为捆绑内嵌 Python 3.12（与 deb/AppImage
+  完全一致，全部 Python 依赖随包携带），启动脚本经 PYTHONHOME 使用包内
+  解释器；Requires 保持仅 pipewire/opus。CI 的 fedora job 同步补
+  wget/ImageMagick 并共享 ~/.cache/purevox 缓存。
+
 ## 2026-08-26 — 清理历史兼容层：删除 aimic 垫片与引擎旧接口残留
 
 - **删除 `aimic.py` 兼容垫片模块**：纯 Python 引擎（pvengine）自 2026-08-22
