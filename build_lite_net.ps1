@@ -36,15 +36,16 @@ if ($LASTEXITCODE -ne 0) { throw "compileall failed" }
 if ($LASTEXITCODE -ne 0) { throw "smoke import failed" }
 
 # --- Icon: pixel P from bundled font (same as denoiser lite) ---
-& $PY -c "from PIL import Image, ImageDraw, ImageFont; import os; img=Image.new('RGBA',(256,256),(0,0,0,0)); d=ImageDraw.Draw(img); fp=os.path.join('lite_mic','fonts','ark-pixel-12px-monospaced-zh_cn.ttf'); pf=ImageFont.truetype(fp,180) if os.path.isfile(fp) else ImageFont.load_default(); bbox=d.textbbox((0,0),'P',font=pf,stroke_width=8); tw=bbox[2]-bbox[0]; th=bbox[3]-bbox[1]; d.text(((256-tw)//2,(256-th)//2-5),'P',fill='#6D4C41',font=pf,stroke_width=8,stroke_fill='#FFB74D'); img.save('assets/icons/lite_icon.ico', sizes=[(256,256),(128,128),(64,64),(32,32),(16,16)])"
+& $PY -c "from PIL import Image, ImageDraw, ImageFont; import os; img=Image.new('RGBA',(256,256),(0,0,0,0)); d=ImageDraw.Draw(img); fp=os.path.join('assets','fonts','ark-pixel-12px-monospaced-zh_cn.ttf'); pf=ImageFont.truetype(fp,180) if os.path.isfile(fp) else ImageFont.load_default(); bbox=d.textbbox((0,0),'P',font=pf,stroke_width=8); tw=bbox[2]-bbox[0]; th=bbox[3]-bbox[1]; d.text(((256-tw)//2,(256-th)//2-5),'P',fill='#6D4C41',font=pf,stroke_width=8,stroke_fill='#FFB74D'); img.save('assets/icons/lite_icon.ico', sizes=[(256,256),(128,128),(64,64),(32,32),(16,16)])"
 if (-not (Test-Path "assets\icons\lite_icon.ico")) { throw "icon generation failed" }
 
 # --- Version stamp module (window title) ---
 Set-Content _build_version.py "BUILD_DATE = `"$ver`"" -Encoding UTF8
 
 # --- PyInstaller onedir ---
-# fonts -> _internal/fonts (frozen ui.py is a top-level module, __file__ under _internal);
-# html  -> _internal/html  (browser client served from the WSS port)
+# assets/fonts -> _internal/assets/fonts (ui.py resolves ../assets/fonts from __file__,
+#                 same relative walk as in the source tree; matches build_win.ps1);
+# html         -> _internal/html  (browser client served from the WSS port)
 & $PY -m PyInstaller --noconfirm --name PureVoxNetLite `
     --windowed `
     --icon assets\icons\lite_icon.ico `
@@ -57,7 +58,7 @@ Set-Content _build_version.py "BUILD_DATE = `"$ver`"" -Encoding UTF8
     --hidden-import=zeroconf `
     --exclude-module PIL._avif `
     --add-data "models\v9_fft2048_band256_epoch_261.onnx;models" `
-    --add-data "lite_mic/fonts;fonts" `
+    --add-data "assets\fonts\*.ttf;assets/fonts" `
     --add-data "html;html" `
     --add-data "_build_version.py;." `
     lite_net/main.py

@@ -113,22 +113,20 @@ def _enable_hidpi():
 
 def _load_pixel_font():
     try:
-        # 字体唯一副本在仓库 assets/fonts/（与主程序 uitk、打包脚本共用）
-        font_dir = os.path.normpath(os.path.join(
-            os.path.dirname(__file__), "..", "assets", "fonts"))
+        # 字体唯一副本在仓库 assets/fonts/；定位用主线同一份多根探测
+        # （打包态 _MEIPASS/assets/fonts ← add-data assets/fonts 落点）
+        from uitk.metrics import find_pixel_font_ttf
+        ttf = find_pixel_font_ttf()
+        if not ttf:
+            return
         if sys.platform.startswith("win"):
             import ctypes
-            if not os.path.isdir(font_dir):
-                return
-            for fn in os.listdir(font_dir):
-                if fn.lower().endswith((".ttf", ".otf")):
-                    path = os.path.abspath(os.path.join(font_dir, fn))
-                    ctypes.windll.gdi32.AddFontResourceExW(path, 0x10, 0)
+            ctypes.windll.gdi32.AddFontResourceExW(ttf, 0x10, 0)
             ctypes.windll.user32.SendMessageW(0xFFFF, 0x001D, 0, 0)
-        elif os.path.isdir(font_dir):
+        else:
             # Linux/macOS：fontconfig 用户字体目录注册（无需 root）
             from uitk.metrics import install_fonts_fontconfig
-            install_fonts_fontconfig(font_dir)
+            install_fonts_fontconfig(os.path.dirname(ttf))
     except Exception:
         pass
 
@@ -504,14 +502,13 @@ class LiteUI:
         # 像素 P 窗口图标，仅大写 P 带边缘，无边框背景
         try:
             from PIL import Image, ImageTk, ImageDraw
-            import os as _os2
             _icon = Image.new("RGBA", (64, 64), (0, 0, 0, 0))
             _dr = ImageDraw.Draw(_icon)
             try:
                 from PIL import ImageFont
-                _fp = _os2.path.join(_os2.path.dirname(__file__), "..", "assets", "fonts",
-                                     "ark-pixel-12px-monospaced-zh_cn.ttf")
-                if _os2.path.isfile(_fp):
+                from uitk.metrics import find_pixel_font_ttf as _fpf
+                _fp = _fpf()
+                if _fp:
                     _pf = ImageFont.truetype(_fp, 56)
                     _bbox = _dr.textbbox((0, 0), "P", font=_pf, stroke_width=3)
                     _tw = _bbox[2] - _bbox[0]

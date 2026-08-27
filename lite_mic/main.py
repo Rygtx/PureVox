@@ -285,9 +285,9 @@ def main():
         # 仅像素大写 P，无边框背景，带边缘色
         try:
             from PIL import ImageFont
-            font_path = os.path.join(os.path.dirname(__file__), "..", "assets", "fonts",
-                                     "ark-pixel-12px-monospaced-zh_cn.ttf")
-            if os.path.isfile(font_path):
+            from uitk.metrics import find_pixel_font_ttf
+            font_path = find_pixel_font_ttf()
+            if font_path:
                 pf = ImageFont.truetype(font_path, 56)
                 bbox = d.textbbox((0, 0), "P", font=pf, stroke_width=3)
                 tw = bbox[2] - bbox[0]
