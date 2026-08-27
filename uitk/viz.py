@@ -36,6 +36,7 @@ VU_DB_MIN, VU_DB_MAX = -60.0, 0.0
 VU_DB_RNG = VU_DB_MAX - VU_DB_MIN
 VU_PEAK_HOLD = 10.0
 VU_PEAK_FALL = 20.0     # dB/s
+VU_DB_FALL = 90.0       # 条身慢放 dB/s（快攻慢放，杜绝闪烁感）
 G1_R = (-20.0 - VU_DB_MIN) / VU_DB_RNG    # 绿区上界比例
 G2_R = (-9.0 - VU_DB_MIN) / VU_DB_RNG     # 黄区上界比例
 
@@ -91,14 +92,18 @@ class VUCanvas(tk.Canvas):
         now = time.monotonic()
         dt = now - self._t
         self._t = now
-        self._db = db
+        # 快攻慢放：上升瞬间到位，下降按 dB/s 滑落——电平是"动"不是"闪"
+        if db > self._db:
+            self._db = db
+        else:
+            self._db = max(db, self._db - VU_DB_FALL * dt)
         if self._db > self._peak:
             self._peak = db
             self._peak_time = now
         elif now - self._peak_time > VU_PEAK_HOLD:
             self._peak = max(VU_DB_MIN, self._peak - VU_PEAK_FALL * dt)
-        if abs(db - self._last_painted_db) >= 0.5:
-            self._last_painted_db = db
+        if abs(self._db - self._last_painted_db) >= 0.5:
+            self._last_painted_db = self._db
             self.redraw()
 
     def update_level(self, peak, now=0.0):

@@ -1210,8 +1210,12 @@ class MainWindowTk:
             try:
                 data = proc.take_viz_tap(ordinal_fn()) if proc else []
                 if name == "vu_meter":
-                    w.update_level(max((abs(x) for x in data), default=0.0),
-                                   now)
+                    if data:
+                        # 空抽头 = 本轮无新音频（拉模型突发到达），保持
+                        # 当前电平不归零——归零只属于引擎停止
+                        w.update_level(max(abs(x) for x in data), now)
+                    elif not proc:
+                        w.update_level(0.0, now)
                 elif name == "spectrum" and data:
                     w.update_spectrum(None, data)
             except Exception:
