@@ -363,9 +363,7 @@ class MainWindowTk:
                          fg=theme.TITLE_FG, font=self.fonts["bold"],
                          cursor="hand2")
         btn_x.place(relx=0.5, rely=0.5, anchor="center")
-        btn_x.bind("<Button-1>", lambda e: (
-            self._hide_window() if getattr(self, "tray", None)
-            else self.quit_app()))
+        btn_x.bind("<Button-1>", lambda e: self._close_request())
         btn_x.bind("<Enter>", lambda e: (btn_x.configure(
             bg=theme.STOP_BG, fg="#ffffff"), close_wrap.configure(bg=theme.STOP_BG)))
         btn_x.bind("<Leave>", lambda e: (btn_x.configure(
@@ -495,6 +493,14 @@ class MainWindowTk:
     def _hide_window(self):
         self.root.withdraw()
         self._shown = False
+
+    def _close_request(self):
+        """关窗策略跟随真实托盘状态：图标确实存在才隐藏，否则直接退出。"""
+        tray = getattr(self, "tray", None)
+        if tray and getattr(tray, "alive", False):
+            self._hide_window()
+        else:
+            self.quit_app()
 
     def quit_app(self):
         """完整退出：停引擎 → 删托盘图标 → 关窗口。"""

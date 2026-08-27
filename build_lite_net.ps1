@@ -24,7 +24,7 @@ else { throw "no python found" }
 & $PY --version
 
 # --- Deps (explicit: network stack is required at runtime, not optional) ---
-& $PY -m pip install -q onnxruntime==1.22.0 numpy pillow pystray pyinstaller websockets av cryptography zeroconf qrcode
+& $PY -m pip install -q onnxruntime==1.22.0 numpy pillow pyinstaller websockets av cryptography zeroconf qrcode
 if ($LASTEXITCODE -ne 0) { throw "pip install failed" }
 & $PY -m pip install -q pyaudio
 if ($LASTEXITCODE -ne 0) { Write-Host "WARN: pyaudio install failed" }
@@ -51,7 +51,6 @@ Set-Content _build_version.py "BUILD_DATE = `"$ver`"" -Encoding UTF8
     --collect-all onnxruntime `
     --collect-all numpy `
     --collect-all PIL `
-    --collect-all pystray `
     --collect-all av `
     --hidden-import=pyaudio `
     --hidden-import=websockets `

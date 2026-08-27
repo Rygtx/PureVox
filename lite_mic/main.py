@@ -263,173 +263,127 @@ def main():
 
     ui = LiteUI(cfg, ins, outs, on_gain, on_device, on_autostart, on_close=_do_close, on_minimize=_do_minimize)
 
-    # 系统托盘（右键在系统底部显示，像素图标，含缩放切换与完整功能）
-    tray = None
-    has_tray = False
+    # 统一退出路径：托盘退出与无托盘关窗共用同一份清理逻辑
+    def _shutdown():
+        try:
+            if stream:
+                stream.stop()
+        except Exception:
+            pass
+        try:
+            ui.root.destroy()
+        except Exception:
+            pass
+        os._exit(0)
 
-    # 优先尝试 pystray 系统托盘
+    # 系统托盘：与主线同一原语（零依赖 ctypes Shell_NotifyIcon），创建即校验。
+    # 三原则：NIM_ADD 结果在构造返回前同步可知；explorer 重启经 TaskbarCreated
+    # 事件自动重加；关窗只在图标确实存活时隐藏，否则整体退出——僵尸进程不可能。
+    def _make_icon():
+        img = Image.new("RGBA", (64, 64), (0, 0, 0, 0))
+        d = ImageDraw.Draw(img)
+        # 仅像素大写 P，无边框背景，带边缘色
+        try:
+            from PIL import ImageFont
+            font_path = os.path.join(os.path.dirname(__file__), "..", "assets", "fonts",
+                                     "ark-pixel-12px-monospaced-zh_cn.ttf")
+            if os.path.isfile(font_path):
+                pf = ImageFont.truetype(font_path, 56)
+                bbox = d.textbbox((0, 0), "P", font=pf, stroke_width=3)
+                tw = bbox[2] - bbox[0]
+                th = bbox[3] - bbox[1]
+                x = (64 - tw) // 2
+                y = (64 - th) // 2 - 2
+                d.text((x, y), "P", fill="#6D4C41", font=pf, stroke_width=3, stroke_fill="#FFB74D")
+            else:
+                raise FileNotFoundError
+        except Exception:
+            # 回退：手绘大像素 P，带边缘
+            px, py = 16, 8
+            s = 7
+            pat = [
+                [1,1,1,1],
+                [1,0,0,1],
+                [1,0,0,1],
+                [1,1,1,1],
+                [1,0,0,0],
+                [1,0,0,0],
+                [1,0,0,0],
+            ]
+            # 先画边缘
+            for dr in [(-1,0),(1,0),(0,-1),(0,1),(-1,-1),(1,-1),(-1,1),(1,1)]:
+                for r, row in enumerate(pat):
+                    for c, v in enumerate(row):
+                        if v:
+                            x0 = px + c*s + dr[0]
+                            y0 = py + r*s + dr[1]
+                            d.rectangle([x0, y0, x0+s-1, y0+s-1], fill="#FFB74D")
+            for r, row in enumerate(pat):
+                for c, v in enumerate(row):
+                    if v:
+                        x0 = px + c*s
+                        y0 = py + r*s
+                        d.rectangle([x0, y0, x0+s-1, y0+s-1], fill="#6D4C41")
+        return img
+
+    tray = None
     try:
         from PIL import Image, ImageDraw
-        import pystray
-        has_tray = True
+        import tray as tray_mod
+
+        icon_img = _make_icon()
+
+        # 挡位与 ui.RES_GEARS 输出对齐；「自动」按屏幕分辨率定挡。
+        # 约束：托盘回调在独立线程，Tk 调用必须 after(0) 投递回主线程；
+        # 勾选态在右键弹出菜单那一刻现算，动态跟随当前缩放配置。
+        def _tk(fn):
+            def _run():
+                try:
+                    ui.root.after(0, fn)
+                except Exception:
+                    fn()
+            return _run
+
+        def menu_builder():
+            auto = bool(cfg.get("auto_zoom", True))
+            pct = int(getattr(ui, "_zoom", 100))
+            gears = [{"label": f"{p}%",
+                      "checked": (not auto and p == pct),
+                      "cb": _tk(lambda p=p: ui.set_zoom(p))()}
+                     for p in (85, 95, 100, 110, 125, 145, 175)]
+            return [
+                {"label": "显示主界面", "default": True,
+                 "cb": lambda: _show_window()},
+                None,
+                {"label": "缩放比例",
+                 "sub": [{"label": "自动（按分辨率）",
+                          "checked": auto,
+                          "cb": _tk(ui.set_auto_zoom)()}] + gears},
+                None,
+                {"label": "退出", "cb": _shutdown},
+            ]
+
+        tray = tray_mod.make_tray(
+            icon_img, "PureVoxLiteMicTray", "PureVox Lite — 运行中",
+            lambda: _show_window(), _shutdown, menu_builder)
     except Exception as e:
-        has_tray = False
-        print(f"tray init fail: {e}")
+        print("tray init fail:", e)
+        tray = None
 
-    if has_tray:
-        try:
-            def _make_icon():
-                img = Image.new("RGBA", (64, 64), (0, 0, 0, 0))
-                d = ImageDraw.Draw(img)
-                # 仅像素大写 P，无边框背景，带边缘色
-                try:
-                    from PIL import ImageFont
-                    import os
-                    font_path = os.path.join(os.path.dirname(__file__), "..", "assets", "fonts",
-                                             "ark-pixel-12px-monospaced-zh_cn.ttf")
-                    if os.path.isfile(font_path):
-                        pf = ImageFont.truetype(font_path, 56)
-                        bbox = d.textbbox((0, 0), "P", font=pf, stroke_width=3)
-                        tw = bbox[2] - bbox[0]
-                        th = bbox[3] - bbox[1]
-                        x = (64 - tw) // 2
-                        y = (64 - th) // 2 - 2
-                        d.text((x, y), "P", fill="#6D4C41", font=pf, stroke_width=3, stroke_fill="#FFB74D")
-                    else:
-                        raise FileNotFoundError
-                except Exception:
-                    # 回退：手绘大像素 P，带边缘
-                    px, py = 16, 8
-                    s = 7
-                    pat = [
-                        [1,1,1,1],
-                        [1,0,0,1],
-                        [1,0,0,1],
-                        [1,1,1,1],
-                        [1,0,0,0],
-                        [1,0,0,0],
-                        [1,0,0,0],
-                    ]
-                    # 先画边缘
-                    for dr in [(-1,0),(1,0),(0,-1),(0,1),(-1,-1),(1,-1),(-1,1),(1,1)]:
-                        for r, row in enumerate(pat):
-                            for c, v in enumerate(row):
-                                if v:
-                                    x0 = px + c*s + dr[0]
-                                    y0 = py + r*s + dr[1]
-                                    d.rectangle([x0, y0, x0+s-1, y0+s-1], fill="#FFB74D")
-                    for r, row in enumerate(pat):
-                        for c, v in enumerate(row):
-                            if v:
-                                x0 = px + c*s
-                                y0 = py + r*s
-                                d.rectangle([x0, y0, x0+s-1, y0+s-1], fill="#6D4C41")
-                return img
-            icon_img = _make_icon()
+    # 关窗策略跟随真实托盘状态：有存活图标才隐藏到托盘，否则干净退出
+    def on_close():
+        if tray is not None and tray.alive:
+            _hide_window()
+        else:
+            _shutdown()
 
-            def _show(icon, item):
-                _show_window()
-            def _sound(icon, item):
-                ui._open_sound()
-            def _vb(icon, item):
-                ui._open_vb()
-            def _autostart(icon, item):
-                nv = not bool(cfg.get("autostart", False))
-                on_autostart(nv)
-                try:
-                    ui.autostart_var.set(nv)
-                except Exception:
-                    pass
-            def _exit(icon, item):
-                try:
-                    if icon:
-                        icon.stop()
-                except Exception:
-                    pass
-                try:
-                    if stream:
-                        stream.stop()
-                except Exception:
-                    pass
-                try:
-                    ui.root.destroy()
-                except Exception:
-                    pass
-                os._exit(0)
-
-            # 挡位与 ui.RES_GEARS 输出对齐；「自动」按屏幕分辨率定挡。
-            # 约束1：pystray 回调在独立线程，Tk 调用必须 after(0) 投递回主线程。
-            # 约束2：_assert_action 按 getfullargspec 校验，action 超过 2 个参数即拒收
-            #（默认参数也不行），故用闭包工厂绑定百分比，不用 lambda 默认参数。
-            def _tk(fn):
-                def _run():
-                    try:
-                        ui.root.after(0, fn)
-                    except Exception:
-                        fn()
-                return _run
-
-            def _auto_checked(item):
-                return bool(cfg.get("auto_zoom", True))
-
-            zoom_items = [pystray.MenuItem(
-                "自动（按分辨率）",
-                lambda icon, item: _tk(ui.set_auto_zoom)(),
-                checked=_auto_checked,
-            )]
-
-            def _pct_item(p):
-                def _checked(item):
-                    return (not cfg.get("auto_zoom", True)) and getattr(ui, "_zoom", 100) == p
-                return pystray.MenuItem(
-                    f"{p}%",
-                    lambda icon, item: _tk(lambda: ui.set_zoom(p))(),
-                    checked=_checked,
-                )
-
-            for _p in (85, 95, 100, 110, 125, 145, 175):
-                zoom_items.append(_pct_item(_p))
-            zoom_menu = pystray.Menu(*zoom_items)
-            menu = pystray.Menu(
-                pystray.MenuItem("显示主界面", _show, default=True),
-                pystray.Menu.SEPARATOR,
-                pystray.MenuItem("缩放比例", zoom_menu),
-                pystray.Menu.SEPARATOR,
-                pystray.MenuItem("退出", _exit),
-            )
-            tray = pystray.Icon("PureVox Lite", icon_img, "PureVox Lite — 运行中", menu)
-            import threading as _th
-            _th.Thread(target=tray.run, daemon=True).start()
-
-            def on_close():
-                _hide_window()
-            ui.root.protocol("WM_DELETE_WINDOW", on_close)
-            # 仅当窗口被最小化（iconic）时才隐藏，避免 withdraw 触发误隐藏
-            ui.root.bind("<Unmap>", lambda e: on_close() if ui.root.state() == "iconic" else None)
-        except Exception as e:
-            import traceback
-            print("tray run fail:", e, type(e))
-            traceback.print_exc()
-            has_tray = False
-            tray = None
-
-    if not has_tray:
-        def on_close_exit():
-            try:
-                if stream:
-                    stream.stop()
-            except Exception:
-                pass
-            ui.root.destroy()
-            sys.exit(0)
-        ui.root.protocol("WM_DELETE_WINDOW", on_close_exit)
+    ui.root.protocol("WM_DELETE_WINDOW", on_close)
+    # 仅当窗口被最小化（iconic）时才隐藏，避免 withdraw 触发误隐藏
+    ui.root.bind("<Unmap>", lambda e: on_close() if ui.root.state() == "iconic" else None)
 
     ui.run()
-    try:
-        if tray:
-            tray.stop()
-    except Exception:
-        pass
+    if tray:
+        tray.stop()
 
 if __name__ == "__main__":
     main()

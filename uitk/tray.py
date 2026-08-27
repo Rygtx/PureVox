@@ -18,7 +18,15 @@
 """uitk 托盘图标（仅 Windows）：ctypes Shell_NotifyIcon，零新依赖。
 
 独立消息窗口线程；左键切换主窗显隐，右键菜单（打开/退出）。
-非 Windows 平台 create_tray() 返回 None。
+非 Windows / 图标添加失败时 create_tray() 返回 None。
+
+健壮性三条原则（无看门狗、无定时器、无延迟重试）：
+1. 创建即校验——窗口与 NIM_ADD 在托盘线程完成后经 Event 同步回传布尔结果，
+   构造函数返回前真相已知（异常路径同样置位，不死锁）；
+2. 事件驱动保活——监听系统广播 TaskbarCreated（explorer 重启即收到），
+   收到立刻重新 NIM_ADD，图标自愈；
+3. 策略跟随状态——alive 只反映最近一次添加的真实结果，
+   调用方据此决定「关窗=隐藏」还是「关窗=退出」，僵尸进程结构上不可能。
 """
 
 import threading
@@ -36,14 +44,19 @@ class TrayIcon:
     def __init__(self, ico_path: str, tip: str,
                  on_toggle=None, on_quit=None):
         import ctypes
+        import threading
         self._ctypes = ctypes
         self.on_toggle = on_toggle
         self.on_quit = on_quit
         self._hicon = self._load_icon(ico_path)
         self._tip = tip[:127]
         self._nid = None
+        # alive = 最近一次 NIM_ADD 的真实结果；创建结果在构造返回前同步可得
+        self.alive = False
+        self._ready = threading.Event()
         t = threading.Thread(target=self._run, daemon=True)
         t.start()
+        self._ready.wait()
 
     # ── win32 基础 ──
     def _load_icon(self, path):
@@ -56,6 +69,18 @@ class TrayIcon:
         import ctypes
         from ctypes import wintypes
         user32 = ctypes.windll.user32
+        shell32 = ctypes.windll.shell32
+        try:
+            self._run_inner(user32, shell32, wintypes)
+        except Exception:
+            pass
+        finally:
+            # 异常路径兜底置位，保证构造函数不死锁；
+            # 正常路径的置位在 NIM_ADD 完成处（早于消息循环）
+            self._ready.set()
+
+    def _run_inner(self, user32, shell32, wintypes):
+        import ctypes
         # 显式签名：WPARAM/LPARAM 是指针宽整数，缺省按 int32 处理会溢出
         user32.DefWindowProcW.restype = ctypes.c_longlong
         user32.DefWindowProcW.argtypes = [
@@ -99,12 +124,23 @@ class TrayIcon:
                         ("szInfoTitle", ctypes.c_wchar * 64),
                         ("dwInfoFlags", ctypes.c_uint)]
 
+        # 系统注册广播：explorer（任务栏）重启时所有托盘图标被清空，
+        # 广播此消息通知重加；这是事件驱动自愈的唯一通路，无定时器
+        RegisterWindowMessageW = user32.RegisterWindowMessageW
+        RegisterWindowMessageW.restype = ctypes.c_uint
+        RegisterWindowMessageW.argtypes = [wintypes.LPCWSTR]
+        wm_taskbar = RegisterWindowMessageW("TaskbarCreated")
+
         def wnd_proc(hwnd, msg, wp, lp):
             if msg == WM_APP_TRAY:
                 if lp == WM_LBUTTONUP and self.on_toggle:
                     self.on_toggle()
                 elif lp == WM_RBUTTONUP:
                     self._popup_menu(hwnd)
+                return 0
+            if msg == wm_taskbar:
+                # explorer 重启广播：立刻重加图标（事件驱动自愈，无轮询）
+                self.alive = bool(shell32.Shell_NotifyIconW(0x00, ctypes.byref(nid)))
                 return 0
             if msg == WM_COMMAND:
                 cmd = wp & 0xFFFF
@@ -139,8 +175,11 @@ class TrayIcon:
         nid.hIcon = self._hicon
         nid.szTip = self._tip
         self._nid = nid
-        shell32 = ctypes.windll.shell32
-        shell32.Shell_NotifyIconW(0x00, ctypes.byref(nid))    # NIM_ADD
+        # 创建即校验：结果直接写回 self.alive，构造函数经 Event 同步读取；
+        # 不重试不等待——失败即向上层如实报告（上层据此走无托盘路径）
+        self.alive = bool(shell32.Shell_NotifyIconW(0x00, ctypes.byref(nid)))  # NIM_ADD
+        # 设置完成：真相已定，放行构造函数；本线程转入消息循环长期驻留
+        self._ready.set()
         msg = wintypes.MSG()
         while user32.GetMessageW(ctypes.byref(msg), None, 0, 0) > 0:
             user32.TranslateMessage(ctypes.byref(msg))
@@ -148,6 +187,7 @@ class TrayIcon:
 
     def remove(self):
         """删除托盘图标（退出时调用；线程安全由 Shell 决定，尽力而为）。"""
+        self.alive = False
         try:
             if self._nid is not None:
                 ctypes.windll.shell32.Shell_NotifyIconW(
@@ -172,7 +212,9 @@ class TrayIcon:
 
 
 def create_tray(icon_on: str, icon_off: str, on_toggle=None, on_quit=None):
-    """平台入口：非 Windows 返回 None。图标优先用运行态（on）。"""
+    """平台入口：非 Windows / 图标缺失 / NIM_ADD 失败均返回 None。
+    返回非 None 即图标已在任务栏真实存在（alive=True）；
+    之后存活态经 TaskbarCreated 事件自愈，调用方关闭策略读 .alive。"""
     import os
     import sys
     if not sys.platform.startswith("win"):
@@ -182,6 +224,7 @@ def create_tray(icon_on: str, icon_off: str, on_toggle=None, on_quit=None):
     if not ico:
         return None
     try:
-        return TrayIcon(ico, "PureVox", on_toggle=on_toggle, on_quit=on_quit)
+        obj = TrayIcon(ico, "PureVox", on_toggle=on_toggle, on_quit=on_quit)
     except Exception:
         return None
+    return obj if obj.alive else None

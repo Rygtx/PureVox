@@ -23,8 +23,8 @@ elseif (Get-Command py -ErrorAction SilentlyContinue) { $PY = @("py", "-3") }
 else { throw "no python found" }
 & $PY --version
 
-# --- Deps (explicit: pystray/pyaudio are required at runtime, not optional) ---
-& $PY -m pip install -q onnxruntime==1.22.0 numpy pillow pystray pyinstaller
+# --- Deps (explicit: pillow/pyaudio are required at runtime, not optional) ---
+& $PY -m pip install -q onnxruntime==1.22.0 numpy pillow pyinstaller
 if ($LASTEXITCODE -ne 0) { throw "pip install failed" }
 & $PY -m pip install -q pyaudio
 if ($LASTEXITCODE -ne 0) { Write-Host "WARN: pyaudio install failed" }
@@ -51,7 +51,6 @@ Set-Content _build_version.py "BUILD_DATE = `"$ver`"" -Encoding UTF8
     --collect-all onnxruntime `
     --collect-all numpy `
     --collect-all PIL `
-    --collect-all pystray `
     --hidden-import=pyaudio `
     --exclude-module PIL._avif `
     --add-data "models\v9_fft2048_band256_epoch_261.onnx;models" `
