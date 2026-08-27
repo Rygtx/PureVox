@@ -297,7 +297,7 @@ def main():
     tray = None
     try:
         import tray as tray_mod
-
+        _p = _icon_ico_path()
         # 挡位与 ui.RES_GEARS 输出对齐；「自动」按屏幕分辨率定挡。
         # 约束：托盘回调在独立线程，Tk 调用必须 after(0) 投递回主线程；
         # 勾选态在右键弹出菜单那一刻现算，动态跟随当前缩放配置。
@@ -329,7 +329,7 @@ def main():
             ]
 
         tray = tray_mod.make_tray(
-            _icon_ico_path(), "PureVoxLiteMicTray", "PureVox Lite — 运行中",
+            _p, "PureVoxLiteMicTray", "PureVox Lite — 运行中",
             lambda: _show_window(), _shutdown, menu_builder)
     except Exception as e:
         print("tray init fail:", e)

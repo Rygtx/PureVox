@@ -122,7 +122,9 @@ def _load_pixel_font():
         if sys.platform.startswith("win"):
             import ctypes
             ctypes.windll.gdi32.AddFontResourceExW(ttf, 0x10, 0)
-            ctypes.windll.user32.SendMessageW(0xFFFF, 0x001D, 0, 0)
+            # 异步广播（SendNotifyMessage）：同步 SendMessage 会被某个
+            # 不泵消息的顶层窗口永久挂住，冻结态启动即卡死在字体注册
+            ctypes.windll.user32.SendNotifyMessageW(0xFFFF, 0x001D, 0, 0)
         else:
             # Linux/macOS：fontconfig 用户字体目录注册（无需 root）
             from uitk.metrics import install_fonts_fontconfig
