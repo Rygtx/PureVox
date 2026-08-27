@@ -787,6 +787,8 @@ class AudioThread(threading.Thread):
             self._network_loop()
         elif IS_LINUX and self._use_pw:
             self._pw_loop()
+        elif self._input_id is None:
+            self._media_loop()      # 本地纯媒体：文件即输入（无网络无设备）
         else:
             self._health_check_loop()
 
@@ -931,6 +933,36 @@ class AudioThread(threading.Thread):
             if len(acc) < HOP_LENGTH:
                 time.sleep(0.001)
 
+    # ── 本地纯媒体循环 ──
+
+    def _media_loop(self):
+        """本地纯媒体模式（文件即输入，无设备无网络）：静音帧驱动管线。
+
+        时钟即本循环——每 HOP 处理一帧，处理耗时从 21.33ms 预算中扣除，
+        剩余睡够；媒体节点（音效板/音乐播放器/桌面声音）在各自链位置
+        注入，输出写主/额外输出缓冲。速率由本地文件语义决定，与网络
+        丢帧/抖动/停滞补偿机制无关（那条路属于不确定的实时流）。
+        """
+        acc: List[float] = []
+        next_t = time.perf_counter()
+        hop_s = HOP_LENGTH / SAMPLE_RATE
+        while not self._stop_event.is_set():
+            acc.extend([0.0] * HOP_LENGTH)
+            while len(acc) >= HOP_LENGTH:
+                chunk = acc[:HOP_LENGTH]
+                del acc[:HOP_LENGTH]
+                out = self._process_frame(chunk)
+                self._output_buffer.write(list(out))
+                for buf in self._extra_out_buffers:
+                    buf.write(list(out))
+                self._vu_peak = max(abs(x) for x in out) if out else 0.0
+            next_t += hop_s
+            delay = next_t - time.perf_counter()
+            if delay > 0:
+                time.sleep(delay)
+            else:
+                next_t = time.perf_counter()   # 单帧超时：重置基线，不追帧
+
     # ── Linux 原生 PipeWire 输入/输出循环 ──
 
     def _pw_loop(self):
@@ -952,7 +984,10 @@ class AudioThread(threading.Thread):
                     if self._pw_ports[0]:
                         time.sleep(0.002)
                         continue
-                    data = [0.0] * HOP_LENGTH   # 无设备输入的本地媒体会话：静音驱动
+                    # 无设备输入的本地媒体会话：静音即节拍（实时推进，
+                    # 否则本循环全速竞跑 → 管线时间轴压缩 = 加速声）
+                    time.sleep(HOP_LENGTH / SAMPLE_RATE)
+                    data = [0.0] * HOP_LENGTH
                 acc.extend(data)
 
                 if self._viz_enabled:

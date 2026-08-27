@@ -89,11 +89,12 @@ class _Stream:
         self._iter = None                  # seek 后必须换新迭代器
         self.resampler = self._make_resampler()
 
-    def read_chunk(self, min_samples=1024):
-        """解码攒够约 min_samples；EOF 抛 EOFError；无产出返回 None。
+    def read_chunk(self, min_samples=1024, loop=False):
+        """解码攒够约 min_samples；非循环 EOF 抛 EOFError；无产出返回 None。
 
         AAC 起始包可能不产出帧（priming delay），必须跨包继续，
-        不能把「单包零输出」当文件结束。"""
+        不能把「单包零输出」当文件结束。loop=True 时容器尾→头无缝续读，
+        永不 EOF（微短音频也能持续灌满缓冲）。"""
         total = []
         while sum(len(a) for a in total) < min_samples:
             if self._iter is None:
@@ -108,6 +109,9 @@ class _Stream:
                             total.append(a)
                     break                 # 每次消费一帧，跨调用续读
             except StopIteration:
+                if loop:
+                    self.seek(0.0)        # 头尾相接（容器重开定位）
+                    continue
                 if not got and not total:
                     raise EOFError
                 break                     # 先回吐已攒样本，下次调用再报 EOF
@@ -253,6 +257,10 @@ class MusicPlayerPlugin(Effect):
     def _dec_loop(self):
         stream = None
         while True:
+            # 换文件：旧容器立即释放（位置语义已随 _stop_locked 清零）
+            if stream is not None and stream.path != path:
+                stream.container.close()
+                stream = None
             with self._lock:
                 seek_req = self._seek_req
                 self._seek_req = None
@@ -273,9 +281,8 @@ class MusicPlayerPlugin(Effect):
                         self._r = self._w = self._count = 0
                     continue
                 if not playing or dec_done:
-                    if stream is not None and not playing:
-                        stream.container.close()
-                        stream = None
+                    # 不关容器：暂停/未开播必须保留解码位置，
+                    # 否则 resume/断点续播会被「重开从头」吞掉
                     time.sleep(0.05)
                     continue
                 if stream is None:
@@ -288,16 +295,11 @@ class MusicPlayerPlugin(Effect):
                     time.sleep(0.004)
                     continue
                 try:
-                    chunk = stream.read_chunk(min_samples=_RING_SAFE)
+                    chunk = stream.read_chunk(min_samples=_RING_SAFE,
+                                              loop=loop)
                 except EOFError:
-                    if loop:
-                        stream.seek(0.0)
-                        with self._lock:
-                            self._pos = 0
-                            self._dec_done = False
-                    else:
-                        with self._lock:
-                            self._dec_done = True
+                    with self._lock:
+                        self._dec_done = True
                     continue
                 if chunk is None or not len(chunk):
                     continue
@@ -359,6 +361,11 @@ class MusicPlayerPlugin(Effect):
         buf = np.zeros(n, dtype=np.float32)
         got = self._ring_read(buf)
         self._pos += got
+        with self._lock:
+            if self._loop and self._duration:
+                dur_s = self._dur_samples()
+                if self._pos >= dur_s:
+                    self._pos -= dur_s      # 循环回卷，进度 UI 正确
         if got < n:
             with self._lock:
                 if self._dec_done and not self._loop:
