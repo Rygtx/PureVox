@@ -31,6 +31,9 @@ websockets==17.0.1; sys_platform == "win32"
 av==18.1.0; sys_platform == "win32"
 qrcode==8.2; sys_platform == "win32"
 
+# 音乐播放器解码（mp3/flac/ogg/wav…，自包含 C，跨平台 wheel，无系统依赖）
+miniaudio==1.71
+
 # ── Windows 平台件（打包工具链 + 系统服务绑定），标记限定单平台 ──
 altgraph; sys_platform == "win32"
 pefile; sys_platform == "win32"

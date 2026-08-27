@@ -806,12 +806,23 @@ class MainWindowTk:
         dev.add_command(label="虚拟输出设备",
                         command=lambda: self.add_spec(get_spec("virtual_output")))
         m.add_cascade(label="设备", menu=dev)
-        # 音效板（设备外媒体输入，独立分类）
-        m.add_command(label="音效板（媒体输入）",
-                      command=lambda: self.add_spec(get_spec("soundpad")))
-        # 处理 / 可视化（音效板已独立分类，不在处理清单重复出现）
+        # 媒体输入分类：设备外音源（相互独立的插件节点）
+        media = tk.Menu(m, tearoff=0, bg=theme.BUTTON, fg=theme.TEXT,
+                        activebackground=theme.DARK,
+                        activeforeground=theme.TEXT, bd=0,
+                        font=self.fonts["body"])
+        media.add_command(label="音效板（垫子）",
+                          command=lambda: self.add_spec(get_spec("soundpad")))
+        media.add_command(label="音乐播放器",
+                          command=lambda: self.add_spec(get_spec("music_player")))
+        media.add_command(label="桌面声音输入",
+                          command=lambda: self.add_spec(get_spec("desktop_audio")))
+        m.add_cascade(label="媒体输入", menu=media)
+        # 处理 / 可视化（媒体输入已独立分类，不在处理清单重复出现）
         for kind in ("fx", "viz"):
-            specs = [s for s in all_specs() if s.name != "soundpad"]
+            specs = [s for s in all_specs()
+                     if s.name not in ("soundpad", "music_player",
+                                       "desktop_audio")]
             m.add_cascade(label=KIND_LABELS[kind],
                           menu=self._kind_menu(m, kind, specs))
         m.tk_popup(self.btn_add.winfo_rootx(),
@@ -874,6 +885,12 @@ class MainWindowTk:
         # 音效板行：垫子按钮组（播放/停止/热键勾选/移除 + 添加音效）
         if spec.name == "soundpad":
             self._attach_soundpad(row)
+        # 音乐播放器行：曲目选择 + 播放控制
+        if spec.name == "music_player":
+            self._attach_music_player(row)
+        # 桌面声音输入行：loopback 说明（音量滑杆自动生成）
+        if spec.name == "desktop_audio":
+            self._attach_desktop_audio(row)
         # 虚拟输出设备行：内嵌 VB-CABLE 驱动状态卡（原检测面板内容）
         if spec.name == "virtual_output":
             self._attach_vb_card(row)
@@ -973,6 +990,75 @@ class MainWindowTk:
             hint.pack(side=tk.RIGHT)
 
         render()
+
+    def _attach_desktop_audio(self, row):
+        """桌面声音输入行内说明（音量滑杆自动生成；捕获随引擎启停）。"""
+        hint = tk.Label(row.body_frame,
+                        text="捕获默认输出设备的系统混音（loopback），"
+                             "音量滑杆实时生效；随引擎启停自动开关。",
+                        bg=theme.BASE, fg=theme.TEXT_DIM,
+                        font=self.fonts.get("small"), anchor="w",
+                        justify="left")
+        hint.pack(fill=tk.X, padx=self.sizes["pad_lg"],
+                  pady=self.sizes["pad_sm"])
+
+    def _attach_music_player(self, row):
+        """音乐播放器行内控制：选曲目 + ▶/⏸/■ + 循环勾选。"""
+        S, F = self.sizes, self.fonts
+        holder = tk.Frame(row.body_frame, bg=theme.BASE)
+        holder.pack(fill=tk.X, padx=S["pad_lg"], pady=(0, S["pad_sm"]))
+        name_lbl = tk.Label(holder, text="（未选择曲目）", bg=theme.BASE,
+                            fg=theme.TEXT, anchor="w", font=F.get("body"))
+        name_lbl.pack(fill=tk.X, pady=(0, 2))
+        bar = tk.Frame(holder, bg=theme.BASE)
+        bar.pack(fill=tk.X)
+
+        def _idx():
+            return self.rows.index(row)
+
+        def _set(key, value):
+            self._on_param(row, key, value)
+
+        def refresh_name():
+            path = str((row.cfg.get("params") or {}).get("path", ""))
+            name_lbl.configure(
+                text=(os.path.basename(path) if path else "（未选择曲目）"))
+
+        def _pick():
+            from tkinter import filedialog
+            path = filedialog.askopenfilename(
+                title="选择音乐文件",
+                filetypes=[("音频", "*.mp3 *.flac *.ogg *.wav *.m4a"),
+                           ("全部文件", "*.*")])
+            if not path:
+                return
+            _set("path", path)
+            refresh_name()
+
+        def _btn(parent, text, cb, fg=theme.ACCENT):
+            b = tk.Label(parent, text=text, bg=theme.BASE, fg=fg,
+                         cursor="hand2", font=F.get("bold"))
+            b.pack(side=tk.LEFT, padx=(0, S["pad_sm"]))
+            b.bind("<Button-1>", lambda e: cb())
+            return b
+
+        _btn(bar, "选择曲目", _pick)
+        _btn(bar, "▶", lambda: self.engine.plugin_action(_idx(), "play"))
+        _btn(bar, "⏸", lambda: self.engine.plugin_action(_idx(), "pause"),
+             fg=theme.TEXT)
+        _btn(bar, "■", lambda: self.engine.plugin_action(_idx(), "stop"),
+             fg=theme.TEXT_DIM)
+        lp_var = tk.BooleanVar(value=bool(
+            (row.cfg.get("params") or {}).get("loop", False)))
+        DarkCheck(bar, "循环", lp_var,
+                  command=lambda: _set("loop", bool(lp_var.get())),
+                  sizes=S, fonts=F)
+        hint = tk.Label(holder, text="支持 mp3 / flac / ogg / wav，"
+                        "解码整曲入内存；循环 = 播完自动从头。",
+                        bg=theme.BASE, fg=theme.TEXT_DIM,
+                        font=F.get("small"), anchor="w")
+        hint.pack(fill=tk.X, pady=(2, 0))
+        refresh_name()
 
     def _attach_viz(self, row, name):
         if name == "vu_meter":

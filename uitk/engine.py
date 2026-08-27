@@ -245,6 +245,14 @@ class EngineController:
             except Exception:
                 pass
 
+    def plugin_action(self, index: int, action: str):
+        """按行索引调用插件动作（运行中才生效）。"""
+        if self.processor and self.running:
+            try:
+                self.processor.plugin_action(index, action)
+            except Exception as e:
+                self.log.warn(f"[节点] 动作 {action} 失败: {e}")
+
     def stop(self):
         if self.thread:
             try:

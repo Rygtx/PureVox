@@ -194,9 +194,9 @@ class AudioProcessor:
                 obj = getattr(st, "eff", st)
                 if hasattr(obj, "set_params"):
                     obj.set_params({key: value})
-                # 非滑杆的结构化参数（如音效板 pads 列表）不走 PARAMS 校验
-                if key == "pads" and hasattr(obj, "set_pads"):
-                    obj.set_pads(value)
+                # 非滑杆的结构化参数（pads/path/loop 等）经插件自定义钩子
+                if hasattr(obj, "on_struct_param"):
+                    obj.on_struct_param(key, value)
 
     def _first_soundpad(self):
         for t, st, _p, en in self._entries:
@@ -219,6 +219,16 @@ class AudioProcessor:
         sp = self._first_soundpad()
         if sp is not None:
             sp.stop_all()
+
+    def plugin_action(self, index: int, action: str):
+        """按 UI 行索引调用插件上的无参动作方法（play/pause/stop/…）。"""
+        if 0 <= index < len(self._entries):
+            t, st, _p, en = self._entries[index]
+            if st is not None and st.enabled:
+                obj = getattr(st, "eff", st)
+                fn = getattr(obj, action, None)
+                if callable(fn):
+                    fn()
 
     def set_plugin_enabled(self, index: int, enabled: bool):
         if 0 <= index < len(self._entries):

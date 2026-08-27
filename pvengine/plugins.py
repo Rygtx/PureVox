@@ -40,6 +40,8 @@ from pvengine.components.core_plugins import (
     DenoiserPlugin, EchoCancelPlugin, TsePlugin,
 )
 from pvengine.components.soundpad import SoundPadPlugin
+from pvengine.components.music_player import MusicPlayerPlugin
+from pvengine.components.desktop_audio import DesktopAudioPlugin
 
 
 @dataclass(frozen=True)
@@ -65,12 +67,15 @@ CATALOG: list[type] = [
     Eq61Plugin,
     CompressorPlugin,
     SoundPadPlugin,
+    MusicPlayerPlugin,
+    DesktopAudioPlugin,
 ]
 
 PLUGIN_TYPES: dict[str, type] = {cls.NAME: cls for cls in CATALOG}
 
 # 特殊 UI 钩子：这些类型在行内渲染额外控件（由 ui 层判断类型实现）
-SPECIAL_ROWS = {"eq10", "eq31", "eq61", "tse", "soundpad"}
+SPECIAL_ROWS = {"eq10", "eq31", "eq61", "tse", "soundpad",
+                "music_player", "desktop_audio"}
 
 # ── UI 层级元数据 ──
 # toggle  = 仅开/关（无参数）
@@ -84,6 +89,8 @@ UI_TIERS = {
     "eq61": "expand",          # 展开：EQ 曲线编辑器（61 段）
     "tse": "expand",           # 展开：参考音频录制对话框
     "soundpad": "inline",      # 行内：音效垫子按钮组（+添加/热键勾选）
+    "music_player": "inline",  # 行内：曲目选择与播放控制（▶/⏸/■/循环）
+    "desktop_audio": "inline",  # 行内：loopback 捕获说明（音量滑杆）
 }
 
 # 展开对话框标题（ui 层据此路由到对应编辑器）

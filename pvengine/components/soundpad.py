@@ -130,6 +130,10 @@ class SoundPadPlugin(Effect):
         with self._lock:
             return len(self._pads)
 
+    def on_struct_param(self, key, value):
+        if key == "pads":
+            self.set_pads(value)
+
     def on_params_changed(self):
         self._volume = 10.0 ** (self.params["volume_db"] / 20.0)
 
