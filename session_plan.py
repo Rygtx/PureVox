@@ -25,7 +25,7 @@ UI 启动流程调用 from_chain 得到计划；ok() 为假展示 problems 并�
 from dataclasses import dataclass
 from typing import List, Optional, Tuple
 
-from pvengine.plugins import get_spec
+from pvengine.plugins import get_spec, MEDIA_NODE_TYPES
 
 
 @dataclass(frozen=True)
@@ -91,8 +91,13 @@ class SessionPlan:
 
         if remote_url is not None and not remote_url:
             problems.append("远程推流节点已启用，但地址为空")
-        if remote_url is None and not inputs:
-            problems.append("未启用任何「音频输入」节点")
+        # 媒体源（音效板/音乐播放器/桌面声音）本身即可作为输入：
+        # 无麦克风但有启用中的媒体节点 = 合法的纯媒体会话
+        has_media = any(e["type"] in MEDIA_NODE_TYPES for e in fx)
+        if remote_url is None and not inputs and not has_media:
+            problems.append("未启用任何「音频输入」节点（媒体输入节点亦可）")
+        elif remote_url is None and not inputs and has_media:
+            warnings.append("未选麦克风输入：本次仅媒体源发声")
         if not outputs:
             problems.append("未启用任何「音频输出」节点")
 

@@ -638,25 +638,45 @@ class AudioThread(threading.Thread):
         return callback
 
     def _get_output_callback(self) -> Callable:
-        """网络输出回调：从 output_buffer 读取 → 上混 → 输出"""
+        """输出回调：网络模式从 output_buffer 读取；本地媒体模式（无设备
+        输入，音效板/音乐播放器/桌面声音等链上媒体源）以静音帧驱动管线，
+        媒体节点在自身链位置注入，结果直写主/额外输出。"""
         def callback(in_data: bytes, frame_count: int, time_info, status) -> Tuple[bytes, int]:
             if self._stop_event.is_set():
                 return (None, pyaudio.paComplete)
 
             try:
-                buf = self._output_buffer
-                if buf is None:
-                    return (struct.pack(f'{frame_count * self._out_channels}f',
-                           *([0.0] * frame_count * self._out_channels)), pyaudio.paContinue)
-                mono_data = buf.read(frame_count)
-                if not mono_data:
-                    last = self._last_output_frame
-                    if last is not None and len(last) >= frame_count:
-                        mono_data = list(last[:frame_count])
+                if self._network_source is None:
+                    # ── 本地媒体模式：静音帧驱动管线（媒体节点注入）──
+                    mono = [0.0] * frame_count
+                    self._accum.extend(mono)
+                    out48: List[float] = []
+                    while len(self._accum) >= self._hop_length:
+                        chunk = self._accum[:self._hop_length]
+                        del self._accum[:self._hop_length]
+                        out48.extend(self._process_frame(chunk))
+                    if len(out48) < frame_count:
+                        out48 += [0.0] * (frame_count - len(out48))
                     else:
-                        mono_data = [0.0] * frame_count
+                        out48 = out48[:frame_count]
+                    for buf in self._extra_out_buffers:
+                        buf.write(list(out48))
+                    self._vu_peak = max(abs(x) for x in out48) if out48 else 0.0
+                    mono_data = out48
                 else:
-                    self._last_output_frame = list(mono_data)
+                    buf = self._output_buffer
+                    if buf is None:
+                        return (struct.pack(f'{frame_count * self._out_channels}f',
+                               *([0.0] * frame_count * self._out_channels)), pyaudio.paContinue)
+                    mono_data = buf.read(frame_count)
+                    if not mono_data:
+                        last = self._last_output_frame
+                        if last is not None and len(last) >= frame_count:
+                            mono_data = list(last[:frame_count])
+                        else:
+                            mono_data = [0.0] * frame_count
+                    else:
+                        self._last_output_frame = list(mono_data)
 
                 # 上混为多声道
                 if self._out_channels > 1:
@@ -929,8 +949,10 @@ class AudioThread(threading.Thread):
             while not self._stop_event.is_set():
                 data = bridge.read(HOP_LENGTH)
                 if not data:
-                    time.sleep(0.002)
-                    continue
+                    if self._pw_ports[0]:
+                        time.sleep(0.002)
+                        continue
+                    data = [0.0] * HOP_LENGTH   # 无设备输入的本地媒体会话：静音驱动
                 acc.extend(data)
 
                 if self._viz_enabled:

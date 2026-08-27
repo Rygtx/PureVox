@@ -77,6 +77,9 @@ PLUGIN_TYPES: dict[str, type] = {cls.NAME: cls for cls in CATALOG}
 SPECIAL_ROWS = {"eq10", "eq31", "eq61", "tse", "soundpad",
                 "music_player", "desktop_audio"}
 
+# 媒体源节点：设备外输入（会话计划据此放行「无麦克风输入」的纯媒体会话）
+MEDIA_NODE_TYPES = frozenset({"soundpad", "music_player", "desktop_audio"})
+
 # ── UI 层级元数据 ──
 # toggle  = 仅开/关（无参数）
 # inline  = 行内参数滑杆（默认，按 PARAMS 自动生成）
