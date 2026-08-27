@@ -12,8 +12,8 @@ protobuf
 numpy==2.5.2
 scipy==1.18.0
 onnxruntime==1.29.0
-# PyAudio 仅 Windows/macOS 后端使用（Linux 走 pipewire-pulse 桥，见 audio_processor.py），
-# 放在 requirements-win.txt，避免 Linux 建环境时编译它（缺 portaudio.h 会失败）。
+# PyAudio 仅 Windows 后端使用（Linux 走 pipewire-pulse 桥，见 audio_processor.py）；
+# 环境标记跳过，Linux 建环境不再尝试编译（缺 portaudio.h 会失败）
 cryptography>=41.0.0
 zeroconf==0.150.0
 aiohttp==3.14.3
@@ -24,11 +24,21 @@ zipp
 pulsectl
 
 # ── Lite Net 专用三件套：仅 Windows 发行，Linux 主线用不到 ──
-# websockets = WSS 服务器（asyncio 同款 serve 形态）；av(PyAV) = Opus 解码；
-# qrcode = 连接二维码。环境标记让 Linux 容器解析时跳过，安装清单仍单源，
-# Windows 两条工作流（主线 / Lite）轮子集与缓存键保持完全一致
+# websockets = WSS 服务器；av(PyAV) = Opus 解码；qrcode = 连接二维码。
+# 环境标记让 Linux 解析时自动跳过，Windows 两条工作流（主线 / Lite）
+# 轮子集与缓存键保持完全一致，pip 缓存桶直接互通
 websockets==17.0.1; sys_platform == "win32"
 av==18.1.0; sys_platform == "win32"
 qrcode==8.2; sys_platform == "win32"
 
-# Windows 专属依赖见 requirements-win.txt（pip install -r requirements.txt -r requirements-win.txt）
+# ── Windows 平台件（打包工具链 + 系统服务绑定），标记限定单平台 ──
+altgraph; sys_platform == "win32"
+pefile; sys_platform == "win32"
+pyinstaller==6.22.2; sys_platform == "win32"
+pyinstaller-hooks-contrib==2026.6; sys_platform == "win32"
+pywin32; sys_platform == "win32"
+pywin32-ctypes; sys_platform == "win32"
+PyAudio==0.2.14; sys_platform == "win32"
+
+# 全平台单文件：平台差异一律走环境标记（pip 官方机制），
+# 不再维护独立 requirements-win.txt

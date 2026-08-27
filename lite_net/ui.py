@@ -499,43 +499,20 @@ class LiteUI:
             pass
         self.root.title("PureVox Net Lite")
         self.root.configure(bg=BG)
-        # 像素 P 窗口图标，仅大写 P 带边缘，无边框背景
+        # 窗口图标 = 仓库资产 assets/icons/lite_tray.png（与托盘/打包同源）
         try:
-            from PIL import Image, ImageTk, ImageDraw
-            _icon = Image.new("RGBA", (64, 64), (0, 0, 0, 0))
-            _dr = ImageDraw.Draw(_icon)
-            try:
-                from PIL import ImageFont
-                from uitk.metrics import find_pixel_font_ttf as _fpf
-                _fp = _fpf()
-                if _fp:
-                    _pf = ImageFont.truetype(_fp, 56)
-                    _bbox = _dr.textbbox((0, 0), "P", font=_pf, stroke_width=3)
-                    _tw = _bbox[2] - _bbox[0]
-                    _th = _bbox[3] - _bbox[1]
-                    _dr.text(((64 - _tw)//2, (64 - _th)//2 - 2), "P", fill="#6D4C41", font=_pf, stroke_width=3, stroke_fill="#FFB74D")
-                else:
-                    raise FileNotFoundError
-            except Exception:
-                _px, _py = 16, 8
-                _s = 7
-                _pat = [[1,1,1,1],[1,0,0,1],[1,0,0,1],[1,1,1,1],[1,0,0,0],[1,0,0,0],[1,0,0,0]]
-                for _dr2 in [(-1,0),(1,0),(0,-1),(0,1),(-1,-1),(1,-1),(-1,1),(1,1)]:
-                    for _r, _row in enumerate(_pat):
-                        for _c, _v in enumerate(_row):
-                            if _v:
-                                _x0 = _px + _c*_s + _dr2[0]
-                                _y0 = _py + _r*_s + _dr2[1]
-                                _dr.rectangle([_x0, _y0, _x0+_s-1, _y0+_s-1], fill="#FFB74D")
-                for _r, _row in enumerate(_pat):
-                    for _c, _v in enumerate(_row):
-                        if _v:
-                            _x0 = _px + _c*_s
-                            _y0 = _py + _r*_s
-                            _dr.rectangle([_x0, _y0, _x0+_s-1, _y0+_s-1], fill="#6D4C41")
-            _photo = ImageTk.PhotoImage(_icon)
-            self.root.iconphoto(False, _photo)
-            self._icon_photo = _photo
+            from PIL import Image, ImageTk
+            _meipass = getattr(sys, "_MEIPASS", None)
+            _cands = []
+            if _meipass:
+                _cands.append(os.path.join(_meipass, "assets", "icons", "lite_tray.png"))
+            _cands.append(os.path.normpath(os.path.join(
+                os.path.dirname(__file__), "..", "assets", "icons", "lite_tray.png")))
+            _png = next((c for c in _cands if os.path.isfile(c)), None)
+            if _png:
+                _photo = ImageTk.PhotoImage(Image.open(_png).convert("RGBA"))
+                self.root.iconphoto(False, _photo)
+                self._icon_photo = _photo
         except Exception:
             pass
         self.root.overrideredirect(True)

@@ -131,11 +131,18 @@ class TrayIcon:
         RegisterWindowMessageW.argtypes = [wintypes.LPCWSTR]
         wm_taskbar = RegisterWindowMessageW("TaskbarCreated")
 
+        # 事件识别兼容两代 Shell 约定：经典版 lParam 本体即鼠标事件；
+        # NOTIFYICON_VERSION_4 起 lParam 低 16 位才是事件（高位为坐标），
+        # 另有键盘唤起的 WM_CONTEXTMENU / NIN_SELECT。掩码取低字全覆盖。
+        WM_CONTEXTMENU = 0x007B
+        NIN_SELECT = 0x0400
+
         def wnd_proc(hwnd, msg, wp, lp):
             if msg == WM_APP_TRAY:
-                if lp == WM_LBUTTONUP and self.on_toggle:
+                ev = lp & 0xFFFF
+                if ev in (WM_LBUTTONUP, NIN_SELECT) and self.on_toggle:
                     self.on_toggle()
-                elif lp == WM_RBUTTONUP:
+                elif ev in (WM_RBUTTONUP, WM_CONTEXTMENU):
                     self._popup_menu(hwnd)
                 return 0
             if msg == wm_taskbar:

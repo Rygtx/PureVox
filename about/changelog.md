@@ -1,5 +1,19 @@
 # 更新日志
 
+## 2026-08-27 — Lite 托盘修复：菜单构建即误触发缩放；图标固化为仓库资产
+
+- **修复右键托盘即字体缩放七连闪、选档无效**：菜单构建时回调被多余的一对
+  调用括号立即执行（pystray 迁移遗留），每次弹出菜单就把全部 7 个缩放档位
+  连发投递进主线程，字体因此抖动、最终档位随机；回调现仅在真正点选后执行；
+- **托盘/窗口/exe 图标统一为仓库资产**：`assets/icons/lite_tray.ico`
+  （16~256 全帧梯，像素字体 P 最近邻采样）与 `lite_tray.png`（64px 母版）
+  入库，开发态直接读文件、PyInstaller 随包携带、exe 图标同一文件——
+  运行时不再依赖字体绘制，任意 DPI 下 1:1 渲染零重采样；
+  重设计请手动重跑 `tools/gen_lite_tray_icon.py`；
+- **依赖清单收敛单文件**：requirements-win.txt 并入 requirements.txt
+  （平台差异用 `sys_platform` 环境标记），两条 Windows 工作流轮子集与
+  pip 缓存键完全一致，缓存直接互通。
+
 ## 2026-08-27 — Lite 与主线同套依赖；Windows 构建剔除 PySide6 残留
 
 - **Lite 依赖对齐主线 pin 版本**：onnxruntime 升至 1.29.0、numpy/scipy 与主线

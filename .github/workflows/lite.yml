@@ -48,7 +48,6 @@ jobs:
           cache: pip
           cache-dependency-path: |
             requirements.txt
-            requirements-win.txt
 
       - name: Build Lite Denoiser exe (build_lite_mic.ps1, single recipe local+CI)
         shell: pwsh

@@ -341,54 +341,24 @@ def main():
     # 系统托盘：与主线同一原语（零依赖 ctypes Shell_NotifyIcon），创建即校验。
     # 三原则：NIM_ADD 结果在构造返回前同步可知；explorer 重启经 TaskbarCreated
     # 事件自动重加；关窗只在图标确实存活时隐藏，否则整体退出——僵尸进程不可能。
-    def _make_icon():
-        img = Image.new("RGBA", (64, 64), (0, 0, 0, 0))
-        d = ImageDraw.Draw(img)
-        try:
-            from PIL import ImageFont
-            from uitk.metrics import find_pixel_font_ttf
-            font_path = find_pixel_font_ttf()
-            if font_path:
-                pf = ImageFont.truetype(font_path, 56)
-                bbox = d.textbbox((0, 0), "P", font=pf, stroke_width=3)
-                tw = bbox[2] - bbox[0]
-                th = bbox[3] - bbox[1]
-                d.text(((64 - tw) // 2, (64 - th) // 2 - 2), "P", fill="#6D4C41", font=pf, stroke_width=3, stroke_fill="#FFB74D")
-            else:
-                raise FileNotFoundError
-        except Exception:
-            px, py = 16, 8
-            s = 7
-            pat = [
-                [1,1,1,1],
-                [1,0,0,1],
-                [1,0,0,1],
-                [1,1,1,1],
-                [1,0,0,0],
-                [1,0,0,0],
-                [1,0,0,0],
-            ]
-            for dr in [(-1,0),(1,0),(0,-1),(0,1),(-1,-1),(1,-1),(-1,1),(1,1)]:
-                for r, row in enumerate(pat):
-                    for c, v in enumerate(row):
-                        if v:
-                            x0 = px + c*s + dr[0]
-                            y0 = py + r*s + dr[1]
-                            d.rectangle([x0, y0, x0+s-1, y0+s-1], fill="#FFB74D")
-            for r, row in enumerate(pat):
-                for c, v in enumerate(row):
-                    if v:
-                        x0 = px + c*s
-                        y0 = py + r*s
-                        d.rectangle([x0, y0, x0+s-1, y0+s-1], fill="#6D4C41")
-        return img
+    # 图标 = 仓库资产 assets/icons/lite_tray.ico（开发/冻结/打包同源）。
+    def _icon_ico_path():
+        rel = os.path.join("assets", "icons", "lite_tray.ico")
+        meipass = getattr(sys, "_MEIPASS", None)
+        cands = []
+        if meipass:
+            cands.append(os.path.join(meipass, rel))
+        cands.append(os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))), rel))
+        cands.append(rel)
+        for c in cands:
+            if os.path.isfile(c):
+                return c
+        return cands[-1]
 
     tray = None
     try:
-        from PIL import Image, ImageDraw
         import tray as tray_mod
-
-        icon_img = _make_icon()
 
         # 挡位与 ui.RES_GEARS 输出对齐；「自动」按屏幕分辨率定挡。
         # 约束：托盘回调在独立线程，Tk 调用必须 after(0) 投递回主线程；
@@ -406,7 +376,7 @@ def main():
             pct = int(getattr(ui, "_zoom", 100))
             gears = [{"label": f"{p}%",
                       "checked": (not auto and p == pct),
-                      "cb": _tk(lambda p=p: ui.set_zoom(p))()}
+                      "cb": _tk(lambda p=p: ui.set_zoom(p))}
                      for p in (85, 95, 100, 110, 125, 145, 175)]
             return [
                 {"label": "显示主界面", "default": True,
@@ -415,13 +385,13 @@ def main():
                 {"label": "缩放比例",
                  "sub": [{"label": "自动（按分辨率）",
                           "checked": auto,
-                          "cb": _tk(ui.set_auto_zoom)()}] + gears},
+                          "cb": _tk(ui.set_auto_zoom)}] + gears},
                 None,
                 {"label": "退出", "cb": _shutdown},
             ]
 
         tray = tray_mod.make_tray(
-            icon_img, "PureVoxLiteNetTray", "PureVox Net Lite — 运行中",
+            _icon_ico_path(), "PureVoxLiteNetTray", "PureVox Net Lite — 运行中",
             lambda: _show_window(), _shutdown, menu_builder)
     except Exception as e:
         print("tray init fail:", e)

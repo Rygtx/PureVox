@@ -50,7 +50,8 @@ powershell -ExecutionPolicy Bypass -File bootstrap_python312.ps1   # -> packages
 Alternatively, use a system Python 3.12+:
 
 ```bash
-# On Windows append `-r requirements-win.txt`
+# Platform differences are handled by environment markers in the manifest;
+# a plain install is enough
 pip install -r requirements.txt
 
 python run_tk.py

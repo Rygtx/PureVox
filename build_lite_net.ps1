@@ -23,8 +23,8 @@ elseif (Get-Command py -ErrorAction SilentlyContinue) { $PY = @("py", "-3") }
 else { throw "no python found" }
 & $PY --version
 
-# --- Deps (single source of truth = requirements files; same wheel set as main CI) ---
-& $PY -m pip install -q -r requirements.txt -r requirements-win.txt
+# --- Deps (single source of truth = requirements.txt; platform diff via env markers) ---
+& $PY -m pip install -q -r requirements.txt
 if ($LASTEXITCODE -ne 0) { throw "pip install failed" }
 
 # --- Syntax check + smoke import ---
@@ -33,9 +33,8 @@ if ($LASTEXITCODE -ne 0) { throw "compileall failed" }
 & $PY -c "import lite_net.config, lite_net.audio, lite_net.engine, lite_net.net, lite_net.ui; print('import OK')"
 if ($LASTEXITCODE -ne 0) { throw "smoke import failed" }
 
-# --- Icon: pixel P from bundled font (same as denoiser lite) ---
-& $PY -c "from PIL import Image, ImageDraw, ImageFont; import os; img=Image.new('RGBA',(256,256),(0,0,0,0)); d=ImageDraw.Draw(img); fp=os.path.join('assets','fonts','ark-pixel-12px-monospaced-zh_cn.ttf'); pf=ImageFont.truetype(fp,180) if os.path.isfile(fp) else ImageFont.load_default(); bbox=d.textbbox((0,0),'P',font=pf,stroke_width=8); tw=bbox[2]-bbox[0]; th=bbox[3]-bbox[1]; d.text(((256-tw)//2,(256-th)//2-5),'P',fill='#6D4C41',font=pf,stroke_width=8,stroke_fill='#FFB74D'); img.save('assets/icons/lite_icon.ico', sizes=[(256,256),(128,128),(64,64),(32,32),(16,16)])"
-if (-not (Test-Path "assets\icons\lite_icon.ico")) { throw "icon generation failed" }
+# --- Icon: committed asset (dev/build share the same file) ---
+if (-not (Test-Path "assets\icons\lite_tray.ico")) { throw "assets\icons\lite_tray.ico missing" }
 
 # --- Version stamp module (window title) ---
 Set-Content _build_version.py "BUILD_DATE = `"$ver`"" -Encoding UTF8
@@ -46,7 +45,7 @@ Set-Content _build_version.py "BUILD_DATE = `"$ver`"" -Encoding UTF8
 # html         -> _internal/html  (browser client served from the WSS port)
 & $PY -m PyInstaller --noconfirm --name PureVoxNetLite `
     --windowed `
-    --icon assets\icons\lite_icon.ico `
+    --icon assets\icons\lite_tray.ico `
     --collect-all onnxruntime `
     --collect-all numpy `
     --collect-all PIL `
@@ -57,6 +56,8 @@ Set-Content _build_version.py "BUILD_DATE = `"$ver`"" -Encoding UTF8
     --exclude-module PIL._avif `
     --add-data "models\v9_fft2048_band256_epoch_261.onnx;models" `
     --add-data "assets\fonts\*.ttf;assets/fonts" `
+    --add-data "assets\icons\lite_tray.ico;assets\icons" `
+    --add-data "assets\icons\lite_tray.png;assets\icons" `
     --add-data "html;html" `
     --add-data "_build_version.py;." `
     lite_net/main.py

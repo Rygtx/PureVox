@@ -50,79 +50,15 @@ TPM_RIGHTBUTTON = 0x0002
 TPM_RETURNCMD = 0x0100
 
 
-def build_hicon_from_rgba(img):
-    """PIL RGBA 图 → HICON（预乘 BGRA 像素位图 + 全零掩码，alpha 生效）。"""
+def load_tray_hicon(ico_path):
+    """从 ico 资产加载 HICON：取系统任务栏实际像素宽（SM_CXSMICON，随
+    DPI 变化）的帧——资产内含 16/20/24/32/48/64/128/256 全帧梯，
+    命中即 1:1 渲染，无任何重采样。"""
     user32 = ctypes.windll.user32
-    gdi32 = ctypes.windll.gdi32
-    w, h = img.size
-
-    class BITMAPINFOHEADER(ctypes.Structure):
-        _fields_ = [("biSize", ctypes.c_uint32),
-                    ("biWidth", ctypes.c_long),
-                    ("biHeight", ctypes.c_long),
-                    ("biPlanes", wintypes.WORD),
-                    ("biBitCount", wintypes.WORD),
-                    ("biCompression", ctypes.c_uint32),
-                    ("biSizeImage", ctypes.c_uint32),
-                    ("biXPelsPerMeter", ctypes.c_long),
-                    ("biYPelsPerMeter", ctypes.c_long),
-                    ("biClrUsed", ctypes.c_uint32),
-                    ("biClrImportant", ctypes.c_uint32)]
-
-    class RGBQUAD(ctypes.Structure):
-        _fields_ = [("rgbBlue", ctypes.c_ubyte),
-                    ("rgbGreen", ctypes.c_ubyte),
-                    ("rgbRed", ctypes.c_ubyte),
-                    ("rgbReserved", ctypes.c_ubyte)]
-
-    class BITMAPINFO(ctypes.Structure):
-        _fields_ = [("bmiHeader", BITMAPINFOHEADER),
-                    ("bmiColors", RGBQUAD * 1)]
-
-    src = img.convert("RGBA").tobytes()
-    bgra = bytearray(len(src))
-    n = len(src)
-    i = 0
-    while i < n:
-        r, g, b, a = src[i], src[i + 1], src[i + 2], src[i + 3]
-        bgra[i] = (b * a) // 255
-        bgra[i + 1] = (g * a) // 255
-        bgra[i + 2] = (r * a) // 255
-        bgra[i + 3] = a
-        i += 4
-
-    bi = BITMAPINFOHEADER()
-    bi.biSize = ctypes.sizeof(BITMAPINFOHEADER)
-    bi.biWidth = w
-    bi.biHeight = -h          # 负高 = 自顶向下行序，直接按 PIL 行序拷贝
-    bi.biPlanes = 1
-    bi.biBitCount = 32
-    bi.biCompression = 0      # BI_RGB
-    info = BITMAPINFO()
-    info.bmiHeader = bi
-    ptr = ctypes.c_void_p()
-    hbmp_color = gdi32.CreateDIBSection(
-        None, ctypes.byref(info), 0, ctypes.byref(ptr), None, 0)  # DIB_RGB_COLORS
-    if not hbmp_color or not ptr:
-        return None
-    ctypes.memmove(ptr, bytes(bgra), len(bgra))
-    hbmp_mask = gdi32.CreateBitmap(w, h, 1, 1, None)
-    if not hbmp_mask:
-        gdi32.DeleteObject(hbmp_color)
-        return None
-
-    class ICONINFO(ctypes.Structure):
-        _fields_ = [("fIcon", wintypes.BOOL),
-                    ("xHotspot", ctypes.c_uint32),
-                    ("yHotspot", ctypes.c_uint32),
-                    ("hbmMask", wintypes.HBITMAP),
-                    ("hbmColor", wintypes.HBITMAP)]
-
-    ii = ICONINFO(1, 0, 0, hbmp_mask, hbmp_color)
-    hicon = user32.CreateIconIndirect(ctypes.byref(ii))
-    gdi32.DeleteObject(hbmp_color)
-    gdi32.DeleteObject(hbmp_mask)
-    return hicon
+    sm = user32.GetSystemMetrics(49) or 16     # SM_CXSMICON
+    IMAGE_ICON, LR_LOADFROMFILE = 1, 0x10
+    return user32.LoadImageW(None, ico_path, IMAGE_ICON, sm, sm,
+                             LR_LOADFROMFILE)
 
 
 class NOTIFYICONDATAW(ctypes.Structure):
@@ -145,14 +81,16 @@ class NOTIFYICONDATAW(ctypes.Structure):
 
 
 class LiteTray:
-    def __init__(self, rgba_image, cls_name, tip,
+    def __init__(self, ico_path, cls_name, tip,
                  on_show, on_quit, build_menu):
         self.on_show = on_show
         self.on_quit = on_quit
         self.build_menu = build_menu
         self._tip = tip[:127]
         self._cls = cls_name
-        self._hicon = build_hicon_from_rgba(rgba_image)
+        self._hicon = load_tray_hicon(ico_path)
+        if not self._hicon:
+            raise OSError(f"tray icon load failed: {ico_path}")
         self._nid = None
         self._hwnd = None
         # alive = 最近一次 NIM_ADD 的真实结果；创建结果在构造返回前同步可得
@@ -220,12 +158,24 @@ class LiteTray:
 
         nid = NOTIFYICONDATAW()
 
+        # 事件识别兼容两代 Shell 约定：经典版 lParam 本体即鼠标事件；
+        # NOTIFYICON_VERSION_4 起 lParam 低 16 位才是事件（高位为坐标），
+        # 另有键盘唤起的 WM_CONTEXTMENU / NIN_SELECT。掩码取低字全覆盖。
+        WM_CONTEXTMENU = 0x007B
+        NIN_SELECT = 0x0400
+
+        def _event(lp):
+            return lp & 0xFFFF
+
         def wnd_proc(hwnd, msg, wp, lp):
             if msg == WM_APP_TRAY:
-                if lp == 0x0202 and self.on_show:      # WM_LBUTTONUP
+                ev = _event(lp)
+                if ev in (0x0202, NIN_SELECT) and self.on_show:   # 左键抬起/选中
                     self.on_show()
-                elif lp == 0x0205:                     # WM_RBUTTONUP
+                    return 0
+                if ev in (0x0205, WM_CONTEXTMENU):                # 右键抬起/上下文
                     self._popup_menu(hwnd, user32)
+                    return 0
                 return 0
             if msg == wm_taskbar:
                 # explorer 重启广播：立刻重加图标（事件驱动自愈）
@@ -319,13 +269,16 @@ class LiteTray:
             user32.DestroyMenu(menu)
 
 
-def make_tray(rgba_image, cls_name, tip, on_show, on_quit, build_menu):
-    """入口：Windows 且图标构建成功且 NIM_ADD 成功才返回 LiteTray，否则 None。"""
+def make_tray(ico_path, cls_name, tip, on_show, on_quit, build_menu):
+    """入口：Windows 且图标加载成功且 NIM_ADD 成功才返回 LiteTray，否则 None。"""
+    import os
     import sys
     if not sys.platform.startswith("win"):
         return None
+    if not os.path.isfile(ico_path):
+        return None
     try:
-        obj = LiteTray(rgba_image, cls_name, tip, on_show, on_quit, build_menu)
+        obj = LiteTray(ico_path, cls_name, tip, on_show, on_quit, build_menu)
     except Exception:
         return None
     return obj if obj.alive else None
