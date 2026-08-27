@@ -53,8 +53,8 @@ class DesktopAudioPlugin(Effect):
             if self._capture is not None:
                 return
             try:
-                from pvplatform.audio import SpeakerCapture
-                cap = SpeakerCapture()
+                from pvplatform.audio import create_speaker_capture
+                cap = create_speaker_capture()
                 if cap.start():
                     self._capture = cap
             except Exception:

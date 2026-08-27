@@ -47,6 +47,7 @@ class SpeakerCaptureLinux:
                  sink_name: str = ""):
         self._active = False
         self._bridge = bridge
+        self._own_bridge = bridge is None   # 未给桥 = 自建（随 stop 释放）
         self._sink_name = sink_name or ""
         self._dev_sr = self.AEC_FAR_SR
         self._on_device_changed = on_device_changed
@@ -67,7 +68,9 @@ class SpeakerCaptureLinux:
         if not pw_available():
             _module_log("[AEC] Linux: pvpipe 不可用，无法采集扬声器")
             return False
-        if self._bridge is None or not self._bridge.available:
+        if self._bridge is None:
+            self._bridge = PwBridge()       # 独立会话（桌面声音等无桥场景）
+        if not self._bridge.available:
             _module_log("[AEC] Linux: PipeWire 桥未就绪，AEC far 采集不可用")
             return False
         sink = self._sink_name or speaker_sink_name()
@@ -89,6 +92,12 @@ class SpeakerCaptureLinux:
                 self._bridge.set_far("", False)
             except Exception:
                 pass
+            if self._own_bridge:
+                try:
+                    self._bridge.close()
+                except Exception:
+                    pass
+                self._bridge = None
 
     def read(self, n_samples: int) -> Optional[list]:
         if not self._active or self._bridge is None:

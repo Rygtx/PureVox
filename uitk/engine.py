@@ -73,6 +73,7 @@ class EngineController:
         self.config = config
         self.processor = None
         self.thread = None
+        self._media = None
         self.running = False
 
     def start(self, chain_cfg) -> Optional[str]:
@@ -114,6 +115,22 @@ class EngineController:
                 for perr in proc.plugin_errors:
                     log.warn(f"[插件] {perr}")
             proc.set_plugins([dict(e) for e in chain_cfg])
+
+            # ── 纯媒体会话（无设备输入）：MediaSession 独立播放，
+            # 不启动 AudioThread——播放库（miniaudio PlaybackDevice）拉模型
+            # 直出，设备时钟即节拍；确定性本地播放与不确定实时流（网络）
+            # 互不掺杂 ──
+            if not plan.inputs:
+                from pvplatform.audio.media_session import MediaSession
+                self._media = MediaSession(
+                    lambda n: proc.media_read(n), list(plan.outputs))
+                if not self._media.start():
+                    err = self._media.error or "媒体输出设备打开失败"
+                    self._media = None
+                    return err
+                self.running = True
+                log.msg("[启动] 纯媒体会话（miniaudio 播放设备直出）")
+                return None
 
             pw_ports = ([], [])
             inp = out = None
@@ -263,6 +280,12 @@ class EngineController:
         return {"playing": False, "pos": 0.0, "dur": 0.0}
 
     def stop(self):
+        if self._media is not None:
+            try:
+                self._media.stop()
+            except Exception:
+                pass
+            self._media = None
         if self.thread:
             try:
                 self.thread.stop()

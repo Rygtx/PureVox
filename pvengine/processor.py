@@ -240,6 +240,15 @@ class AudioProcessor:
                     return obj.status()
         return {"playing": False, "pos": 0.0, "dur": 0.0}
 
+    def media_read(self, n: int) -> list:
+        """纯媒体会话的帧源：静音帧过全链（媒体节点在链位置注入）。
+
+        与主线同一条 process_pipeline：viz 位置抽头（VU/频谱）、输出抽头、
+        fx 与录制全部生效——可视化随播放出图，链语义与有麦克风时一致。
+        由 pvplatform MediaSession 的播放库回调生成器调用（设备时钟定节拍）。
+        """
+        return self.process_pipeline([0.0] * n)
+
     def set_plugin_enabled(self, index: int, enabled: bool):
         if 0 <= index < len(self._entries):
             t, st, p, _en = self._entries[index]

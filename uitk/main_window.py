@@ -967,7 +967,7 @@ class MainWindowTk:
                 render()
 
         def _add():
-            from tkinter import filedialog
+            from tkinter import filedialog, messagebox
             path = filedialog.askopenfilename(
                 title="添加音效",
                 filetypes=[("音频/容器", "*.wav *.mp3 *.flac *.ogg *.m4a "
@@ -976,9 +976,16 @@ class MainWindowTk:
                            ("全部文件", "*.*")])
             if not path:
                 return
+            # 格式归一：垫名仍取所选文件，路径自动改为转码后的文件名
+            try:
+                from pvengine.components.audio_decode import ensure_playable
+                real = ensure_playable(path)
+            except Exception as e:
+                messagebox.showwarning("PureVox", f"该文件无法解码：\n{e}")
+                return
             ps = pads()
             ps.append({"name": os.path.splitext(os.path.basename(path))[0],
-                       "path": path, "hotkey": False})
+                       "path": real, "hotkey": False})
             commit()
             render()
 
@@ -1057,7 +1064,7 @@ class MainWindowTk:
                 _save_resume(st.get("pos", 0.0))
 
         def _pick():
-            from tkinter import filedialog
+            from tkinter import filedialog, messagebox
             path = filedialog.askopenfilename(
                 title="选择音乐/媒体文件",
                 filetypes=[("音频/容器", "*.mp3 *.flac *.ogg *.wav *.m4a "
@@ -1065,6 +1072,17 @@ class MainWindowTk:
                                   "*.webm *.mkv"),
                            ("全部文件", "*.*")])
             if not path:
+                return
+            # 格式归一：miniaudio 不支持的容器/编码一次性转码，
+            # 路径自动改为转码后的文件名（<原名>.purevox.wav）
+            name_lbl.configure(text="转码中…")
+            holder.update_idletasks()
+            try:
+                from pvengine.components.audio_decode import ensure_playable
+                path = ensure_playable(path)
+            except Exception as e:
+                refresh_name()
+                messagebox.showwarning("PureVox", f"该文件无法解码：\n{e}")
                 return
             _set("path", path)
             _set("resume_sec", 0.0)

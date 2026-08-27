@@ -25,8 +25,8 @@ pulsectl
 
 # ── 媒体解码/网络组件 ──
 # websockets = Lite Net WSS 服务器（仅 Windows 发行）；
-# av(PyAV) = Lite Net 的 Opus 解码 + 主线媒体节点的长尾格式解码
-# （m4a/aac/opus/wma…，miniaudio 不覆盖的部分），全平台安装；
+# av(PyAV) = 选曲一次性转码（miniaudio 不支持的格式 → .purevox.wav）
+#   + Lite Net 的 Opus 解码，全平台安装；
 # qrcode = 连接二维码（仅 Windows 发行）。
 # 环境标记让 Linux 解析时跳过 Windows 专用项，两条 Windows 工作流
 # （主线 / Lite）轮子集与缓存键保持完全一致，pip 缓存桶直接互通
@@ -34,7 +34,8 @@ websockets==17.0.1; sys_platform == "win32"
 av==18.1.0
 qrcode==8.2; sys_platform == "win32"
 
-# 音乐播放器解码（mp3/flac/ogg/wav…，自包含 C，跨平台 wheel，无系统依赖）
+# 媒体运行时解码/播放唯一实现（音效板/音乐播放器/纯媒体会话）：
+# mp3/flac/ogg/wav，自包含 C，跨平台 wheel，无系统依赖
 miniaudio==1.71
 
 # ── Windows 平台件（打包工具链 + 系统服务绑定），标记限定单平台 ──

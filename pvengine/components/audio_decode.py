@@ -15,104 +15,98 @@
 #
 # SPDX-License-Identifier: GPL-3.0-or-later
 
-"""音频文件解码工具——媒体类插件（音效板/音乐播放器）共用的叶子函数。
+"""音频文件格式工具——媒体类插件（音效板/音乐播放器）共用。
 
-decode_to_mono_48k(path) → float32 单声道 48kHz（-1..1），失败返回 None。
-三段回退链，覆盖 Soundpad 同级格式面（wav/mp3/flac/ogg/m4a/aac/opus/wma…）：
-1. miniaudio：wav/mp3/flac/ogg-vorbis（自包含 C，首选最快）；
-2. PyAV（可选依赖）：长尾容器/编码（m4a/aac/wma/opus/…）；
-3. wave 标准库：16/24/32bit 整数与 8bit 无符号 PCM 兜底。
+运行时解码唯一实现：miniaudio（wav/mp3/flac/ogg-vorbis；自包含 C，
+跨平台 wheel），直接输出 float32 单声道 48kHz。
+
+选文件时刻经 ensure_playable 归一：miniaudio 不支持的容器/编码
+（m4a/mp4/aac/wma/opus…）用 PyAV 一次性转码为 <原名>.purevox.wav
+（48kHz 单声道 16bit WAV），调用方自动改用转码后的路径——
+运行时永远只走 miniaudio，无静默回退。
+
 本模块零状态、零相互依赖，仅函数。
 """
 
+import os
 import wave
 
 import numpy as np
 
 _TARGET_SR = 48000
+_TRANSCODE_TAG = ".purevox.wav"
 
 
-def _resample_48k(x, sr):
-    if sr == _TARGET_SR or len(x) <= 1:
-        return np.ascontiguousarray(x, dtype=np.float32)
-    t = np.linspace(0.0, 1.0, max(1, int(len(x) * _TARGET_SR / sr)))
-    return np.interp(t, np.linspace(0.0, 1.0, len(x)), x).astype(np.float32)
+def decode_to_mono_48k(path):
+    """miniaudio 解码整文件；不支持/失败返回 None。
 
-
-def _to_mono(x, nch):
-    if nch > 1:
-        x = x.reshape(-1, nch).mean(axis=1)
-    return np.ascontiguousarray(x, dtype=np.float32)
-
-
-def _decode_wave(path):
-    with wave.open(path, "rb") as w:
-        sr = w.getframerate()
-        nch = w.getnchannels()
-        width = w.getsampwidth()
-        raw = w.readframes(w.getnframes())
-    if width == 2:
-        x = np.frombuffer(raw, dtype="<i2").astype(np.float32) / 32768.0
-    elif width == 4:
-        x = np.frombuffer(raw, dtype="<i4").astype(np.float32) / 2147483648.0
-    elif width == 1:
-        x = (np.frombuffer(raw, dtype=np.uint8).astype(np.float32) - 128.0) / 128.0
-    elif width == 3:
-        b = np.frombuffer(raw, dtype=np.uint8)
-        if len(b) % 3:
-            b = b[: len(b) // 3 * 3]
-        if not len(b):
-            return None
-        b = b.reshape(-1, 3)
-        v = (b[:, 0].astype(np.int32)
-             | (b[:, 1].astype(np.int32) << 8)
-             | (b[:, 2].astype(np.int32) << 16))
-        v = np.where(v >= 1 << 23, v - (1 << 24), v)
-        x = v.astype(np.float32) / 2147483648.0
-    else:
+    经内存解码（decode）：decode_file 的 char* 路径在 Windows 上按 ANSI
+    fopen，中文/非 ASCII 文件名必挂；先自读字节则全平台一致。
+    """
+    try:
+        import miniaudio
+        with open(path, "rb") as f:
+            data = f.read()
+        dec = miniaudio.decode(
+            data, output_format=miniaudio.SampleFormat.FLOAT32,
+            nchannels=1, sample_rate=_TARGET_SR)
+    except Exception:
         return None
-    return _resample_48k(_to_mono(x, nch), sr)
-
-
-def _decode_miniaudio(path):
-    """miniaudio：输出直接指定 float32/单声道/48k（默认 s16 整数域，
-    幅度是 32767 量级的原始整数，直接用会削波失真）。"""
-    import miniaudio
-    dec = miniaudio.decode_file(
-        path, output_format=miniaudio.SampleFormat.FLOAT32,
-        nchannels=1, sample_rate=_TARGET_SR)
     x = np.asarray(dec.samples, dtype=np.float32)
     if x.ndim > 1:
         x = x.reshape(-1)
     return np.ascontiguousarray(x, dtype=np.float32)
 
 
-def _decode_av(path):
+def _probe_ok(path) -> bool:
+    """miniaudio 能否直接解码（只读文件头，零成本）。"""
+    try:
+        import miniaudio
+        miniaudio.get_file_info(path)
+        return True
+    except Exception:
+        return False
+
+
+def _transcode_wav48k(path) -> str:
+    """PyAV 解码首个音频流 → 48kHz 单声道 16bit WAV（同名 + .purevox.wav）。
+
+    转完临时文件再原子改名；目标已存在且不旧于源文件时直接复用。
+    """
     import av
-    with av.open(path) as c:
-        streams = [s for s in c.streams if s.type == "audio"]
-        if not streams:
-            return None
-        resampler = av.AudioResampler(format="fltp", layout="mono",
-                                      rate=_TARGET_SR)
-        chunks = []
-        for frame in c.decode(streams[0]):
-            for f in (resampler.resample(frame) or []):
-                arr = f.to_ndarray().reshape(-1).astype(np.float32)
-                if len(arr):
-                    chunks.append(arr)
-    if not chunks:
-        return None
-    return np.concatenate(chunks)
-
-
-def decode_to_mono_48k(path):
-    """三段回退解码；全部失败返回 None。"""
-    for fn in (_decode_miniaudio, _decode_av, _decode_wave):
+    root, _ext = os.path.splitext(path)
+    out = root + _TRANSCODE_TAG
+    if (os.path.exists(out)
+            and os.path.getmtime(out) >= os.path.getmtime(path)):
+        return out
+    tmp = out + ".part"
+    try:
+        with av.open(path) as c:
+            streams = [s for s in c.streams if s.type == "audio"]
+            if not streams:
+                raise RuntimeError("文件中没有音频流")
+            res = av.AudioResampler(format="s16", layout="mono",
+                                    rate=_TARGET_SR)
+            with wave.open(tmp, "wb") as w:
+                w.setnchannels(1)
+                w.setsampwidth(2)
+                w.setframerate(_TARGET_SR)
+                for frame in c.decode(streams[0]):
+                    for o in (res.resample(frame) or []):
+                        w.writeframes(
+                            o.to_ndarray().reshape(-1).tobytes())
+        os.replace(tmp, out)
+    except Exception:
         try:
-            x = fn(path)
-        except Exception:
-            x = None
-        if x is not None and len(x):
-            return x
-    return None
+            os.remove(tmp)
+        except OSError:
+            pass
+        raise
+    return out
+
+
+def ensure_playable(path) -> str:
+    """选文件时刻的格式归一：可解码 → 原路径；否则转码并返回新路径。"""
+    if _probe_ok(path):
+        return path
+    return _transcode_wav48k(path)

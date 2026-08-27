@@ -37,6 +37,7 @@ Set-Content _build_version.py "BUILD_DATE = `"$date`"" -Encoding UTF8
     --hidden-import=pyaudio `
     --hidden-import=audio_processor `
     --hidden-import=wav_io `
+    --hidden-import=miniaudio `
     --hidden-import=pvplatform.audio.pwpipe_client `
     --add-data="about;about" `
     --add-data="models\*.onnx;models" `

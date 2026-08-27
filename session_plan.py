@@ -98,7 +98,7 @@ class SessionPlan:
             problems.append("未启用任何「音频输入」节点（媒体输入节点亦可）")
         elif remote_url is None and not inputs and has_media:
             warnings.append("未选麦克风输入：本次仅媒体源发声")
-        if not outputs:
+        if not outputs and not has_media:
             problems.append("未启用任何「音频输出」节点")
 
         return cls(inputs=tuple(inputs), outputs=tuple(outputs),

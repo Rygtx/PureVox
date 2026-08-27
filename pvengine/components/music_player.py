@@ -15,15 +15,17 @@
 #
 # SPDX-License-Identifier: GPL-3.0-or-later
 
-"""音乐播放器插件 v2——流式解码（长视频/长音频不占内存）。
+"""音乐播放器插件——流式解码（长视频/长音频不占内存）。
 
-后台解码线程：PyAV 逐包解码 → 重采样(单声道/48k/float32) → 3 秒
-环形缓冲；音频线程 process() 只从环形缓冲拉取（实时预算内零文件 IO）。
-内存占用恒定（环形缓冲 ~576KB，与文件时长无关）。
+后台解码线程 → 3 秒环形缓冲 → 音频线程逐帧消费；内存占用恒定
+（环形缓冲 ~576KB，与文件时长无关）。
 
-▶/⏸ 单键可变；seek（秒）；循环；**断点续播**：位置经 params.resume_sec
-由 UI 在暂停/拖动/退出等事件触发持久化（粗粒度即可），重建链/重启后
-首次 play 自动从该秒附近继续（容器 seek 对齐关键帧，不追求精确）。
+音源唯一实现：miniaudio 流式生成器（自包含 C，库负责解码/重采样/
+跨包细节，float32/mono/48k 直出；格式面 wav/mp3/flac/ogg）。
+seek = 重开生成器传 seek_frame（C 级 ma_decoder 定位），无任何回退链。
+
+▶/⏸ 单键可变；seek（秒）；循环；断点续播经 params.resume_sec
+由 UI 在暂停/拖动/退出等事件触发持久化，重启后自动续播。
 """
 
 import threading
@@ -40,84 +42,44 @@ _PRIME_N = _TARGET_SR // 4         # 预填充 0.25s（启停/seek 防爆音门�
 
 
 class _Stream:
-    """PyAV 容器会话（仅解码线程触碰）。seek = 容器重开：
-    复用旧解复用器状态在长文件大跨度 seek 时可能挂死/产出坏帧。"""
+    """miniaudio 流式解码会话（唯一音源路径，仅解码线程触碰）。
+
+    stream_file 产出 float32/mono/48k 块；seek = 重开生成器并传
+    seek_frame（C 级 ma_decoder 定位）；duration 取自 get_file_info。
+    """
 
     def __init__(self, path, seek_seconds=None):
-        import av
-        self._av = av
         self.path = path
-        self.container = av.open(path)
-        streams = [s for s in self.container.streams if s.type == "audio"]
-        if not streams:
-            self.container.close()
-            raise ValueError("no audio stream")
-        self.stream = streams[0]
-        self._iter = None
         self.duration = 0.0
         try:
-            if self.container.duration:
-                self.duration = float(self.container.duration) / 1e6
+            import miniaudio
+            self.duration = float(
+                miniaudio.get_file_info(path).duration)
         except Exception:
-            self.duration = 0.0
-        if self.stream.duration and not self.duration:
-            tb = self.stream.time_base or 1 / 48000
-            self.duration = float(self.stream.duration) * float(tb)
-        self.resampler = self._make_resampler()
-        if seek_seconds is not None:
-            self._raw_seek(seek_seconds)
+            pass
+        self._open(max(0.0, float(seek_seconds or 0.0)))
 
-    def _make_resampler(self):
-        return self._av.AudioResampler(format="fltp", layout="mono",
-                                       rate=_TARGET_SR)
+    def _open(self, seconds):
+        import miniaudio
+        self._gen = miniaudio.stream_file(
+            self.path,
+            output_format=miniaudio.SampleFormat.FLOAT32,
+            nchannels=1, sample_rate=_TARGET_SR,
+            frames_to_read=2048,
+            seek_frame=int(seconds * _TARGET_SR))
+
+    def close(self):
+        self._gen = None
+
+    def read_chunk(self):
+        """下一块 float32 mono 48k；EOF 抛 EOFError（loop 由外层 seek(0) 续）。"""
+        try:
+            return np.asarray(next(self._gen), dtype=np.float32).reshape(-1)
+        except StopIteration:
+            raise EOFError
 
     def seek(self, seconds):
-        """重开容器并定位（绝对秒）。"""
-        self.container.close()
-        self.container = self._av.open(self.path)
-        self._raw_seek(seconds)
-
-    def _raw_seek(self, seconds):
-        # 不传 stream：容器级 seek 的 offset 单位 = AV_TIME_BASE（微秒）。
-        # 若传 stream，offset 单位变成该流 time_base，微秒数值会被
-        # 放大数万倍 → seek 被钳到文件头/尾（表现为永远从头/直接 EOF）。
-        target = int(max(0.0, seconds) * 1e6)
-        try:
-            self.container.seek(target, backward=True)
-        except Exception:
-            self.container.seek(0)
-        self._iter = None                  # seek 后必须换新迭代器
-        self.resampler = self._make_resampler()
-
-    def read_chunk(self, min_samples=1024, loop=False):
-        """解码攒够约 min_samples；非循环 EOF 抛 EOFError；无产出返回 None。
-
-        AAC 起始包可能不产出帧（priming delay），必须跨包继续，
-        不能把「单包零输出」当文件结束。loop=True 时容器尾→头无缝续读，
-        永不 EOF（微短音频也能持续灌满缓冲）。"""
-        total = []
-        while sum(len(a) for a in total) < min_samples:
-            if self._iter is None:
-                self._iter = self.container.decode(self.stream)
-            got = False
-            try:
-                for f in self._iter:
-                    got = True
-                    for out in (self.resampler.resample(f) or []):
-                        a = out.to_ndarray().reshape(-1).astype(np.float32)
-                        if len(a):
-                            total.append(a)
-                    break                 # 每次消费一帧，跨调用续读
-            except StopIteration:
-                if loop:
-                    self.seek(0.0)        # 头尾相接（容器重开定位）
-                    continue
-                if not got and not total:
-                    raise EOFError
-                break                     # 先回吐已攒样本，下次调用再报 EOF
-        if total:
-            return np.concatenate(total)
-        return None
+        self._open(max(0.0, float(seconds)))
 
 
 class MusicPlayerPlugin(Effect):
@@ -256,10 +218,11 @@ class MusicPlayerPlugin(Effect):
     # ── 解码线程 ──
     def _dec_loop(self):
         stream = None
+        path = ""
         while True:
-            # 换文件：旧容器立即释放（位置语义已随 _stop_locked 清零）
+            # 换文件：旧音源立即释放（位置语义已随 _stop_locked 清零）
             if stream is not None and stream.path != path:
-                stream.container.close()
+                stream.close()
                 stream = None
             with self._lock:
                 seek_req = self._seek_req
@@ -270,9 +233,9 @@ class MusicPlayerPlugin(Effect):
                 dec_done = self._dec_done
             try:
                 if seek_req is not None:
-                    # seek = 容器重开定位（无陈旧解复用状态，杜绝挂死）
+                    # seek = 音源重开定位（miniaudio 回头 / av 容器重开）
                     if stream is not None:
-                        stream.container.close()
+                        stream.close()
                     stream = _Stream(path, seek_seconds=seek_req)
                     with self._lock:
                         self._duration = max(self._duration, stream.duration)
@@ -281,7 +244,7 @@ class MusicPlayerPlugin(Effect):
                         self._r = self._w = self._count = 0
                     continue
                 if not playing or dec_done:
-                    # 不关容器：暂停/未开播必须保留解码位置，
+                    # 不关音源：暂停/未开播必须保留解码位置，
                     # 否则 resume/断点续播会被「重开从头」吞掉
                     time.sleep(0.05)
                     continue
@@ -295,17 +258,24 @@ class MusicPlayerPlugin(Effect):
                     time.sleep(0.004)
                     continue
                 try:
-                    chunk = stream.read_chunk(min_samples=_RING_SAFE,
-                                              loop=loop)
+                    chunk = stream.read_chunk()
                 except EOFError:
-                    with self._lock:
-                        self._dec_done = True
+                    if loop:
+                        stream.seek(0.0)   # 头尾相接（miniaudio 重开@0）
+                        with self._lock:
+                            self._pos = 0
+                            self._dec_done = False
+                    else:
+                        with self._lock:
+                            self._dec_done = True
                     continue
                 if chunk is None or not len(chunk):
                     continue
                 with self._ring_lock:
                     self._ring_write(chunk)
             except Exception:
+                with self._ring_lock:
+                    self._r = self._w = self._count = 0
                 with self._lock:
                     self._dec_done = True
                 time.sleep(0.05)
