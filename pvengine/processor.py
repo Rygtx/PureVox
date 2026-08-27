@@ -194,6 +194,31 @@ class AudioProcessor:
                 obj = getattr(st, "eff", st)
                 if hasattr(obj, "set_params"):
                     obj.set_params({key: value})
+                # 非滑杆的结构化参数（如音效板 pads 列表）不走 PARAMS 校验
+                if key == "pads" and hasattr(obj, "set_pads"):
+                    obj.set_pads(value)
+
+    def _first_soundpad(self):
+        for t, st, _p, en in self._entries:
+            if t == "soundpad" and st is not None and st.enabled:
+                return getattr(st, "eff", st)
+        return None
+
+    def soundpad_play(self, index: int):
+        """播放音效板第 index 个垫子（无音效板节点时静默）。"""
+        sp = self._first_soundpad()
+        if sp is not None:
+            sp.play(index)
+
+    def soundpad_stop(self, index: int):
+        sp = self._first_soundpad()
+        if sp is not None:
+            sp.stop(index)
+
+    def soundpad_stop_all(self):
+        sp = self._first_soundpad()
+        if sp is not None:
+            sp.stop_all()
 
     def set_plugin_enabled(self, index: int, enabled: bool):
         if 0 <= index < len(self._entries):

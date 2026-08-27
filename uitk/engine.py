@@ -224,6 +224,27 @@ class EngineController:
         except Exception as e:
             self.log.warn(f"[参数] 实时更新失败 ({key}): {e}")
 
+    def soundpad_play(self, index: int):
+        if self.processor and self.running:
+            try:
+                self.processor.soundpad_play(index)
+            except Exception as e:
+                self.log.warn(f"[音效板] 播放失败: {e}")
+
+    def soundpad_stop(self, index: int):
+        if self.processor and self.running:
+            try:
+                self.processor.soundpad_stop(index)
+            except Exception:
+                pass
+
+    def soundpad_stop_all(self):
+        if self.processor and self.running:
+            try:
+                self.processor.soundpad_stop_all()
+            except Exception:
+                pass
+
     def stop(self):
         if self.thread:
             try:
