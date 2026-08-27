@@ -23,4 +23,12 @@ zipp
 # 仅 Linux 运行需要，装了也无害
 pulsectl
 
+# ── Lite Net 专用三件套：仅 Windows 发行，Linux 主线用不到 ──
+# websockets = WSS 服务器（asyncio 同款 serve 形态）；av(PyAV) = Opus 解码；
+# qrcode = 连接二维码。环境标记让 Linux 容器解析时跳过，安装清单仍单源，
+# Windows 两条工作流（主线 / Lite）轮子集与缓存键保持完全一致
+websockets==17.0.1; sys_platform == "win32"
+av==18.1.0; sys_platform == "win32"
+qrcode==8.2; sys_platform == "win32"
+
 # Windows 专属依赖见 requirements-win.txt（pip install -r requirements.txt -r requirements-win.txt）

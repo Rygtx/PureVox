@@ -163,20 +163,6 @@ def open_virtual_cable_panel_win(logger):
         logger.err(f"打开失败: {e}")
 
 
-def system_accent_color_win():
-    """从注册表读取 DWM AccentColor。返回 (r, g, b) 三元组或 None。"""
-    try:
-        import winreg
-        from PySide6.QtGui import QColor
-        key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"SOFTWARE\Microsoft\Windows\DWM")
-        val, _ = winreg.QueryValueEx(key, "AccentColor")
-        winreg.CloseKey(key)
-        # DWM AccentColor is ARGB: 0xAARRGGBB
-        return QColor(val & 0xFF, (val >> 8) & 0xFF, (val >> 16) & 0xFF)
-    except Exception:
-        return None
-
-
 def set_titlebar_theme_win(win_id: int, dark: bool):
     """通过 DWM API 设置 Windows 标题栏深色/浅色（Win10 1809+ / Win11）。"""
     try:

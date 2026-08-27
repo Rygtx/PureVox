@@ -96,7 +96,7 @@ def _app_executable() -> str:
         return sys.executable
     main = os.path.abspath(os.path.join(
         os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
-        "run_pyside6.py"))
+        "run_tk.py"))
     if not os.path.exists(main):
         main = sys.argv[0]
     return f"{sys.executable} {main}"

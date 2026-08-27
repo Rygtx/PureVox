@@ -23,11 +23,9 @@ elseif (Get-Command py -ErrorAction SilentlyContinue) { $PY = @("py", "-3") }
 else { throw "no python found" }
 & $PY --version
 
-# --- Deps (explicit: network stack is required at runtime, not optional) ---
-& $PY -m pip install -q onnxruntime==1.22.0 numpy pillow pyinstaller websockets av cryptography zeroconf qrcode
+# --- Deps (single source of truth = requirements files; same wheel set as main CI) ---
+& $PY -m pip install -q -r requirements.txt -r requirements-win.txt
 if ($LASTEXITCODE -ne 0) { throw "pip install failed" }
-& $PY -m pip install -q pyaudio
-if ($LASTEXITCODE -ne 0) { Write-Host "WARN: pyaudio install failed" }
 
 # --- Syntax check + smoke import ---
 & $PY -m compileall -q lite_net

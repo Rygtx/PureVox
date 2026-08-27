@@ -19,7 +19,7 @@
 系统服务平台抽象层。
 
 把 Windows 专有的系统集成（注册表自启动、防火墙、全局热键、提示音、
-主题 accent、声音面板、提权、单实例、电源事件）收敛为统一接口，
+标题栏主题、声音面板、提权、单实例、电源事件）收敛为统一接口，
 Linux / macOS 提供各自实现，上层 UI 无需平台分支。
 
 接口（按模块级函数暴露，win 与 linux 后端签名一致）：
@@ -46,8 +46,7 @@ Linux / macOS 提供各自实现，上层 UI 无需平台分支。
     虚拟声卡控制面板（Windows VB-CABLE）:
         open_virtual_cable_panel(logger)
 
-    主题 accent:
-        system_accent_color() -> Optional[QColor]
+    主题标题栏:
         set_titlebar_theme(win_id: int, dark: bool)
 
     提权运行命令（Windows UAC；Linux 用 pkexec，可选）:
@@ -61,8 +60,7 @@ Linux / macOS 提供各自实现，上层 UI 无需平台分支。
         等价 VB-CABLE 的 CABLE Input（播放）+ CABLE Output（录音源）。
 
     电源事件:
-        is_windows_power_event 相关常量与解析（仅 Windows 有意义，
-        Linux 上用 Qt 的 applicationStateChanged 代替）
+        is_windows_power_event 相关常量与解析（仅 Windows 有意义）
 """
 
 from .. import IS_WINDOWS, IS_LINUX, IS_MACOS
@@ -134,14 +132,6 @@ def open_virtual_cable_panel(logger):
         open_virtual_cable_panel_win(logger)
     else:
         logger.sys("虚拟声卡仅 Windows 需要（Linux 直接选真实输出设备）")
-
-
-def system_accent_color():
-    """系统主题 accent 色；取不到时返回 None。"""
-    if IS_WINDOWS:
-        from ._win import system_accent_color_win
-        return system_accent_color_win()
-    return None
 
 
 def set_titlebar_theme(win_id: int, dark: bool):
