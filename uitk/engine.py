@@ -117,6 +117,7 @@ class EngineController:
 
             pw_ports = ([], [])
             inp = out = None
+            extra_out = []
             if use_pw:
                 pw_ports = (list(plan.inputs), list(plan.outputs))
                 log.msg(f"[启动] PipeWire 输入x{len(pw_ports[0])} "
@@ -127,13 +128,19 @@ class EngineController:
                     if plan.inputs else None
                 out = get_device_id(plan.outputs[0], False, api_type=api_type) \
                     if plan.outputs else None
+                # 多路输出扇出：首输出走主流，其余设备经 extra 输出流写入
+                extra_out = [get_device_id(n, False, api_type=api_type)
+                             for n in plan.outputs[1:]]
+                extra_out = [e for e in extra_out if e is not None]
+                if extra_out:
+                    log.msg(f"[启动] 多路输出 +{len(extra_out)}")
 
             active = [e.get("type") for e in chain_cfg if e.get("enabled", True)]
             ready_msg = "+".join(active) if active else "空链"
             self.thread = start_audio_stream(
                 inp, out, proc, HOP_LENGTH,
                 api_type=default_api_type(), ready_msg=ready_msg,
-                extra_output_ids=[], pw_ports=pw_ports)
+                extra_output_ids=extra_out, pw_ports=pw_ports)
             if self.thread and not self.thread.wait_ready(timeout=3.0):
                 err = getattr(self.thread, "_start_error", None) or "音频流创建超时"
                 self.stop()
