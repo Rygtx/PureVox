@@ -511,7 +511,20 @@ class MainWindowTk:
             self.quit_app()
 
     def quit_app(self):
-        """完整退出：停引擎 → 删托盘图标 → 关窗口。"""
+        """完整退出：保存播放进度 → 停引擎 → 删托盘图标 → 关窗口。"""
+        try:
+            for r in self.rows:
+                if getattr(r, "spec", None) is None or \
+                        r.spec.name != "music_player":
+                    continue
+                idx = self.rows.index(r)
+                st = self.engine.music_status(idx)
+                if st.get("dur"):
+                    r.cfg.setdefault("params", {})["resume_sec"] = round(
+                        float(st.get("pos", 0.0)), 1)
+            self._persist()
+        except Exception:
+            pass
         try:
             host = getattr(self, "_pad_hotkeys", None)
             if host is not None:
@@ -1006,10 +1019,13 @@ class MainWindowTk:
                   pady=self.sizes["pad_sm"])
 
     def _attach_music_player(self, row):
-        """音乐播放器行内控制：选曲目 + ▶/⏸/■ + 循环勾选。"""
+        """音乐播放器行内控制：选曲目 + 单键 ▶/⏸ + 进度滑块（可拖 seek）
+        + 循环勾选；播放位置经事件（暂停/拖动/退出）触发持久化。"""
         S, F = self.sizes, self.fonts
         holder = tk.Frame(row.body_frame, bg=theme.BASE)
         holder.pack(fill=tk.X, padx=S["pad_lg"], pady=(0, S["pad_sm"]))
+        state = {"dragging": False, "dur": 0.0, "after": None,
+                 "was_playing": False}
         name_lbl = tk.Label(holder, text="（未选择曲目）", bg=theme.BASE,
                             fg=theme.TEXT, anchor="w", font=F.get("body"))
         name_lbl.pack(fill=tk.X, pady=(0, 2))
@@ -1022,15 +1038,28 @@ class MainWindowTk:
         def _set(key, value):
             self._on_param(row, key, value)
 
-        def refresh_name():
-            path = str((row.cfg.get("params") or {}).get("path", ""))
-            name_lbl.configure(
-                text=(os.path.basename(path) if path else "（未选择曲目）"))
+        def _fmt(sec):
+            sec = int(sec or 0)
+            return f"{sec // 60:02d}:{sec % 60:02d}"
+
+        def _save_resume(pos_sec):
+            row.cfg.setdefault("params", {})["resume_sec"] = round(
+                float(pos_sec), 1)
+            self._persist()
+
+        def _toggle():
+            st = self.engine.music_status(_idx())
+            was = bool(st.get("playing"))
+            self.engine.plugin_action(
+                _idx(), "pause" if was else "play")
+            if was:
+                # 暂停事件：触发进度持久化
+                _save_resume(st.get("pos", 0.0))
 
         def _pick():
             from tkinter import filedialog
             path = filedialog.askopenfilename(
-                title="选择音乐文件",
+                title="选择音乐/媒体文件",
                 filetypes=[("音频/容器", "*.mp3 *.flac *.ogg *.wav *.m4a "
                                   "*.mp4 *.aac *.opus *.wma *.mov "
                                   "*.webm *.mkv"),
@@ -1038,33 +1067,94 @@ class MainWindowTk:
             if not path:
                 return
             _set("path", path)
+            _set("resume_sec", 0.0)
+            state["dur"] = 0.0
             refresh_name()
 
-        def _btn(parent, text, cb, fg=theme.ACCENT):
-            b = tk.Label(parent, text=text, bg=theme.BASE, fg=fg,
-                         cursor="hand2", font=F.get("bold"))
-            b.pack(side=tk.LEFT, padx=(0, S["pad_sm"]))
-            b.bind("<Button-1>", lambda e: cb())
-            return b
-
-        _btn(bar, "选择曲目", _pick)
-        _btn(bar, "▶", lambda: self.engine.plugin_action(_idx(), "play"))
-        _btn(bar, "⏸", lambda: self.engine.plugin_action(_idx(), "pause"),
-             fg=theme.TEXT)
-        _btn(bar, "■", lambda: self.engine.plugin_action(_idx(), "stop"),
-             fg=theme.TEXT_DIM)
+        toggle_btn = tk.Label(bar, text="▶", bg=theme.BASE, fg=theme.ACCENT,
+                              cursor="hand2", font=F.get("bold"), width=2)
+        toggle_btn.pack(side=tk.LEFT, padx=(0, S["pad_sm"]))
+        toggle_btn.bind("<Button-1>", lambda e: _toggle())
+        pick_btn = tk.Label(bar, text="选择曲目", bg=theme.BASE,
+                            fg=theme.ACCENT, cursor="hand2",
+                            font=F.get("body"))
+        pick_btn.pack(side=tk.LEFT, padx=(0, S["pad_sm"]))
+        pick_btn.bind("<Button-1>", lambda e: _pick())
         lp_var = tk.BooleanVar(value=bool(
             (row.cfg.get("params") or {}).get("loop", False)))
         DarkCheck(bar, "循环", lp_var,
                   command=lambda: _set("loop", bool(lp_var.get())),
                   sizes=S, fonts=F)
-        hint = tk.Label(holder, text="音频/容器通吃：wav / mp3 / flac / ogg / "
-                        "m4a / mp4 / aac / opus / wma / mov / webm / mkv"
-                        "（取音轨），解码整曲入内存；循环 = 播完自动从头。",
-                        bg=theme.BASE, fg=theme.TEXT_DIM,
-                        font=F.get("small"), anchor="w")
-        hint.pack(fill=tk.X, pady=(2, 0))
+        time_lbl = tk.Label(bar, text="00:00 / 00:00", bg=theme.BASE,
+                            fg=theme.TEXT_DIM, font=F.get("small"))
+        time_lbl.pack(side=tk.RIGHT)
+        # 进度滑块（与进度条一体）：拖动=定位，回显=播放位置
+        from .widgets import HSlider
+        seek_holder = tk.Frame(holder, bg=theme.BASE)
+        seek_holder.pack(fill=tk.X)
+        seek = {"slider": None}
+
+        def _rebuild_slider(dur):
+            for w in seek_holder.winfo_children():
+                w.destroy()
+            s = HSlider(seek_holder, 0, max(1.0, dur), 0.0, 1.0,
+                        sizes=S, width_px=S["win_w"] - S["pad_lg"] * 4)
+            s.pack(fill=tk.X)
+            s.bind("<Button-1>", lambda e: state.update(dragging=True),
+                   add="+")
+            s.bind("<B1-Motion>", lambda e: state.update(dragging=True),
+                   add="+")
+            s.bind("<ButtonRelease-1>", lambda e: (
+                state.update(dragging=False), _seek_to(s.value)), add="+")
+            seek["slider"] = s
+
+        def _seek_to(sec):
+            # seek 带参：走 set_live_param 结构化钩子；进度同源持久化
+            self.engine.set_live_param(_idx(), "seek_sec", float(sec))
+            _save_resume(sec)
+
+        def refresh_name():
+            path = str((row.cfg.get("params") or {}).get("path", ""))
+            name_lbl.configure(
+                text=(os.path.basename(path) if path else "（未选择曲目）"))
+
+        def _tick():
+            try:
+                if not holder.winfo_exists():
+                    return
+            except Exception:
+                return
+            st = self.engine.music_status(_idx())
+            dur = float(st.get("dur") or 0.0)
+            pos = float(st.get("pos") or 0.0)
+            playing = bool(st.get("playing"))
+            if abs(dur - state["dur"]) > 0.5:
+                state["dur"] = dur
+                _rebuild_slider(dur)
+            s = seek["slider"]
+            if s is not None and not state["dragging"] and dur > 0:
+                s.set_value(pos, silent=True)
+            time_lbl.configure(text=f"{_fmt(pos)} / {_fmt(dur)}")
+            toggle_btn.configure(text="⏸" if playing else "▶")
+            # 播放→暂停/播完 的状态沿：触发进度持久化
+            if state["was_playing"] and not playing:
+                _save_resume(pos)
+            state["was_playing"] = playing
+            state["after"] = holder.after(400, _tick)
+
+        def _stop_tick():
+            if state["after"] is not None:
+                try:
+                    holder.after_cancel(state["after"])
+                except Exception:
+                    pass
+
+        # 初始 resume_sec → 首次 play 自动续播（插件侧处理），UI 仅回显
         refresh_name()
+        _rebuild_slider(1.0)
+        state["after"] = holder.after(400, _tick)
+        holder.bind("<Destroy>",
+                    lambda e: _stop_tick() if e.widget is holder else None)
 
     def _attach_viz(self, row, name):
         if name == "vu_meter":

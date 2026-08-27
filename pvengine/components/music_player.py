@@ -15,23 +15,105 @@
 #
 # SPDX-License-Identifier: GPL-3.0-or-later
 
-"""音乐播放器插件——链上注入式长曲播放（与音效板相互独立）。
+"""音乐播放器插件 v2——流式解码（长视频/长音频不占内存）。
 
-放歌进麦克风：选曲目文件（miniaudio 解码 mp3/flac/ogg/wav，PyAV 接管
-m4a/aac/opus/wma 等长尾，WAV 标准库兜底——统一走 audio_decode 工具），
-▶ 播放 / ⏸ 暂停 / ■ 停止 / 循环开关，音量滑杆实时生效。位置语义与音效
-板一致：挂链尾=后级直通随全部输出。
+后台解码线程：PyAV 逐包解码 → 重采样(单声道/48k/float32) → 3 秒
+环形缓冲；音频线程 process() 只从环形缓冲拉取（实时预算内零文件 IO）。
+内存占用恒定（环形缓冲 ~576KB，与文件时长无关）。
 
-解码整曲入内存（一首 4 分钟 48k 单声道 float32 ≈ 45MB，可接受）；
-位置 pos 仅音频线程推进，控制面经锁操作状态位。
+▶/⏸ 单键可变；seek（秒）；循环；**断点续播**：位置经 params.resume_sec
+由 UI 在暂停/拖动/退出等事件触发持久化（粗粒度即可），重建链/重启后
+首次 play 自动从该秒附近继续（容器 seek 对齐关键帧，不追求精确）。
 """
 
 import threading
+import time
 
 import numpy as np
 
-from pvengine.components.audio_decode import decode_to_mono_48k as _decode
 from pvengine.components.effect_base import Effect
+
+_TARGET_SR = 48000
+_RING_N = _TARGET_SR * 3          # 3 秒环形缓冲
+_RING_SAFE = 2048                  # 解码水线（剩余空间低于此即等待）
+_PRIME_N = _TARGET_SR // 4         # 预填充 0.25s（启停/seek 防爆音门）
+
+
+class _Stream:
+    """PyAV 容器会话（仅解码线程触碰）。seek = 容器重开：
+    复用旧解复用器状态在长文件大跨度 seek 时可能挂死/产出坏帧。"""
+
+    def __init__(self, path, seek_seconds=None):
+        import av
+        self._av = av
+        self.path = path
+        self.container = av.open(path)
+        streams = [s for s in self.container.streams if s.type == "audio"]
+        if not streams:
+            self.container.close()
+            raise ValueError("no audio stream")
+        self.stream = streams[0]
+        self._iter = None
+        self.duration = 0.0
+        try:
+            if self.container.duration:
+                self.duration = float(self.container.duration) / 1e6
+        except Exception:
+            self.duration = 0.0
+        if self.stream.duration and not self.duration:
+            tb = self.stream.time_base or 1 / 48000
+            self.duration = float(self.stream.duration) * float(tb)
+        self.resampler = self._make_resampler()
+        if seek_seconds is not None:
+            self._raw_seek(seek_seconds)
+
+    def _make_resampler(self):
+        return self._av.AudioResampler(format="fltp", layout="mono",
+                                       rate=_TARGET_SR)
+
+    def seek(self, seconds):
+        """重开容器并定位（绝对秒）。"""
+        self.container.close()
+        self.container = self._av.open(self.path)
+        self._raw_seek(seconds)
+
+    def _raw_seek(self, seconds):
+        # 不传 stream：容器级 seek 的 offset 单位 = AV_TIME_BASE（微秒）。
+        # 若传 stream，offset 单位变成该流 time_base，微秒数值会被
+        # 放大数万倍 → seek 被钳到文件头/尾（表现为永远从头/直接 EOF）。
+        target = int(max(0.0, seconds) * 1e6)
+        try:
+            self.container.seek(target, backward=True)
+        except Exception:
+            self.container.seek(0)
+        self._iter = None                  # seek 后必须换新迭代器
+        self.resampler = self._make_resampler()
+
+    def read_chunk(self, min_samples=1024):
+        """解码攒够约 min_samples；EOF 抛 EOFError；无产出返回 None。
+
+        AAC 起始包可能不产出帧（priming delay），必须跨包继续，
+        不能把「单包零输出」当文件结束。"""
+        total = []
+        while sum(len(a) for a in total) < min_samples:
+            if self._iter is None:
+                self._iter = self.container.decode(self.stream)
+            got = False
+            try:
+                for f in self._iter:
+                    got = True
+                    for out in (self.resampler.resample(f) or []):
+                        a = out.to_ndarray().reshape(-1).astype(np.float32)
+                        if len(a):
+                            total.append(a)
+                    break                 # 每次消费一帧，跨调用续读
+            except StopIteration:
+                if not got and not total:
+                    raise EOFError
+                break                     # 先回吐已攒样本，下次调用再报 EOF
+        if total:
+            return np.concatenate(total)
+        return None
 
 
 class MusicPlayerPlugin(Effect):
@@ -41,60 +123,112 @@ class MusicPlayerPlugin(Effect):
 
     def __init__(self, params=None, stage_cache=None):
         self._lock = threading.Lock()
-        self._data = None      # np.float32 mono 48k
+        self._ring = np.zeros(_RING_N, dtype=np.float32)
+        # RLock：dec loop 持锁调 _ring_write，其内部再次获取（可重入），
+        # 普通 Lock 会自死锁（解码线程冻结、环形缓冲永空）
+        self._ring_lock = threading.RLock()
+        self._r = self._w = self._count = 0
+        self._pos = 0          # 已消费样本（播放位置，音频线程推进）
+        self._duration = 0.0   # 秒
         self._path = ""
-        self._pos = 0          # 仅音频线程推进
         self._playing = False
         self._paused = False
         self._loop = False
+        self._seek_req = None  # 秒
+        self._dec_done = False
         self._volume = 1.0
+        self._thread = None
         super().__init__(params)
         self.on_struct_param("path", (params or {}).get("path", ""))
+        resume = (params or {}).get("resume_sec", 0.0)
+        if resume:
+            self.on_struct_param("resume_sec", resume)
 
-    # ── 结构化参数（UI/配置，非滑杆键经 processor 钩子到达）──
+    # ── 结构化参数 ──
     def on_struct_param(self, key, value):
         if key == "path":
             path = str(value or "")
             with self._lock:
                 if path != self._path:
                     self._path = path
-                    self._data = None
-                    self._pos = 0
-                    self._playing = False
-                    self._paused = False
+                    self._stop_locked()
+                    self._duration = 0.0
+                    self._seek_req = None
+                    self._dec_done = False
+                    self._ensure_thread()
         elif key == "loop":
             with self._lock:
                 self._loop = bool(value)
+        elif key == "resume_sec":
+            try:
+                sec = max(0.0, float(value))
+            except (TypeError, ValueError):
+                return
+            with self._lock:
+                # 仅在尚未开播时生效（链重建/重启的恢复场景）
+                if not self._playing and sec > 0.0:
+                    self._seek_req = sec
+                    self._pos = int(sec * _TARGET_SR)
+                    self._ensure_thread()
+        elif key == "seek_sec":
+            try:
+                self.seek(float(value))
+            except (TypeError, ValueError):
+                pass
+
+    def _stop_locked(self):
+        self._playing = False
+        self._paused = False
+        self._pos = 0
+        with self._ring_lock:
+            self._r = self._w = self._count = 0
+
+    def _ensure_thread(self):
+        if self._thread is None or not self._thread.is_alive():
+            self._thread = threading.Thread(target=self._dec_loop,
+                                            daemon=True)
+            self._thread.start()
 
     # ── 控制面 ──
     def play(self):
         with self._lock:
             if not self._path:
                 return
-            if self._data is None:
-                self._data = _decode(self._path)
-            if self._data is None or not len(self._data):
-                return
+            self._ensure_thread()
+            if self._duration and self._pos >= self._dur_samples():
+                self._seek_req = 0.0
+                self._pos = 0
             self._playing = True
             self._paused = False
-            if self._pos >= len(self._data):
-                self._pos = 0
+            self._dec_done = False
 
     def pause(self):
         with self._lock:
             if self._playing:
                 self._paused = True
 
-    def resume(self):
+    def toggle(self):
         with self._lock:
-            if self._playing and self._paused:
-                self._paused = False
+            paused = self._paused
+            playing = self._playing
+        if playing and not paused:
+            self.pause()
+        else:
+            self.play()
 
     def stop(self):
         with self._lock:
-            self._playing = False
-            self._paused = False
-            self._pos = 0
+            self._stop_locked()
+            self._seek_req = 0.0
+            self._dec_done = False
+
+    def seek(self, seconds):
+        with self._lock:
+            self._seek_req = float(seconds)
+            self._pos = int(max(0.0, seconds) * _TARGET_SR)
+            self._dec_done = False
+            if self._path:
+                self._ensure_thread()
 
     def set_loop(self, on):
         self.on_struct_param("loop", on)
@@ -103,32 +237,135 @@ class MusicPlayerPlugin(Effect):
         with self._lock:
             return self._playing and not self._paused
 
+    def status(self):
+        with self._lock:
+            return {"playing": self._playing and not self._paused,
+                    "pos": self._pos / _TARGET_SR,
+                    "dur": self._duration}
+
+    def _dur_samples(self):
+        return int(self._duration * _TARGET_SR)
+
     def on_params_changed(self):
         self._volume = 10.0 ** (self.params["volume_db"] / 20.0)
+
+    # ── 解码线程 ──
+    def _dec_loop(self):
+        stream = None
+        while True:
+            with self._lock:
+                seek_req = self._seek_req
+                self._seek_req = None
+                path = self._path
+                playing = self._playing and not self._paused
+                loop = self._loop
+                dec_done = self._dec_done
+            try:
+                if seek_req is not None:
+                    # seek = 容器重开定位（无陈旧解复用状态，杜绝挂死）
+                    if stream is not None:
+                        stream.container.close()
+                    stream = _Stream(path, seek_seconds=seek_req)
+                    with self._lock:
+                        self._duration = max(self._duration, stream.duration)
+                        self._dec_done = False
+                    with self._ring_lock:
+                        self._r = self._w = self._count = 0
+                    continue
+                if not playing or dec_done:
+                    if stream is not None and not playing:
+                        stream.container.close()
+                        stream = None
+                    time.sleep(0.05)
+                    continue
+                if stream is None:
+                    stream = _Stream(path)
+                    with self._lock:
+                        self._duration = max(self._duration, stream.duration)
+                with self._ring_lock:
+                    room = _RING_N - self._count
+                if room < _RING_SAFE:
+                    time.sleep(0.004)
+                    continue
+                try:
+                    chunk = stream.read_chunk(min_samples=_RING_SAFE)
+                except EOFError:
+                    if loop:
+                        stream.seek(0.0)
+                        with self._lock:
+                            self._pos = 0
+                            self._dec_done = False
+                    else:
+                        with self._lock:
+                            self._dec_done = True
+                    continue
+                if chunk is None or not len(chunk):
+                    continue
+                with self._ring_lock:
+                    self._ring_write(chunk)
+            except Exception:
+                with self._lock:
+                    self._dec_done = True
+                time.sleep(0.05)
+
+    def _ring_write(self, chunk):
+        n = len(chunk)
+        if n > _RING_N - self._count:      # 水线兜底：截断防覆写未读数据
+            n = _RING_N - self._count
+            if n <= 0:
+                return
+            chunk = chunk[:n]
+        end = (self._w + n) % _RING_N
+        if end > self._w:
+            self._ring[self._w:end] = chunk
+        elif end < self._w:
+            first = _RING_N - self._w
+            self._ring[self._w:] = chunk[:first]
+            self._ring[:end] = chunk[first:]
+        else:
+            self._ring[self._w:] = chunk[:first]
+        self._w = end
+        with self._ring_lock:
+            self._count += n
+
+    def _ring_read(self, out):
+        need = len(out)
+        got = 0
+        while got < need and self._count > 0:
+            with self._ring_lock:
+                if self._count <= 0:
+                    break
+                n = min(need - got, _RING_N - self._r, self._count)
+                out[got:got + n] = self._ring[self._r:self._r + n]
+                self._r = (self._r + n) % _RING_N
+                self._count -= n
+            got += n
+        return got
 
     # ── 音频面 ──
     def process(self, frame, ctx):
         with self._lock:
-            if not self._playing or self._paused or self._data is None:
+            if not self._playing or self._paused:
                 return frame
-            data, vol, loop = self._data, self._volume, self._loop
+            vol = self._volume
+            with self._ring_lock:
+                primed = self._count >= _PRIME_N or self._dec_done
+        if not primed:
+            # 预填充门：启动/seek/链重建后的空环直灌零帧=爆音瑕疵，
+            # 先让解码线程灌到水线再开始消费（0.25s 内完成，无感）
+            return frame
         out = frame.astype(np.float32, copy=True)
         n = len(out)
-        pos = self._pos
-        take = min(n, len(data) - pos)
-        if take <= 0:
-            if loop and len(data):
-                self._pos = 0
-                take = min(n, len(data))
-                pos = 0
-            else:
-                with self._lock:
+        buf = np.zeros(n, dtype=np.float32)
+        got = self._ring_read(buf)
+        self._pos += got
+        if got < n:
+            with self._lock:
+                if self._dec_done and not self._loop:
                     self._playing = False
-                self._pos = 0
-                return out
-        out[:take] += data[pos:pos + take] * np.float32(vol)
-        self._pos = pos + take
-        np.clip(out, -1.0, 1.0, out=out)
+        if got:
+            out[:got] += buf[:got] * np.float32(vol)
+            np.clip(out, -1.0, 1.0, out=out)
         return out
 
     def reset(self):

@@ -191,6 +191,13 @@ class HSlider(tk.Canvas):
                 except Exception:
                     pass
 
+    def set_value(self, v, silent=False):
+        """编程式设值（进度回显用）；silent=True 不触发 command。"""
+        self.value = min(max(float(v), self.lo), self.hi)
+        self._draw()
+        if not silent and self.command:
+            self.command()
+
     def _on_drag(self, e):
         self._set_from_x(e.x)
 

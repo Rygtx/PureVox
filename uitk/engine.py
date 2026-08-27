@@ -253,6 +253,15 @@ class EngineController:
             except Exception as e:
                 self.log.warn(f"[节点] 动作 {action} 失败: {e}")
 
+    def music_status(self, index: int) -> dict:
+        """音乐播放器状态（未运行返回默认零值）。"""
+        if self.processor and self.running:
+            try:
+                return self.processor.music_status(index)
+            except Exception:
+                pass
+        return {"playing": False, "pos": 0.0, "dur": 0.0}
+
     def stop(self):
         if self.thread:
             try:

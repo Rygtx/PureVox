@@ -230,6 +230,16 @@ class AudioProcessor:
                 if callable(fn):
                     fn()
 
+    def music_status(self, index: int) -> dict:
+        """音乐播放器状态（playing/pos秒/dur秒；非该节点返回默认）。"""
+        if 0 <= index < len(self._entries):
+            t, st, _p, en = self._entries[index]
+            if t == "music_player" and st is not None:
+                obj = getattr(st, "eff", st)
+                if hasattr(obj, "status"):
+                    return obj.status()
+        return {"playing": False, "pos": 0.0, "dur": 0.0}
+
     def set_plugin_enabled(self, index: int, enabled: bool):
         if 0 <= index < len(self._entries):
             t, st, p, _en = self._entries[index]
