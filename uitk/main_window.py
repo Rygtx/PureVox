@@ -900,7 +900,7 @@ class MainWindowTk:
         self.rows.append(row)
 
     def _attach_soundpad(self, row):
-        """音效板行内垫子区：播放/停止/热键勾选/移除 + 添加音效（WAV）。"""
+        """音效板行内垫子区：播放/停止/热键勾选/移除 + 添加音效。"""
         S, F = self.sizes, self.fonts
         holder = tk.Frame(row.body_frame, bg=theme.BASE)
         holder.pack(fill=tk.X, padx=S["pad_lg"], pady=(0, S["pad_sm"]))
@@ -956,8 +956,11 @@ class MainWindowTk:
         def _add():
             from tkinter import filedialog
             path = filedialog.askopenfilename(
-                title="添加音效（WAV）",
-                filetypes=[("WAV 音频", "*.wav"), ("全部文件", "*.*")])
+                title="添加音效",
+                filetypes=[("音频/容器", "*.wav *.mp3 *.flac *.ogg *.m4a "
+                                  "*.mp4 *.aac *.opus *.wma *.mov "
+                                  "*.webm *.mkv"),
+                           ("全部文件", "*.*")])
             if not path:
                 return
             ps = pads()
@@ -973,7 +976,7 @@ class MainWindowTk:
                 pad_row(i, info)
             bar = tk.Frame(holder, bg=theme.BASE)
             bar.pack(fill=tk.X, pady=(2, 0))
-            add = tk.Label(bar, text="＋ 添加音效（WAV）", bg=theme.BASE,
+            add = tk.Label(bar, text="＋ 添加音效", bg=theme.BASE,
                            fg=theme.ACCENT, cursor="hand2",
                            font=F.get("body"))
             add.pack(side=tk.LEFT)
@@ -1028,7 +1031,9 @@ class MainWindowTk:
             from tkinter import filedialog
             path = filedialog.askopenfilename(
                 title="选择音乐文件",
-                filetypes=[("音频", "*.mp3 *.flac *.ogg *.wav *.m4a"),
+                filetypes=[("音频/容器", "*.mp3 *.flac *.ogg *.wav *.m4a "
+                                  "*.mp4 *.aac *.opus *.wma *.mov "
+                                  "*.webm *.mkv"),
                            ("全部文件", "*.*")])
             if not path:
                 return
@@ -1053,8 +1058,9 @@ class MainWindowTk:
         DarkCheck(bar, "循环", lp_var,
                   command=lambda: _set("loop", bool(lp_var.get())),
                   sizes=S, fonts=F)
-        hint = tk.Label(holder, text="支持 mp3 / flac / ogg / wav，"
-                        "解码整曲入内存；循环 = 播完自动从头。",
+        hint = tk.Label(holder, text="音频/容器通吃：wav / mp3 / flac / ogg / "
+                        "m4a / mp4 / aac / opus / wma / mov / webm / mkv"
+                        "（取音轨），解码整曲入内存；循环 = 播完自动从头。",
                         bg=theme.BASE, fg=theme.TEXT_DIM,
                         font=F.get("small"), anchor="w")
         hint.pack(fill=tk.X, pady=(2, 0))

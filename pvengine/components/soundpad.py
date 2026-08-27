@@ -27,49 +27,11 @@ process(frame) 在自身链位置把当前播放中的音效帧与信号相加�
 """
 
 import threading
-import wave
 
 import numpy as np
 
+from pvengine.components.audio_decode import decode_to_mono_48k as _decode
 from pvengine.components.effect_base import Effect
-
-_TARGET_SR = 48000
-
-
-def _load_wav_mono_48k(path):
-    """WAV → float32 单声道 48kHz（-1..1）；失败返回 None。"""
-    try:
-        with wave.open(path, "rb") as w:
-            sr = w.getframerate()
-            nch = w.getnchannels()
-            width = w.getsampwidth()
-            raw = w.readframes(w.getnframes())
-        if width == 2:
-            x = np.frombuffer(raw, dtype="<i2").astype(np.float32) / 32768.0
-        elif width == 4:
-            x = np.frombuffer(raw, dtype="<i4").astype(np.float32) / 2147483648.0
-        elif width == 1:
-            x = (np.frombuffer(raw, dtype=np.uint8).astype(np.float32) - 128.0) / 128.0
-        elif width == 3:
-            b = np.frombuffer(raw, dtype=np.uint8)
-            if len(b) % 3:
-                b = b[: len(b) // 3 * 3]
-            b = b.reshape(-1, 3)
-            v = (b[:, 0].astype(np.int32)
-                 | (b[:, 1].astype(np.int32) << 8)
-                 | (b[:, 2].astype(np.int32) << 16))
-            v = np.where(v >= 1 << 23, v - (1 << 24), v)
-            x = v.astype(np.float32) / 2147483648.0
-        else:
-            return None
-        if nch > 1:
-            x = x.reshape(-1, nch).mean(axis=1)
-        if sr != _TARGET_SR and len(x) > 1:
-            t = np.linspace(0.0, 1.0, max(1, int(len(x) * _TARGET_SR / sr)))
-            x = np.interp(t, np.linspace(0.0, 1.0, len(x)), x).astype(np.float32)
-        return np.ascontiguousarray(x, dtype=np.float32)
-    except Exception:
-        return None
 
 
 class _Voice:
@@ -112,7 +74,7 @@ class SoundPadPlugin(Effect):
                 return
             path = self._pads[index].get("path") or ""
             if path not in self._cache:
-                self._cache[path] = _load_wav_mono_48k(path)
+                self._cache[path] = _decode(path)
             data = self._cache.get(path)
             if data is None or not len(data):
                 return

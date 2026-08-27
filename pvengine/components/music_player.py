@@ -17,66 +17,21 @@
 
 """音乐播放器插件——链上注入式长曲播放（与音效板相互独立）。
 
-放歌进麦克风：选曲目文件（mp3/flac/ogg/wav 等，miniaudio 解码，
-解码失败时 WAV 走标准库兜底），▶ 播放 / ⏸ 暂停 / ■ 停止 / 循环开关，
-音量滑杆实时生效。位置语义与音效板一致：挂链尾=后级直通随全部输出。
+放歌进麦克风：选曲目文件（miniaudio 解码 mp3/flac/ogg/wav，PyAV 接管
+m4a/aac/opus/wma 等长尾，WAV 标准库兜底——统一走 audio_decode 工具），
+▶ 播放 / ⏸ 暂停 / ■ 停止 / 循环开关，音量滑杆实时生效。位置语义与音效
+板一致：挂链尾=后级直通随全部输出。
 
 解码整曲入内存（一首 4 分钟 48k 单声道 float32 ≈ 45MB，可接受）；
 位置 pos 仅音频线程推进，控制面经锁操作状态位。
 """
 
-import io
 import threading
-import wave
 
 import numpy as np
 
+from pvengine.components.audio_decode import decode_to_mono_48k as _decode
 from pvengine.components.effect_base import Effect
-
-_TARGET_SR = 48000
-
-
-def _decode_any(path):
-    """任意音频文件 → float32 单声道 48kHz；失败返回 None。
-
-    优先 miniaudio（mp3/ogg/flac/wav/m4a…）；不可用或解码失败时
-    WAV 以标准库 wave 兜底。
-    """
-    try:
-        import miniaudio
-        dec = miniaudio.decode_file(path)
-        x = np.asarray(dec.samples, dtype=np.float32)
-        if dec.nchannels > 1:
-            x = x.reshape(-1, dec.nchannels).mean(axis=1).astype(np.float32)
-        if dec.sample_rate != _TARGET_SR and len(x) > 1:
-            t = np.linspace(0.0, 1.0, max(1, int(len(x) * _TARGET_SR / dec.sample_rate)))
-            x = np.interp(t, np.linspace(0.0, 1.0, len(x)), x).astype(np.float32)
-        if len(x):
-            return x
-    except Exception:
-        pass
-    try:
-        with wave.open(path, "rb") as w:
-            sr = w.getframerate()
-            nch = w.getnchannels()
-            width = w.getsampwidth()
-            raw = w.readframes(w.getnframes())
-        if width == 2:
-            x = np.frombuffer(raw, dtype="<i2").astype(np.float32) / 32768.0
-        elif width == 4:
-            x = np.frombuffer(raw, dtype="<i4").astype(np.float32) / 2147483648.0
-        elif width == 1:
-            x = (np.frombuffer(raw, dtype=np.uint8).astype(np.float32) - 128.0) / 128.0
-        else:
-            return None
-        if nch > 1:
-            x = x.reshape(-1, nch).mean(axis=1)
-        if sr != _TARGET_SR and len(x) > 1:
-            t = np.linspace(0.0, 1.0, max(1, int(len(x) * _TARGET_SR / sr)))
-            x = np.interp(t, np.linspace(0.0, 1.0, len(x)), x).astype(np.float32)
-        return np.ascontiguousarray(x, dtype=np.float32)
-    except Exception:
-        return None
 
 
 class MusicPlayerPlugin(Effect):
@@ -117,7 +72,7 @@ class MusicPlayerPlugin(Effect):
             if not self._path:
                 return
             if self._data is None:
-                self._data = _decode_any(self._path)
+                self._data = _decode(self._path)
             if self._data is None or not len(self._data):
                 return
             self._playing = True
