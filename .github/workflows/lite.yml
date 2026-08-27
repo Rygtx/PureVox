@@ -35,19 +35,22 @@ jobs:
           "ver=$ver" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
           "BUILD_DATE=$ver" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
-      # pip 缓存有意与主线 ci.yml 的 windows job 共享同一个桶：
-      # cache-dependency-path 与对方完全一致 → hash 相同 → key 相同。
-      # 主线先跑则为 Lite 预热轮子缓存，反之亦然；版本交集部分直接命中
-      # （pyinstaller/pillow/cryptography 等），pin 不同的包才走网络。
-      # 代价是同 key 双写各自落一条（a7f5471 在 Linux 上避免过的形态），
-      # 这里接受它换取跨工作流复用——恢复任一条功能等价。
+      # pip 缓存 restore-only：与主线 ci.yml windows job 同键共享（主线是
+      # 唯一写者，且仅在 main 分支 dispatch 时落盘）；restore-keys 前缀回退
+      # 使依赖变更后仍能部分复用旧桶（版本交集的轮子不重下）。
+      # 不在此工作流写缓存——否则 tag 作用域里每发版堆一份 110MB 重复
       - name: Set up Python 3.12
         uses: actions/setup-python@v7
         with:
           python-version: "3.12"
-          cache: pip
-          cache-dependency-path: |
-            requirements.txt
+
+      - name: Restore pip wheel cache (shared with main CI, restore-only)
+        uses: actions/cache/restore@v6
+        with:
+          path: ~\AppData\Local\pip\Cache
+          key: purevox-windows-pip-v1-${{ hashFiles('requirements.txt') }}
+          restore-keys: |
+            purevox-windows-pip-v1-
 
       - name: Build Lite Denoiser exe (build_lite_mic.ps1, single recipe local+CI)
         shell: pwsh

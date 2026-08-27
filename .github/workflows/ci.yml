@@ -158,9 +158,11 @@ jobs:
           path: dist/PureVox-Linux-x64-*.AppImage
           if-no-files-found: ignore
 
-      # 单一写入点：打包全部结束后落盘（tarball + appimagetool 齐备）
-      - name: Save ~/.cache/purevox cache (single writer)
-        if: matrix.pkg_appimage && !cancelled()
+      # 单一写入点：打包全部结束后落盘（tarball + appimagetool 齐备）；
+      # 且仅 main 分支（手动 dispatch）写——key 锁定组件版本、内容几乎不变，
+      # tag 触发只读，不再每 tag 堆一份 120MB 重复
+      - name: Save ~/.cache/purevox cache (single writer, main-dispatch only)
+        if: matrix.pkg_appimage && !cancelled() && github.ref == 'refs/heads/main'
         uses: actions/cache/save@v6
         with:
           path: ~/.cache/purevox
@@ -187,9 +189,17 @@ jobs:
         uses: actions/setup-python@v7
         with:
           python-version: "3.12"
-          cache: pip
-          cache-dependency-path: |
-            requirements.txt
+      # pip 缓存走显式 restore/save（不用 setup-python 内建 cache）：
+      # 内建版必然把桶写到当前 ref 作用域，tag 触发即每 tag 一份重复；
+      # 单写者模式 = 仅主线 windows job 且在 main 分支（手动 dispatch）时
+      # 落盘，Lite job 只 restore——同一键全仓永远一份
+      - name: Restore pip wheel cache
+        uses: actions/cache/restore@v6
+        with:
+          path: ~\AppData\Local\pip\Cache
+          key: purevox-windows-pip-v1-${{ hashFiles('requirements.txt') }}
+          restore-keys: |
+            purevox-windows-pip-v1-
 
       - name: Install Python deps
         shell: pwsh
@@ -221,6 +231,15 @@ jobs:
           name: PureVox-Windows-x64-${{ steps.ts.outputs.stamp }}-release
           path: dist/PureVox
           if-no-files-found: error
+
+      # pip 缓存单写者：仅 main 分支（手动 dispatch）落盘，tag 触发只读不写，
+      # 避免 tag 作用域里堆同键重复条目（a7f5471 同一教训的 pip 维度）
+      - name: Save pip wheel cache (single writer, main-dispatch only)
+        if: github.ref == 'refs/heads/main' && !cancelled()
+        uses: actions/cache/save@v6
+        with:
+          path: ~\AppData\Local\pip\Cache
+          key: purevox-windows-pip-v1-${{ hashFiles('requirements.txt') }}
 
   android:
     name: Android (debug APK)

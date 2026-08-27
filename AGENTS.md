@@ -151,6 +151,12 @@ cd android
   （key 分别为固定 cpython 版本号与固定版本）；Android opus 源码 zip 同样缓存。
   本地开发 `pack_appimage.sh` 复用 `~/.cache/purevox/appimagetool`，也可用
   `PUREVOX_APPIMAGETOOL` 环境变量指定
+- **CI 缓存单写者 + 作用域门控（2026-08-27）**：GitHub 缓存作用域 = 触发 ref，
+  tag 触发的 save 只进 tag 作用域且未来 tag 永远读不到——纯垃圾副本。故全部
+  缓存统一「显式 restore 共享 + save 仅在 main 分支（手动 dispatch）落盘」：
+  Linux `~/.cache/purevox` 与 Windows pip 轮子桶（`purevox-windows-pip-v1-`
+  前缀 + requirements hash 键）均如此；Lite 工作流纯 restore-only。依赖变更
+  后需在 main 上手动 dispatch 一次 ci.yml 暖桶，之后的 tag 全命中
 - **Linux 的 opus**：opuslib 经 `ctypes.util.find_library('opus')` 加载**系统**
   libopus——deb Depends 带 `libopus0`、rpm Requires 带 `opus`；AppImage 从构建机
   拷贝 `libopus.so*` 进包并经 AppRun 注入 `LD_LIBRARY_PATH`。缺库时
