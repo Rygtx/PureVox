@@ -21,18 +21,14 @@
 产出：
     assets/icons/<name>.png        16px（逻辑像素 @1x）
     assets/icons/<name>@2x.png     32px（高 DPI @2x）
-    assets/icons/audio_icon_on.ico / audio_icon_off.ico
-                                   任务栏/托盘多尺寸 ICO（16~64，逐尺寸渲染）
+    assets/icons/audio_icon.ico        任务栏/托盘/EXE 多尺寸 ICO（16~256）
     assets/icons/audio_icon_base.png   512px 应用基图（Linux 打包用）
 
-应用图标设计：32×32 像素画「P」（外部像素编辑器导出的底稿，内嵌为
-常量 ART32，零素材依赖）——莫兰迪色系同色配色：描边取灰调中深色并
-按运行状态切换（灰绿=运行 / 灰红=停用），字身为描边色向白提浅的同
-色系浅调（外深内浅，低饱和耐看）；落点按包围盒居中后把余量 55% 分
-给左上（视觉中心微偏右下）。缩放全像素风：整数倍尺寸严格 1:1 最近
-邻放大；非整数尺寸按覆盖面积做两级多数投票采样（先决透明/不透明保
-剪影完整，再决描边/字身），只输出调色板原色或全透明——无混色、无
-半透明、无次像素渲染。ICO 含 16~256 多尺寸帧。
+应用图标设计：与 Lite 托盘图标（tools/gen_lite_tray_icon.py）同源——
+ark-pixel 12px 像素字体「P」（224px 字号 + 24px 描边，256px 母版），单一
+绿色配色（深绿字身 + 亮绿描边），不再区分运行/停用双态。母版渲染后裁剪到
+内容边界（±8% 内边距），最大化托盘填充率。512 基图由裁剪后母版整数倍
+最近邻放大；ICO 以 256px 最近邻帧为基底，其余帧由插件降采样。
 
 行内小图标设计原则：单色线条、圆角线帽、中性灰；运行时由
 ui_pyside6.load_icon() 按 @1x/@2x 装载为 QIcon——不依赖 Qt 标准图标。
@@ -41,7 +37,7 @@ ui_pyside6.load_icon() 按 @1x/@2x 装载为 QIcon——不依赖 Qt 标准图�
 
 import os
 
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageFont
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 OUT = os.path.join(ROOT, "assets", "icons")
@@ -121,160 +117,65 @@ def ic_settings():
     return img
 
 
-# ── 应用图标：像素画「P」（内嵌 32×32 像素稿，逐尺寸像素风缩放）──
+# ── 应用图标：像素字体「P」（与 Lite 托盘同源设计，单一绿色，无双态）──
 
-# 底稿：外部像素编辑器导出（'.'透明 / '0'描边格 / '1'字身格），
-# 内嵌常量零素材依赖。
-ART32 = [
-    "................................",
-    "........00000000000.............",
-    ".......00111111111000...........",
-    ".......011111111111100..........",
-    ".......0111111111111100.........",
-    ".......0111100000111110.........",
-    ".......01110.....0011100........",
-    ".......01110......001110........",
-    ".......01110.......01110........",
-    ".......01110......001110........",
-    ".......01110.....0011100........",
-    ".......0111100000111110.........",
-    ".......0111111111111100.........",
-    ".......011111111111100..........",
-    ".......01111111111000...........",
-    ".......011100000000.............",
-    ".......01110....................",
-    ".......01110....................",
-    ".......01110....................",
-    ".......01110....................",
-    ".......01110....................",
-    ".......01110....................",
-    ".......01110....................",
-    ".......01110....................",
-    "........000.....................",
-    "................................",
-    "................................",
-    "................................",
-    "................................",
-    "................................",
-    "................................",
-    "................................",
-]
-
-EMPTY, EDGE, FILL = 0, 1, 2          # 类索引：透明 / 描边 / 字身
-
-# 莫兰迪色系：描边取灰调中深色，字身 = 同色系提浅（向白混合），
-# 外深内浅、低饱和，避免纯白/高饱和大面积刺眼
-EDGE_ON = (74, 142, 96)              # 运行：绿描边（明确偏冷）
-EDGE_OFF = (206, 104, 92)            # 停用：红描边（明确偏暖）
-TINT = 0.15                          # 字身提浅比例（描边色 → 向白混合）
-CENTER_BIAS = 55                     # 居中余量再分配：左上占 55%（千分比
-                                     # 语义为百分比），视觉中心微偏右下
-
-ART_CLASSES = [[FILL if ch == "1" else EDGE if ch == "0" else EMPTY
-                for ch in row] for row in ART32]
+FONT_PATH = os.path.join(ROOT, "assets", "fonts",
+                         "ark-pixel-12px-monospaced-zh_cn.ttf")
+MASTER = 512                    # 母版尺寸（512 基图 + 各帧独立渲染）
+FONT_SIZE = 504
+P_SCALE = 1.4                   # 深色 P 放大倍率
+FILL = (100, 180, 255, 255)      # 字身：亮蓝（反转测试）
+STROKE = (15, 35, 80, 255)      # 描边：深蓝（反转测试）
 
 
-def _tint(rgb):
-    """描边色向白混合出同色系浅调（字身用）。"""
-    return tuple(int(c + (255 - c) * TINT) for c in rgb)
-
-
-def _place(cls):
-    """按内容包围盒整数平移：先几何居中，再把左右/上下余量的 55%
-    分给左上（字形落点微偏右下，修正右上视觉重）。不改任何像素。"""
-    n = len(cls)
-    ys = [y for y in range(n) if any(cls[y])]
-    xs = [x for x in range(n) if any(cls[y][x] for y in range(n))]
-    y0, y1, x0, x1 = min(ys), max(ys), min(xs), max(xs)
-    mv, mh = n - (y1 - y0 + 1), n - (x1 - x0 + 1)
-    my, mx = -((-mv * CENTER_BIAS) // 100), -((-mh * CENTER_BIAS) // 100)
-    out = [[EMPTY] * n for _ in range(n)]
-    for y in range(y0, y1 + 1):
-        for x in range(x0, x1 + 1):
-            out[my + y - y0][mx + x - x0] = cls[y][x]
-    return out
-
-
-ART_CLASSES = _place(ART_CLASSES)
-
-
-def _pixel_scale(cls, w, size):
-    """w×w 类索引网格 → size×size（像素风采样，永不混色）。
-
-    整数倍：严格 1:1 最近邻复制。非整数尺寸：以有理数坐标统计每个
-    目标像素覆盖的源格面积权重，两级多数投票——第一级 不透明
-    （描边+字身）vs 透明，平票偏向不透明（剪影与单像素线优先）；
-    第二级 描边 vs 字身，平票偏向描边（轮廓定义优先）。输出只含
-    调色板原色或全透明。
-    """
-    if size % w == 0:
-        k = size // w
-        return [[cls[y // k][x // k] for x in range(size)]
-                for y in range(size)]
-    d = size                             # 有理数坐标的分母
-    out = [[EMPTY] * size for _ in range(size)]
-    for dy in range(size):
-        ya, yb = dy * w, (dy + 1) * w
-        iy0, iy1 = ya // d, (yb - 1) // d
-        row = out[dy]
-        for dx in range(size):
-            xa, xb = dx * w, (dx + 1) * w
-            ix0, ix1 = xa // d, (xb - 1) // d
-            wt_e = wt_f = 0
-            for sy in range(iy0, iy1 + 1):
-                oy = min(yb, (sy + 1) * d) - max(ya, sy * d)
-                if oy <= 0:
-                    continue
-                crow = cls[sy]
-                for sx in range(ix0, ix1 + 1):
-                    ox = min(xb, (sx + 1) * d) - max(xa, sx * d)
-                    if ox <= 0:
-                        continue
-                    c = crow[sx]
-                    if c == FILL:
-                        wt_f += ox * oy
-                    elif c == EDGE:
-                        wt_e += ox * oy
-            area = (xb - xa) * (yb - ya)
-            if 2 * (wt_e + wt_f) >= area:            # 平票偏向不透明
-                row[dx] = EDGE if wt_e >= wt_f else FILL
-    return out
-
-
-def render_app_icon(size, running=True):
-    """渲染单尺寸应用图标：莫兰迪同色系 P（外深内浅）+ 状态色，透明底。"""
-    edge = EDGE_ON if running else EDGE_OFF
-    cls = _pixel_scale(ART_CLASSES, 32, size)
-    pal = {EDGE: edge + (255,), FILL: _tint(edge) + (255,),
-           EMPTY: (0, 0, 0, 0)}
-    img = Image.new("RGBA", (size, size), (0, 0, 0, 0))
-    px = img.load()
-    for y in range(size):
-        crow = cls[y]
-        for x in range(size):
-            px[x, y] = pal[crow[x]]
-    return img
+def _render_frame(size):
+    """亮色 P 扩散做背景，深色 P 填满画布。"""
+    fs = max(8, int(size * FONT_SIZE / MASTER))
+    pf = ImageFont.truetype(FONT_PATH, fs)
+    # 1. 画 P，测实际像素范围，缩放填满 85% 画布
+    tmp = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+    td = ImageDraw.Draw(tmp)
+    td.text((0, 0), "P", fill=(255, 255, 255, 255), font=pf)
+    cb = tmp.getbbox()
+    if not cb:
+        return tmp
+    pw, ph = cb[2] - cb[0], cb[3] - cb[1]
+    need = size * 0.85
+    if pw < need or ph < need:
+        s = need / max(pw, ph)
+        fs = max(8, int(fs * s))
+        pf = ImageFont.truetype(FONT_PATH, fs)
+        tmp = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+        td = ImageDraw.Draw(tmp)
+        td.text((0, 0), "P", fill=(255, 255, 255, 255), font=pf)
+        cb = tmp.getbbox()
+        pw, ph = cb[2] - cb[0], cb[3] - cb[1]
+    # 2. 以实际像素居中
+    ox = (size - pw) // 2 - cb[0]
+    oy = (size - ph) // 2 - cb[1]
+    # 3. 扩散量按比例
+    spread = max(1, int(size * 0.06))
+    result = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+    rd = ImageDraw.Draw(result)
+    for dx in range(-spread, spread + 1):
+        for dy in range(-spread, spread + 1):
+            rd.text((ox + dx, oy + dy), "P", fill=STROKE, font=pf)
+    # 4. 深色 P 原位
+    rd.text((ox, oy), "P", fill=FILL, font=pf)
+    return result
 
 
 def gen_app_icons():
-    sizes = [16, 20, 24, 32, 48, 64, 128, 256]
-    frames_on = {s: render_app_icon(s, True) for s in sizes}
-    frames_off = {s: render_app_icon(s, False) for s in sizes}
-    # 基底必须取最大帧：ICO 插件会跳过大于基底的尺寸，否则只剩 16px 一帧
-    big = max(sizes)
-    frames_on[big].save(
-        os.path.join(OUT, "audio_icon_on.ico"),
-        append_images=[frames_on[s] for s in reversed(sizes) if s != big],
-        sizes=[(s, s) for s in sizes])
-    frames_off[big].save(
-        os.path.join(OUT, "audio_icon_off.ico"),
-        append_images=[frames_off[s] for s in reversed(sizes) if s != big],
-        sizes=[(s, s) for s in sizes])
-    print("[app-icon] audio_icon_on.ico / audio_icon_off.ico")
-
-    base = render_app_icon(BASE_SIZE := 512, True)
-    base.save(os.path.join(OUT, "audio_icon_base.png"))
-    print(f"[app-icon] audio_icon_base.png ({BASE_SIZE}px)")
+    # 512 基图（Linux 打包）
+    _render_frame(MASTER).save(os.path.join(OUT, "audio_icon_base.png"))
+    # ICO：各尺寸独立渲染，1:1 像素无缩放
+    sizes = [256, 128, 96, 72, 64, 60, 48, 40, 36, 32, 30, 24, 20, 16]
+    frames = [_render_frame(s) for s in sizes]
+    frames[0].save(
+        os.path.join(OUT, "audio_icon.ico"),
+        sizes=[(s, s) for s in sizes],
+        append_images=frames[1:])
+    print("[app-icon] audio_icon.ico / audio_icon_base.png (512px)")
 
 
 def main():

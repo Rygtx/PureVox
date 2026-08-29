@@ -127,12 +127,12 @@ Keywords=mic;noise;denoise;audio;PureVox;
 StartupNotify=false
 EOF
 
-echo "==> 图标 (ico → png)"
-magick assets/icons/audio_icon_on.ico[0] -resize 256x256 \
+echo "==> 图标 (512 基图 → png)"
+magick assets/icons/audio_icon_base.png -resize 256x256 \
     "$ROOT/usr/share/icons/hicolor/256x256/apps/purevox.png" 2>/dev/null \
  || python3 -c "
 from PIL import Image
-im = Image.open('assets/icons/audio_icon_on.ico')
+im = Image.open('assets/icons/audio_icon_base.png')
 im = im.convert('RGBA').resize((256, 256), Image.LANCZOS)
 im.save('$ROOT/usr/share/icons/hicolor/256x256/apps/purevox.png')
 "

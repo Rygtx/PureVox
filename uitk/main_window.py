@@ -462,10 +462,9 @@ class MainWindowTk:
         self._tray_actions = deque()
         res = getattr(sys, "_MEIPASS", None) or os.path.dirname(
             os.path.dirname(os.path.abspath(__file__)))
-        icon_on = os.path.join(res, "assets", "icons", "audio_icon_on.ico")
-        icon_off = os.path.join(res, "assets", "icons", "audio_icon_off.ico")
+        ico = os.path.join(res, "assets", "icons", "audio_icon.ico")
         self.tray = create_tray(
-            icon_on, icon_off,
+            ico,
             on_toggle=lambda: self._tray_actions.append("toggle"),
             on_quit=lambda: self._tray_actions.append("quit"))
         if self.tray:

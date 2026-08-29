@@ -61,8 +61,10 @@ class TrayIcon:
     # ── win32 基础 ──
     def _load_icon(self, path):
         import ctypes
+        user32 = ctypes.windll.user32
+        # 不指定尺寸，让 Windows 从 ICO 帧梯中自动选最佳匹配
         IMAGE_ICON, LR_LOADFROMFILE = 1, 0x10
-        return ctypes.windll.user32.LoadImageW(
+        return user32.LoadImageW(
             None, path, IMAGE_ICON, 0, 0, LR_LOADFROMFILE)
 
     def _run(self):
@@ -218,7 +220,7 @@ class TrayIcon:
         user32.DestroyMenu(menu)
 
 
-def create_tray(icon_on: str, icon_off: str, on_toggle=None, on_quit=None):
+def create_tray(ico_path: str, on_toggle=None, on_quit=None):
     """平台入口：非 Windows / 图标缺失 / NIM_ADD 失败均返回 None。
     返回非 None 即图标已在任务栏真实存在（alive=True）；
     之后存活态经 TaskbarCreated 事件自愈，调用方关闭策略读 .alive。"""
@@ -226,12 +228,10 @@ def create_tray(icon_on: str, icon_off: str, on_toggle=None, on_quit=None):
     import sys
     if not sys.platform.startswith("win"):
         return None
-    ico = icon_on if os.path.exists(icon_on) else (
-        icon_off if os.path.exists(icon_off) else "")
-    if not ico:
+    if not os.path.exists(ico_path):
         return None
     try:
-        obj = TrayIcon(ico, "PureVox", on_toggle=on_toggle, on_quit=on_quit)
+        obj = TrayIcon(ico_path, "PureVox", on_toggle=on_toggle, on_quit=on_quit)
     except Exception:
         return None
     return obj if obj.alive else None

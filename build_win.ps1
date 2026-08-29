@@ -33,7 +33,7 @@ Set-Content _build_version.py "BUILD_DATE = `"$date`"" -Encoding UTF8
 #    lazy-imported modules must be hidden-import (function-level `from xx import` is not
 #    discovered statically). The UI is the pure-Tkinter app (run_tk.py + uitk/);
 #    tcl/tk support is collected automatically and MUST be kept in the bundle.
-& $PY -m PyInstaller --clean --name PureVox --noconsole --icon=assets\icons\audio_icon_on.ico `
+& $PY -m PyInstaller --clean --name PureVox --noconsole --icon=assets\icons\audio_icon.ico `
     --hidden-import=pyaudio `
     --hidden-import=audio_processor `
     --hidden-import=wav_io `
@@ -41,8 +41,7 @@ Set-Content _build_version.py "BUILD_DATE = `"$date`"" -Encoding UTF8
     --hidden-import=pvplatform.audio.pwpipe_client `
     --add-data="about;about" `
     --add-data="models\*.onnx;models" `
-    --add-data="assets\icons\audio_icon_on.ico;assets\icons" `
-    --add-data="assets\icons\audio_icon_off.ico;assets\icons" `
+    --add-data="assets\icons\audio_icon.ico;assets\icons" `
     --add-data="assets\fonts\*.ttf;assets\fonts" `
     --add-data="html\*.html;html\" `
     --add-data="html\css\*.css;html\css\" `
