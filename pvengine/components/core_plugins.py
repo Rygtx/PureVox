@@ -263,7 +263,7 @@ class _AiPluginBase(Effect):
 
 
 class DenoiserPlugin(_AiPluginBase):
-    """AI 智能降噪（v9 模型）。引擎经 cache 共享，重建链不重复加载。"""
+    """AI 智能降噪（202609 模型）。引擎经 cache 共享，重建链不重复加载。"""
 
     NAME = "denoiser"
     LABEL = "AI 智能降噪"
@@ -271,7 +271,7 @@ class DenoiserPlugin(_AiPluginBase):
 
 
 class EchoCancelPlugin(_AiPluginBase):
-    """回声消除（aec9）。far-end 参考经 FrameContext.far 注入；
+    """回声消除（202609 AEC）。far-end 参考经 FrameContext.far 注入；
     需要扬声器采集配合（由音频线程在启用时建立 SpeakerCapture）。
     far 非 48k 时由 AecStage 内部的流式重采样器转换。"""
 
@@ -284,7 +284,7 @@ class EchoCancelPlugin(_AiPluginBase):
 
 
 class TsePlugin(_AiPluginBase):
-    """目标说话人提取（tse15）。需先加载参考音频；无参考时直通。"""
+    """目标说话人提取（202609 TSE）。需先加载参考音频；无参考时直通。"""
 
     NAME = "tse"
     LABEL = "目标说话人 TSE"
