@@ -50,7 +50,7 @@ Set-Content _build_version.py "BUILD_DATE = `"$ver`"" -Encoding UTF8
     --collect-all PIL `
     --hidden-import=pyaudio `
     --exclude-module PIL._avif `
-    --add-data "models\v9_fft2048_band256_epoch_261.onnx;models" `
+    --add-data "models\purevox_denoise_202609_ep0106.onnx;models" `
     --add-data "assets\fonts\*.ttf;assets/fonts" `
     --add-data "assets\icons\lite_tray.ico;assets\icons" `
     --add-data "assets\icons\lite_tray.png;assets\icons" `
