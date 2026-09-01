@@ -15,7 +15,7 @@ except ImportError:
     pyaudio = None
 
 SAMPLE_RATE = 48000
-HOP = 1024
+HOP = 480          # 10ms @48kHz (202609 模型契约)
 FORMAT = pyaudio.paFloat32 if pyaudio else None
 CHANNELS = 1
 

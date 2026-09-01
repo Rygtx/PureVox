@@ -16,11 +16,21 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 
 """
-集中管理模型文件名和降噪 STFT 参数。
+集中管理模型文件名和 STFT 契约参数。
 修改模型时只需改这个文件，所有引用处自动同步。
+
+契约 (202609 三件套统一): 10ms hop / 波形进出 / STFT 在模型图内
+- hop = SAMPLE_RATE // 100 (48kHz → 480 样本 = 10ms)，应对多采样率按 10ms 派生
+- NFFT = 2 × hop (48kHz → 960)，sqrt-Hann
+- 输出 enh_hop 滞后 1 hop (10ms，模型内部 tail 语义)
+- TSE 的 enr_tok 由 ref_encoder.onnx 一次性预计算 (10s 注册全帧 1001 key)
 """
 
 # ── ONNX 模型（相对应用根目录，仓库与打包产物同布局：models/）──
-DENOISE_MODEL = "models/v9_fft2048_band256_epoch_261.onnx"
-AEC_MODEL = "models/aec9_ep0544.onnx"
-TSE_MODEL = "models/tse15_stream_ep_0673.onnx"
+# 版本对应训练侧 epoch-end 试听 wav (PureVoxModel/7_output/*/results_wav)：
+#   denoise ep0106 ↔ wav/O-0106.wav；aec cpx ep0124 ↔ results_wav/T-0124.wav；
+#   tse 09c ep0034 ↔ results_wav/torch_e34.wav（训练进行中，终版待训完更新）
+DENOISE_MODEL = "models/purevox_denoise_202609_ep0106.onnx"
+AEC_MODEL = "models/purevox_aec_202609_cpx_ep0124.onnx"
+TSE_MODEL = "models/purevox_tse_202609c_ep0034.onnx"
+TSE_REF_ENCODER = "models/purevox_tse_202609c_ref_encoder.onnx"

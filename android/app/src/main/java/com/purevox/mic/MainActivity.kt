@@ -416,15 +416,15 @@ class MainActivity : AppCompatActivity() {
 
     private fun updateDebugInfo() {
         dbgEncSr.text = "enc SR 48000"
-        dbgFrame.text = "frame 960"
+        dbgFrame.text = "frame 480"
         dbgBitrate.text = "bitrate 32k"
         dbgEncoded.text = "encoded $packetCount"
 
         dbgRtt.text = if (rttSamples > 0) "RTT ${rttAvg.toInt()}ms" else "RTT --"
 
-        // 总延迟估算: RTT/2 + frame(20ms) + prefill(64ms) + TARGET_ACC(107ms)
+        // 总延迟估算: RTT/2 + frame(10ms) + prefill(30ms) + TARGET_ACC(50ms)
         val estOneWay = if (rttSamples > 0) (rttAvg / 2).toInt() else 50
-        val totalLat = estOneWay + 20 + 64 + 107
+        val totalLat = estOneWay + 10 + 30 + 50
         val latColor = when {
             totalLat < 200 -> "#55cc66"
             totalLat < 500 -> "#cccc44"

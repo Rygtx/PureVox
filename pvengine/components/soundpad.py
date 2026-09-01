@@ -24,6 +24,9 @@ process(frame) 在自身链位置把当前播放中的音效帧与信号相加�
 音源仅支持 WAV（wave 标准库解码：8/16/24/32bit 整数与浮点，多声道下混，
 非 48kHz 线性重采样到 48k）；懒加载：首次 play 才读文件，垫子列表变更
 即清理失效缓存。控制面（UI/热键线程）与音频面（处理线程）经锁分离。
+
+起播/结束/手动停止/垫子移除/复选框关断一律 hop 内线性淡变（1→0），
+杜绝硬切咔哒；结束段（剩余 ≤1 hop）天然淡出收尾。
 """
 
 import threading
@@ -35,27 +38,36 @@ from pvengine.components.effect_base import Effect
 
 
 class _Voice:
-    """单次播放状态（data 只读共享；pos 仅音频线程推进）。"""
+    """单次播放状态（data 只读共享；pos 仅音频线程推进）。
 
-    __slots__ = ("data", "pos", "vol")
+    fade_at：淡出段起点（样本索引）；置位后该段以线性 1→0 包络混出后结束。
+    """
+
+    __slots__ = ("data", "pos", "vol", "ending", "fade_at")
 
     def __init__(self, data, vol):
         self.data = data
         self.pos = 0
         self.vol = vol
+        self.ending = False
+        self.fade_at = None
 
 
 class SoundPadPlugin(Effect):
     NAME = "soundpad"
     LABEL = "音效板"
+    # 复选框关断不旁路：正在播的垫子自行淡出（衔接无缝）
+    FADE_THROUGH = True
     PARAMS = {"volume_db": ("音量 dB", -30.0, 6.0, 0.0, 1.0)}
 
     def __init__(self, params=None, stage_cache=None):
         self._lock = threading.Lock()
         self._voices = {}   # pad_index -> _Voice
+        self._fading = []   # 结束/被打断的 voice（淡出后丢弃）
         self._cache = {}    # path -> np.ndarray | None
         self._pads = []
         self._volume = 1.0
+        self.enabled = True
         super().__init__(params)
         self.set_pads((params or {}).get("pads") or [])
 
@@ -66,7 +78,9 @@ class SoundPadPlugin(Effect):
             keep = {p.get("path") for p in self._pads}
             self._cache = {k: v for k, v in self._cache.items() if k in keep}
             for i in [i for i in self._voices if i >= len(self._pads)]:
-                self._voices.pop(i, None)
+                v = self._voices.pop(i)
+                v.ending = True
+                self._fading.append(v)
 
     def play(self, index):
         with self._lock:
@@ -78,14 +92,24 @@ class SoundPadPlugin(Effect):
             data = self._cache.get(path)
             if data is None or not len(data):
                 return
+            old = self._voices.pop(index, None)
+            if old is not None:
+                old.ending = True
+                self._fading.append(old)
             self._voices[index] = _Voice(data, self._volume)
 
     def stop(self, index):
         with self._lock:
-            self._voices.pop(index, None)
+            v = self._voices.pop(index, None)
+            if v is not None:
+                v.ending = True
+                self._fading.append(v)
 
     def stop_all(self):
         with self._lock:
+            for v in self._voices.values():
+                v.ending = True
+                self._fading.append(v)
             self._voices.clear()
 
     def pads_count(self) -> int:
@@ -102,29 +126,59 @@ class SoundPadPlugin(Effect):
     # ── 音频面（处理线程）──
     def process(self, frame, ctx):
         with self._lock:
-            voices = [(i, v) for i, v in self._voices.items()]
-        if not voices:
+            if not self.enabled:
+                for v in self._voices.values():
+                    v.ending = True
+            voices = list(self._voices.items())
+            fading = list(self._fading)
+        if not (voices or fading):
             return frame
         out = frame.astype(np.float32, copy=True)
         n = len(out)
         finished = []
-        for idx, v in voices:
-            take = min(n, len(v.data) - v.pos)
-            if take <= 0:
-                finished.append(idx)
-                continue
-            out[:take] += v.data[v.pos:v.pos + take] * np.float32(v.vol)
-            v.pos += take
-            if v.pos >= len(v.data):
-                finished.append(idx)
-        if finished:
+        for key, v in voices:
+            if self._mix_voice(out, v, n):
+                finished.append((key, v))
+        still = []
+        for v in fading:
+            if not self._mix_voice(out, v, n):
+                still.append(v)
+        if finished or len(still) != len(fading):
             with self._lock:
-                for idx in finished:
-                    cur = self._voices.get(idx)
-                    if cur is not None and cur.pos >= len(cur.data):
-                        self._voices.pop(idx, None)
+                for key, v in finished:
+                    # 仍是同一实例（未被新 play 替换）才移除
+                    if self._voices.get(key) is v:
+                        self._voices.pop(key, None)
+                self._fading = still
         np.clip(out, -1.0, 1.0, out=out)
         return out
+
+    @staticmethod
+    def _mix_voice(out, v, n):
+        """混一 hop；起始淡入（0→1）与结束淡出（1→0）均在 hop 内线性完成。
+
+        返回 True = 本 voice 已播完（数据耗尽或淡出段结束，调用方移除）。
+        """
+        remaining = len(v.data) - v.pos
+        if remaining <= 0:
+            return True
+        take = min(n, remaining)
+        if v.fade_at is None and (v.ending or remaining <= n):
+            v.fade_at = v.pos              # 结束段：本 hop 内 1→0
+        seg = v.data[v.pos:v.pos + take]
+        if v.fade_at is not None and v.pos == v.fade_at:
+            w = np.linspace(1.0, 0.0, take, dtype=np.float32)
+        elif v.pos == 0:
+            w = np.linspace(0.0, 1.0, take, dtype=np.float32)
+        else:
+            w = None
+        if w is None:
+            out[:take] += seg * np.float32(v.vol)
+        else:
+            out[:take] += seg * (np.float32(v.vol) * w)
+        v.pos += take
+        return v.pos >= len(v.data) or \
+            (v.fade_at is not None and v.pos > v.fade_at)
 
     def reset(self):
         self.stop_all()

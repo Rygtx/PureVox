@@ -199,12 +199,12 @@ cd android
 | `about_content.py` + `about/` | **关于页文本（无 GUI 依赖的单一来源）**——`about/changelog.md` 更新日志、`about/windows.md`、`about/linux.md` 使用手册（uitk 直接读文件渲染）；`about_content.py` 只存元数据（应用信息/URLS/LIBS）与介绍页、许可证页文本，打包须随包携带 `about/` |
 | `session_plan.py` | **L3 会话层**——`SessionPlan.from_chain(chain_cfg)` 纯函数：链文档 → 校验后的可执行计划（inputs/outputs/remote_url/viz/fx_chain/problems/warnings）。UI 启动流程只消费计划，不做内联解析 |
 | `audio_processor.py` | 核心音频线程 —— `AudioThread`(全双工流/PipeWire 循环/网络循环/**多输入混音+多输出扇出**[Windows extras 回调])、`SpeakerCapture`(AEC loopback)、`RingBuffer`、设备枚举、TSE 参考录音工具(`_recorder`/`load_tse_reference`/`_wsola_time_stretch`) |
-| `pvengine/` | **纯 Python 组件化音频引擎**——Stage 接口（process/reset/release）是唯一契约；`components/`(denoise/aec/tse/gain/eq/vad/agc/compressor/clip/recorder/tap) 每文件一个组件、按 active_modes 声明生效模式；`dsp/`(窗/STFT/环形缓冲/重采样/Mel 频谱/ONNX 会话) 可独立复用；`pipeline.py` 按序执行+模式旁路；`processor.py` 是 AudioProcessor 门面。模型：v9 降噪（spec [1,1025,1,2] + enc/dec/tfa/inter 四态）、aec9、tse15，全部 numpy + onnxruntime 实现 |
+| `pvengine/` | **纯 Python 组件化音频引擎**——Stage 接口（process/reset/release）是唯一契约；`components/`(denoise/aec/tse/gain/eq/vad/agc/compressor/clip/recorder/tap) 每文件一个组件、按 active_modes 声明生效模式；`dsp/`(窗/环形缓冲/重采样/Mel 频谱/ONNX 会话) 可独立复用；`pipeline.py` 按序执行+模式旁路；`processor.py` 是 AudioProcessor 门面。模型：202609 三件套（denoise/aec/tse，波形 hop [1,480] 进出、STFT 在模型图内、enh_hop 滞后 1 hop），全部 numpy + onnxruntime 实现 |
 | `pvplatform/` | 平台抽象层 —— `audio/`(SpeakerCapture 三端、device_api、pwpipe_client[纯 py pulsectl 桥])、`system/`(单实例/自启动/防火墙/虚拟麦克风，win+posix) |
 | `server/` | 远程麦克风 HTTPS/WSS 服务器 —— `https_server.py`、`audio_bridge.py`(RemoteAudioSource)、`opus_codec.py`、`mdns_publisher.py`、`tls_manager.py` |
 | `config_manager.py` | JSON 配置读写（强配置，无迁移）；api_type 平台感知默认值、设备键按接口后缀（`<方向>_device_<接口后缀>` / `aec_far_sink_<接口后缀>`，全部接口显式写全） |
 | `model_config.py` | ONNX 模型文件名常量 |
-| `html/` | 浏览器端远程推流页面 —— `index.html`、`app.js`、`audio-capture.js`、`ws-client.js`、Opus WASM 编码器 |
+| `html/` | 浏览器端远程推流页面 —— `index.html`、`app.js`、`audio-capture.js`、`pcm-worklet.js`（AudioWorklet 采集恒 480 帧切分）、`ws-client.js`、Opus WASM 编码器 |
 | `build_win.ps1` / `pack_deb.sh` / `pack_rpm.sh` / `pack_appimage.sh` | Windows 产物目录打包（PyInstaller，CI 上传自动压缩）/ Linux deb / rpm / AppImage 打包。全部产物为纯 Python（依赖随内嵌 python312 或系统环境携带），无任何自编译二进制 |
 
 ### Linux 音频架构（pipewire-pulse 兼容层 + pulsectl，强制）
@@ -251,7 +251,7 @@ AEC far-end：独立录制流指向 `far_sink.monitor`（会话内创建/销毁�
 | 模块 | 职责 |
 |---|---|
 | `MainActivity.kt` | 主界面 —— 服务器发现、连接、推流控制、VU 显示、调试信息、RTT 追踪 |
-| `audio/AudioCapture.kt` | AudioRecord 采集 48kHz/16bit，帧大小 960 (20ms) |
+| `audio/AudioCapture.kt` | AudioRecord 采集 48kHz/16bit，帧大小 480 (10ms) |
 | `audio/OpusEncoder.kt` | JNI 调用 native opus 编码 |
 | `network/WsClient.kt` | OkHttp WebSocket 客户端，base64 Opus 推流，ack RTT 追踪 |
 | `network/TlsHelper.kt` | 自签名证书信任 |
@@ -269,7 +269,7 @@ AEC far-end：独立录制流指向 `far_sink.monitor`（会话内创建/销毁�
 服务器 API:  GET /api/status → {"sample_rate":48000, "active_clients":N, ...}
 ```
 
-帧大小 960 samples (20ms @48kHz) —— Opus 编码器 (JS WASM / Android JNI) 与 Python 解码器对齐。
+帧大小 480 samples (10ms @48kHz) —— Opus 编码器 (JS WASM / Android JNI) 与 Python 解码器、引擎 hop 对齐。
 
 ---
 
@@ -303,7 +303,17 @@ AEC far-end：独立录制流指向 `far_sink.monitor`（会话内创建/销毁�
      （PureVox 侧始终处理 48k，转换由 MME 驱动完成，合规），所以 gate 对 MME
      天然放行不弹框。两者行为差异不是 bug，不要给 MME 加严格 48k 限制。
      判定依据：设备 `defaultSampleRate=44100` 时 WASAPI 弹框、MME 正常。
-2. **模型规格 48kHz / 2048 NFFT / 1024 hop** — 任何缓冲区/块大小与此冲突的以此为准。
+2. **10ms hop 规约（全局统一时间粒度）** — 所有数据面一律按 10ms hop 前进：
+   `hop = SAMPLE_RATE // 100`（48kHz → 480 样本；NFFT = 2×hop = 960），**按时间派生
+   而非固定样本数**，未来多采样率/重采样时规约不变。202609 模型三件套契约与此一致
+   （波形 hop 进出、STFT 在模型图内、enh_hop 滞后 1 hop）。落点清单：
+   引擎 Stage 进出帧（`pvengine.context.HOP_LENGTH`，`process()` 严格校验 hop 长度）、
+   平台回调块（PipeWire 桥接 `pwpipe_client.HOP`、Windows `frames_per_buffer`、
+   媒体会话 `_HOP`）、桥接 FIFO 分块、网络 Opus 帧（480 样本=10ms）、Android/浏览器
+   采集帧。缓冲水位（网络 acc、输出环、loopback 缓冲）取 hop 整数倍。任何新代码
+   不得引入与 10ms 网格错位的固定样本块（1024/2048 等）——频谱可视化、流式解码、
+   浏览器采集等一切旁路同样遵守，变换/重采样输出同样按 10ms 粒度切片。
+   FFT/OLA 窗长恒为 2×hop（NFFT=960，COLA/无损重构要求，随 hop 派生，非豁免）。
 3. **配置 key 按接口加后缀** — 设备键为 `<方向>_device_<接口后缀>` 与 `aec_far_sink_<接口后缀>`（如 `input_device_wasapi` / `input_device_mme` / `input_device_pulse` / `aec_far_sink_pulse`），后缀表见 `device_api.API_CONFIG_SUFFIX`；`config_manager.py` 的 `ConfigDefaults` 与 `_KEY_ORDER` 把全部接口的键**显式写全**（不做动态生成，阅读直观）；不用 `WASAPI_` 前缀，也不留无后缀的通用设备键。monitor（监听）与 AEC far 各存各的键。
 3a. **推理后端（2026-08-22 起）** — 纯 Python 引擎用 onnxruntime Python 包，
    CPU 内核 dispatch 由 onnxruntime 运行时自动完成，禁止再做 AVX/SSE/NPU
@@ -326,10 +336,11 @@ AEC far-end：独立录制流指向 `far_sink.monitor`（会话内创建/销毁�
 ## 注意事项
 
 - **AEC SpeakerCapture**: Linux 端 AEC far 走 `PwBridge.set_far(sink_name, True)`（监听 `far_sink.monitor` 源，恒 48k 单声道免重采样，会话内创建/销毁）。Windows 用 WASAPI loopback 采集扬声器（共享模式**必须用引擎 MixFormat**）；音频引擎 `set_aec_far_sample_rate()` 将 far-end 重采样到 48kHz。
-- **网络模式缓冲**（未做低延迟优化，目标以稳为主，不追求最小延迟）:
-  - `_output_buffer`: `RingBuffer(48000)` + 预填充 `1024*3` (64ms)
-  - `_network_loop TARGET_ACC`: `1024*5` (107ms), `MAX_ACC`: `1024*8` (171ms)
-  - 速率补偿: 输出缓冲 >128ms 时主动丢弃多余帧
+- **网络模式缓冲**（未做低延迟优化，目标以稳为主，不追求最小延迟；水位全部按
+  `HOP_LENGTH`=10ms 派生，ms 数即准确值）:
+  - `_output_buffer`: `RingBuffer(48000)` + 预填充 `HOP_LENGTH*3` (30ms)
+  - `_network_loop TARGET_ACC`: `HOP_LENGTH*5` (50ms), `MAX_ACC`: `HOP_LENGTH*8` (80ms)
+  - 速率补偿: 输出缓冲 >60ms 时主动丢弃多余帧
 - **强配置（无迁移）**: `ConfigManager.load_config` 不做旧配置迁移，只保留已知键；
   旧 `WASAPI_*` / 通用设备键一律丢弃回退默认。设备键为带接口后缀的
   `<方向>_device_<接口后缀>`（如 `input_device_wasapi`、`input_device_mme`）。

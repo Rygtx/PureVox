@@ -15,17 +15,20 @@
 #
 # SPDX-License-Identifier: GPL-3.0-or-later
 
-"""音乐播放器插件——流式解码（长视频/长音频不占内存）。
+"""音乐播放器插件——流式解码 + 首尾相连环流（简洁硬切换，无淡变）。
 
-后台解码线程 → 3 秒环形缓冲 → 音频线程逐帧消费；内存占用恒定
-（环形缓冲 ~576KB，与文件时长无关）。
+后台解码线程 → 3 秒环形缓冲 → 音频线程每 hop（10ms）拉 480 样本；
+内存占用恒定（环形缓冲 ~576KB，与文件时长无关）。
 
 音源唯一实现：miniaudio 流式生成器（自包含 C，库负责解码/重采样/
 跨包细节，float32/mono/48k 直出；格式面 wav/mp3/flac/ogg）。
-seek = 重开生成器传 seek_frame（C 级 ma_decoder 定位），无任何回退链。
+解码面把整首曲目视作首尾相连的环流：EOF 即解码回卷@0 续流，
+环形缓冲无缝桥接，永不排空、无静默衔接窗。
 
-▶/⏸ 单键可变；seek（秒）；循环；断点续播经 params.resume_sec
-由 UI 在暂停/拖动/退出等事件触发持久化，重启后自动续播。
+全部切换为硬切换（无淡入淡出、无包络）：行启用复选框 = 播放开关
+——关断即管线旁路（硬静音），勾回原地续播（缓冲与位置保留）；
+换曲/清曲立即生效；播放到头自动从头续播（必须循环，无循环选项）。
+断点续播经 params.resume_sec 由 UI 在停止/拖动/退出事件持久化。
 """
 
 import threading
@@ -37,8 +40,7 @@ from pvengine.components.effect_base import Effect
 
 _TARGET_SR = 48000
 _RING_N = _TARGET_SR * 3          # 3 秒环形缓冲
-_RING_SAFE = 2048                  # 解码水线（剩余空间低于此即等待）
-_PRIME_N = _TARGET_SR // 4         # 预填充 0.25s（启停/seek 防爆音门）
+_RING_SAFE = _TARGET_SR // 25     # 解码水线（剩余空间低于此即等待）= 1920 = 4 hop
 
 
 class _Stream:
@@ -65,14 +67,14 @@ class _Stream:
             self.path,
             output_format=miniaudio.SampleFormat.FLOAT32,
             nchannels=1, sample_rate=_TARGET_SR,
-            frames_to_read=2048,
+            frames_to_read=1920,   # 4 hop（10ms×4）
             seek_frame=int(seconds * _TARGET_SR))
 
     def close(self):
         self._gen = None
 
     def read_chunk(self):
-        """下一块 float32 mono 48k；EOF 抛 EOFError（loop 由外层 seek(0) 续）。"""
+        """下一块 float32 mono 48k；EOF 抛 EOFError（外层回卷@0 续流）。"""
         try:
             return np.asarray(next(self._gen), dtype=np.float32).reshape(-1)
         except StopIteration:
@@ -85,6 +87,8 @@ class _Stream:
 class MusicPlayerPlugin(Effect):
     NAME = "music_player"
     LABEL = "音乐播放器"
+    # 复选框关断走管线旁路：硬停（无淡出），勾回原地续播
+    FADE_THROUGH = False
     PARAMS = {"volume_db": ("音量 dB", -30.0, 6.0, 0.0, 1.0)}
 
     def __init__(self, params=None, stage_cache=None):
@@ -97,13 +101,10 @@ class MusicPlayerPlugin(Effect):
         self._pos = 0          # 已消费样本（播放位置，音频线程推进）
         self._duration = 0.0   # 秒
         self._path = ""
-        self._playing = False
-        self._paused = False
-        self._loop = False
         self._seek_req = None  # 秒
-        self._dec_done = False
         self._volume = 1.0
         self._thread = None
+        self.enabled = True
         super().__init__(params)
         self.on_struct_param("path", (params or {}).get("path", ""))
         resume = (params or {}).get("resume_sec", 0.0)
@@ -115,24 +116,23 @@ class MusicPlayerPlugin(Effect):
         if key == "path":
             path = str(value or "")
             with self._lock:
-                if path != self._path:
-                    self._path = path
-                    self._stop_locked()
-                    self._duration = 0.0
-                    self._seek_req = None
-                    self._dec_done = False
+                if path == self._path:
+                    return
+                # 硬切换：立即换曲/清曲，位置归零
+                self._path = path
+                self._stop_locked()
+                self._duration = 0.0
+                self._seek_req = None
+                if path:
                     self._ensure_thread()
-        elif key == "loop":
-            with self._lock:
-                self._loop = bool(value)
         elif key == "resume_sec":
             try:
                 sec = max(0.0, float(value))
             except (TypeError, ValueError):
                 return
             with self._lock:
-                # 仅在尚未开播时生效（链重建/重启的恢复场景）
-                if not self._playing and sec > 0.0:
+                # 仅启动恢复（尚未消费）时落位
+                if sec > 0.0 and self._pos == 0:
                     self._seek_req = sec
                     self._pos = int(sec * _TARGET_SR)
                     self._ensure_thread()
@@ -143,8 +143,6 @@ class MusicPlayerPlugin(Effect):
                 pass
 
     def _stop_locked(self):
-        self._playing = False
-        self._paused = False
         self._pos = 0
         with self._ring_lock:
             self._r = self._w = self._count = 0
@@ -156,56 +154,22 @@ class MusicPlayerPlugin(Effect):
             self._thread.start()
 
     # ── 控制面 ──
-    def play(self):
-        with self._lock:
-            if not self._path:
-                return
-            self._ensure_thread()
-            if self._duration and self._pos >= self._dur_samples():
-                self._seek_req = 0.0
-                self._pos = 0
-            self._playing = True
-            self._paused = False
-            self._dec_done = False
-
-    def pause(self):
-        with self._lock:
-            if self._playing:
-                self._paused = True
-
-    def toggle(self):
-        with self._lock:
-            paused = self._paused
-            playing = self._playing
-        if playing and not paused:
-            self.pause()
-        else:
-            self.play()
-
     def stop(self):
+        """位置重置到曲头（引擎 reset；下一次开始即从头）。"""
         with self._lock:
             self._stop_locked()
             self._seek_req = 0.0
-            self._dec_done = False
 
     def seek(self, seconds):
         with self._lock:
             self._seek_req = float(seconds)
             self._pos = int(max(0.0, seconds) * _TARGET_SR)
-            self._dec_done = False
             if self._path:
                 self._ensure_thread()
 
-    def set_loop(self, on):
-        self.on_struct_param("loop", on)
-
-    def is_playing(self) -> bool:
-        with self._lock:
-            return self._playing and not self._paused
-
     def status(self):
         with self._lock:
-            return {"playing": self._playing and not self._paused,
+            return {"playing": self.enabled and bool(self._path),
                     "pos": self._pos / _TARGET_SR,
                     "dur": self._duration}
 
@@ -220,7 +184,7 @@ class MusicPlayerPlugin(Effect):
         stream = None
         path = ""
         while True:
-            # 换文件：旧音源立即释放（位置语义已随 _stop_locked 清零）
+            # 换文件：旧音源立即释放（位置语义已随硬切换清零）
             if stream is not None and stream.path != path:
                 stream.close()
                 stream = None
@@ -228,25 +192,19 @@ class MusicPlayerPlugin(Effect):
                 seek_req = self._seek_req
                 self._seek_req = None
                 path = self._path
-                playing = self._playing and not self._paused
-                loop = self._loop
-                dec_done = self._dec_done
             try:
+                if not path:
+                    time.sleep(0.05)
+                    continue
                 if seek_req is not None:
-                    # seek = 音源重开定位（miniaudio 回头 / av 容器重开）
+                    # seek = 音源重开定位（miniaudio 回头 / 容器重开）
                     if stream is not None:
                         stream.close()
                     stream = _Stream(path, seek_seconds=seek_req)
                     with self._lock:
                         self._duration = max(self._duration, stream.duration)
-                        self._dec_done = False
                     with self._ring_lock:
                         self._r = self._w = self._count = 0
-                    continue
-                if not playing or dec_done:
-                    # 不关音源：暂停/未开播必须保留解码位置，
-                    # 否则 resume/断点续播会被「重开从头」吞掉
-                    time.sleep(0.05)
                     continue
                 if stream is None:
                     stream = _Stream(path)
@@ -260,24 +218,22 @@ class MusicPlayerPlugin(Effect):
                 try:
                     chunk = stream.read_chunk()
                 except EOFError:
-                    if loop:
-                        stream.seek(0.0)   # 头尾相接（miniaudio 重开@0）
-                        with self._lock:
-                            self._pos = 0
-                            self._dec_done = False
-                    else:
-                        with self._lock:
-                            self._dec_done = True
+                    # 首尾相连：曲目视作环流，回卷@0 续流（环形缓冲无缝
+                    # 桥接曲末↔曲头，永不排空、无静默窗）；位置回卷由
+                    # 音频面在消费越过曲末时处理（进度同步）
+                    stream.seek(0.0)
                     continue
                 if chunk is None or not len(chunk):
                     continue
                 with self._ring_lock:
                     self._ring_write(chunk)
             except Exception:
+                # 异常恢复：清缓冲并按当前播放位置重开音源（重同步）
                 with self._ring_lock:
                     self._r = self._w = self._count = 0
                 with self._lock:
-                    self._dec_done = True
+                    self._seek_req = self._pos / _TARGET_SR
+                stream = None
                 time.sleep(0.05)
 
     def _ring_write(self, chunk):
@@ -316,33 +272,23 @@ class MusicPlayerPlugin(Effect):
 
     # ── 音频面 ──
     def process(self, frame, ctx):
-        with self._lock:
-            if not self._playing or self._paused:
-                return frame
-            vol = self._volume
-            with self._ring_lock:
-                primed = self._count >= _PRIME_N or self._dec_done
-        if not primed:
-            # 预填充门：启动/seek/链重建后的空环直灌零帧=爆音瑕疵，
-            # 先让解码线程灌到水线再开始消费（0.25s 内完成，无感）
-            return frame
+        if not self.enabled or not self._path:
+            return frame              # 停止：硬旁路（零开销直通）
         out = frame.astype(np.float32, copy=True)
         n = len(out)
         buf = np.zeros(n, dtype=np.float32)
         got = self._ring_read(buf)
+        if not got:
+            return out                # 欠载：本 hop 硬静音，下一 hop 续上
         self._pos += got
         with self._lock:
-            if self._loop and self._duration:
+            # 必须循环：位置越过曲末即回卷（与解码面回卷@0 同步）
+            if self._duration:
                 dur_s = self._dur_samples()
                 if self._pos >= dur_s:
-                    self._pos -= dur_s      # 循环回卷，进度 UI 正确
-        if got < n:
-            with self._lock:
-                if self._dec_done and not self._loop:
-                    self._playing = False
-        if got:
-            out[:got] += buf[:got] * np.float32(vol)
-            np.clip(out, -1.0, 1.0, out=out)
+                    self._pos -= dur_s
+        out[:got] += buf[:got] * np.float32(self._volume)
+        np.clip(out, -1.0, 1.0, out=out)
         return out
 
     def reset(self):

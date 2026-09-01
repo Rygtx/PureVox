@@ -5,7 +5,7 @@
 # 协议与主线 PureVox 一致：
 #   客户端 JSON {"type":"audio","data":"<base64 opus>","seq":N,"timestamp":T}
 #   服务器 ACK {"type":"ack","seq":N}
-# 帧大小 960 样本 (20ms @48kHz 单声道)
+# 帧大小 480 样本 (10ms @48kHz 单声道，与引擎 hop 一致)
 
 import asyncio
 import base64
@@ -19,7 +19,7 @@ import ctypes
 import ctypes.wintypes as wt
 
 SAMPLE_RATE = 48000
-FRAME_SIZE = 960  # 20ms
+FRAME_SIZE = 480  # 10ms
 
 CERT_DIR = os.path.join(os.path.expanduser("~"), ".purevox")
 CERT_PATH = os.path.join(CERT_DIR, "net_lite_cert.pem")
@@ -280,7 +280,7 @@ class NetOpusDecoder:
             self._dec = None
 
     def decode_f32_mono(self, opus_bytes):
-        """返回 np.float32 mono 任意长度（正常 960）；失败返回 None"""
+        """返回 np.float32 mono 任意长度（正常 480=10ms）；失败返回 None"""
         if self._dec is None or not opus_bytes:
             return None
         try:
@@ -312,7 +312,7 @@ class NetOpusDecoder:
 # 满丢新（同主线网络模式输出环），欠载由消费端静音补齐并重新预填充
 # ---------------------------------------------------------------------------
 class JitterRing:
-    def __init__(self, capacity=SAMPLE_RATE * 2, prefill=FRAME_SIZE * 5):
+    def __init__(self, capacity=SAMPLE_RATE * 2, prefill=FRAME_SIZE * 10):
         # 预填充 100ms：TCP 到达是突发的，预填充太小会频繁欠载（爆音/断续）
         import numpy as np
         self._np = np
@@ -368,9 +368,9 @@ class NetServer:
     def __init__(self, ring, port, process_fn=None, on_state=None):
         self.ring = ring
         self.port = int(port)
-        # 可选处理钩子：f32 mono [1024] -> f32 mono [1024]（降噪引擎）
+        # 可选处理钩子：f32 mono [480] -> f32 mono [480]（降噪引擎, 10ms hop）
         self.process_fn = process_fn
-        self.hop = 1024
+        self.hop = 480
         self.on_state = on_state  # on_state(clients, note)
         # 活跃连接表：ws -> 最后一次收到音频的单调时间。
         # 客户端断网/重载页面会残留半开连接（等 ping 超时才关闭），
@@ -517,7 +517,7 @@ class NetServer:
                         if self.process_fn is None:
                             self.ring.write(pcm)
                         else:
-                            # 引擎按 1024 hop 处理：累积网络帧（960）后逐 hop 切
+                            # 引擎按 480 hop (10ms) 处理：累积任意长度网络帧后逐 hop 切
                             acc = np.concatenate([acc, pcm])
                             while acc.shape[0] >= self.hop:
                                 out = self.process_fn(acc[:self.hop])

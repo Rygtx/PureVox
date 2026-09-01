@@ -148,14 +148,23 @@ class HSlider(tk.Canvas):
         self.bind("<Configure>", lambda e: self._draw())
         self._draw()
 
+    def _width(self):
+        """实际渲染宽（未映射前回退请求宽）。
+
+        画布被父布局压窄时 winfo_width < 请求宽——必须按实际宽绘制，
+        否则把手/填充画到裁剪区外（正值区"跑到不见了"）。
+        """
+        w = self.winfo_width()
+        return w if w > 8 else int(self["width"])
+
     def _val_to_x(self, v):
-        w = max(self.winfo_width(), int(self["width"]))
+        w = self._width()
         span = w - 2 * self._hw
         return self._hw + int((v - self.lo) / (self.hi - self.lo) * span)
 
     def _draw(self):
         S = self.sizes
-        w = max(self.winfo_width(), int(self["width"]))
+        w = self._width()
         h = max(self.winfo_height(), int(self["height"]))
         self.delete("all")
         cy = h // 2
@@ -164,8 +173,17 @@ class HSlider(tk.Canvas):
         self.create_rectangle(0, cy - th // 2, w - 1, cy + th // 2,
                               fill=theme.TRACK, width=0)
         x = self._val_to_x(self.value)
-        self.create_rectangle(0, cy - th // 2, min(x, w - 1), cy + th // 2,
-                              fill=theme.ACCENT, width=0)
+        # 有符号量程（跨 0，如 dB 增益）：填充从 0 位到把手——
+        # 增/减两侧各自向把手延伸，默认值不在"看起来已拉满"的位置
+        if self.lo < 0.0 < self.hi:
+            z = self._val_to_x(0.0)
+            self.create_rectangle(min(x, z), cy - th // 2,
+                                  max(x, z), cy + th // 2,
+                                  fill=theme.ACCENT, width=0)
+        else:
+            self.create_rectangle(0, cy - th // 2, min(x, w - 1),
+                                  cy + th // 2,
+                                  fill=theme.ACCENT, width=0)
         # 把手（行程夹在两端内并留 1px，防止右端描边被画布裁掉）
         hh = S["ctl_h"] - 4
         x = max(self._hw + 1, min(w - self._hw - 1, x))
@@ -175,7 +193,7 @@ class HSlider(tk.Canvas):
                               width=1)
 
     def _set_from_x(self, ex):
-        w = max(self.winfo_width(), int(self["width"]))
+        w = self._width()
         frac = (ex - self._hw) / max(1, w - 2 * self._hw)
         frac = max(0.0, min(1.0, frac))
         v = self.lo + frac * (self.hi - self.lo)

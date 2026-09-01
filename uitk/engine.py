@@ -203,7 +203,7 @@ class EngineController:
             import pyaudio
         except ImportError:
             return None
-        from audio_processor import get_device_id, default_api_type
+        from audio_processor import get_device_id, default_api_type, HOP_LENGTH
         api_type = default_api_type()
         failed = []
         p = pyaudio.PyAudio()
@@ -218,11 +218,11 @@ class EngineController:
                     if is_in:
                         s = p.open(format=pyaudio.paFloat32, channels=1,
                                    rate=48000, input=True,
-                                   input_device_index=dev, frames_per_buffer=1024)
+                                   input_device_index=dev, frames_per_buffer=HOP_LENGTH)
                     else:
                         s = p.open(format=pyaudio.paFloat32, channels=1,
                                    rate=48000, output=True,
-                                   output_device_index=dev, frames_per_buffer=1024)
+                                   output_device_index=dev, frames_per_buffer=HOP_LENGTH)
                     s.close()
                 except Exception as e:
                     failed.append(f"{name or '系统默认'} ({e})")
@@ -240,6 +240,18 @@ class EngineController:
             self.processor.update_plugin_param(index, key, value)
         except Exception as e:
             self.log.warn(f"[参数] 实时更新失败 ({key}): {e}")
+
+    def set_plugin_enabled(self, index: int, enabled: bool):
+        """fx 行勾选热更：只翻 Stage/插件 enabled（不重启音频流）。
+
+        DESIGN §7 热更矩阵——复选框开/关由运行中处理器原地生效；
+        媒体源类插件（FADE_THROUGH）自行淡出/淡入，衔接无缝。
+        """
+        if self.processor and self.running:
+            try:
+                self.processor.set_plugin_enabled(index, enabled)
+            except Exception as e:
+                self.log.warn(f"[节点] 启停热更失败: {e}")
 
     def soundpad_play(self, index: int):
         if self.processor and self.running:
@@ -261,14 +273,6 @@ class EngineController:
                 self.processor.soundpad_stop_all()
             except Exception:
                 pass
-
-    def plugin_action(self, index: int, action: str):
-        """按行索引调用插件动作（运行中才生效）。"""
-        if self.processor and self.running:
-            try:
-                self.processor.plugin_action(index, action)
-            except Exception as e:
-                self.log.warn(f"[节点] 动作 {action} 失败: {e}")
 
     def music_status(self, index: int) -> dict:
         """音乐播放器状态（未运行返回默认零值）。"""

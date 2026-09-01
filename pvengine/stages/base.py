@@ -32,7 +32,7 @@ from pvengine.context import FrameContext
 
 
 class Stage(ABC):
-    """音频处理组件基类。frame 为 float32 一维数组（通常 1024 样本）。"""
+    """音频处理组件基类。frame 为 float32 一维数组（hop 长度，10ms @48kHz = 480 样本）。"""
 
     name: str = "stage"
     # 本组件生效的处理模式集合；None = 任何模式都生效

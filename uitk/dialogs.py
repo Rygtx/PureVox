@@ -568,6 +568,7 @@ def open_tse_dialog(parent, engine, config, sizes=None, fonts=None):
             messagebox.showinfo("PureVox", "请先启动音频处理，再录制参考。")
             return
         rec = get_tse_recorder()
+        rec.start()   # 打开 _active 门（feed/wait_and_get 均由此 gate，缺失即"未捕获到音频"）
         th.set_recording_hook(lambda s: rec.feed(list(s)))
         th.set_recording_enabled(True)
         recording[0] = True

@@ -264,15 +264,26 @@ class NodeRow(tk.Frame):
 
     def _toggled(self):
         self.cfg["enabled"] = bool(self.on_var.get())
-        if self._on_toggle_cb:
+        if self._hot_toggle_cb is not None and self._hot_toggle_ok():
+            # fx 行热更启停（DESIGN §7）：不重启音频流
+            self._hot_toggle_cb(self, bool(self.on_var.get()))
+        elif self._on_toggle_cb:
             self._on_toggle_cb()
         # 开关节点同步视觉弱化
         self._apply_enabled_look()
 
+    def _hot_toggle_ok(self):
+        # fx 行热更；echo_cancel 例外（far 端采集生命周期绑定建流，走重启）
+        return self.spec.kind == "fx" and self.spec.name != "echo_cancel"
+
     _on_toggle_cb = None
+    _hot_toggle_cb = None
 
     def set_toggle_cb(self, cb):
         self._on_toggle_cb = cb
+
+    def set_hot_toggle_cb(self, cb):
+        self._hot_toggle_cb = cb
 
     def _apply_enabled_look(self):
         fg = theme.TEXT if bool(self.on_var.get()) else theme.MID
@@ -511,19 +522,8 @@ class MainWindowTk:
 
     def quit_app(self):
         """完整退出：保存播放进度 → 停引擎 → 删托盘图标 → 关窗口。"""
-        try:
-            for r in self.rows:
-                if getattr(r, "spec", None) is None or \
-                        r.spec.name != "music_player":
-                    continue
-                idx = self.rows.index(r)
-                st = self.engine.music_status(idx)
-                if st.get("dur"):
-                    r.cfg.setdefault("params", {})["resume_sec"] = round(
-                        float(st.get("pos", 0.0)), 1)
-            self._persist()
-        except Exception:
-            pass
+        self._save_music_positions()
+        self._persist()
         try:
             host = getattr(self, "_pad_hotkeys", None)
             if host is not None:
@@ -579,9 +579,26 @@ class MainWindowTk:
         except Exception:
             pass
 
+    def _save_music_positions(self):
+        """把音乐播放器当前进度固化进行参数（引擎重启/退出前调用，
+        重启后经 resume_sec 原地续播，不再从头开始）。"""
+        try:
+            for r in self.rows:
+                if getattr(r, "spec", None) is None or \
+                        r.spec.name != "music_player":
+                    continue
+                idx = self.rows.index(r)
+                st = self.engine.music_status(idx)
+                if st.get("dur"):
+                    r.cfg.setdefault("params", {})["resume_sec"] = round(
+                        float(st.get("pos", 0.0)), 1)
+        except Exception:
+            pass
+
     def _apply_chain_change(self):
         """结构变更（增删/排序/开关）→ 持久化；运行中则热重建音频链。"""
         was_running = self.engine.running
+        self._save_music_positions()
         self._persist()
         self._refresh_pad_hotkeys()
         if not was_running:
@@ -595,9 +612,15 @@ class MainWindowTk:
         else:
             self._set_running_ui(True)
 
+    def _hot_toggle(self, row, on):
+        """fx 行勾选热更：持久化 + 运行中处理器原地启停（不重启音频流）。"""
+        self._persist()
+        self.engine.set_plugin_enabled(self.rows.index(row), on)
+
     # ── 工具条行为 ──
     def _on_start(self):
         if self.engine.running:
+            self._save_music_positions()
             try:
                 self.engine.stop()
             except Exception:
@@ -870,6 +893,7 @@ class MainWindowTk:
                       on_drag_commit=self._apply_chain_change,
                       on_param=lambda r, k, v: self._on_param(r, k, v))
         row.set_toggle_cb(self._apply_chain_change)
+        row.set_hot_toggle_cb(self._hot_toggle)
         row._on_param_cb = self._apply_chain_change
         row._apply_enabled_look()
         # viz 行：内嵌实时控件
@@ -1025,8 +1049,9 @@ class MainWindowTk:
                   pady=self.sizes["pad_sm"])
 
     def _attach_music_player(self, row):
-        """音乐播放器行内控制：选曲目 + 单键 ▶/⏸ + 进度滑块（可拖 seek）
-        + 循环勾选；播放位置经事件（暂停/拖动/退出）触发持久化。"""
+        """音乐播放器行内控制：选曲目 + 进度滑块（可拖 seek）；
+        播放开关 = 行启用复选框（硬启停，无暂停/开始按钮），
+        播放位置经事件（拖动/停止/退出）触发持久化。"""
         S, F = self.sizes, self.fonts
         holder = tk.Frame(row.body_frame, bg=theme.BASE)
         holder.pack(fill=tk.X, padx=S["pad_lg"], pady=(0, S["pad_sm"]))
@@ -1052,15 +1077,6 @@ class MainWindowTk:
             row.cfg.setdefault("params", {})["resume_sec"] = round(
                 float(pos_sec), 1)
             self._persist()
-
-        def _toggle():
-            st = self.engine.music_status(_idx())
-            was = bool(st.get("playing"))
-            self.engine.plugin_action(
-                _idx(), "pause" if was else "play")
-            if was:
-                # 暂停事件：触发进度持久化
-                _save_resume(st.get("pos", 0.0))
 
         def _pick():
             from tkinter import filedialog, messagebox
@@ -1088,20 +1104,11 @@ class MainWindowTk:
             state["dur"] = 0.0
             refresh_name()
 
-        toggle_btn = tk.Label(bar, text="▶", bg=theme.BASE, fg=theme.ACCENT,
-                              cursor="hand2", font=F.get("bold"), width=2)
-        toggle_btn.pack(side=tk.LEFT, padx=(0, S["pad_sm"]))
-        toggle_btn.bind("<Button-1>", lambda e: _toggle())
         pick_btn = tk.Label(bar, text="选择曲目", bg=theme.BASE,
                             fg=theme.ACCENT, cursor="hand2",
                             font=F.get("body"))
         pick_btn.pack(side=tk.LEFT, padx=(0, S["pad_sm"]))
         pick_btn.bind("<Button-1>", lambda e: _pick())
-        lp_var = tk.BooleanVar(value=bool(
-            (row.cfg.get("params") or {}).get("loop", False)))
-        DarkCheck(bar, "循环", lp_var,
-                  command=lambda: _set("loop", bool(lp_var.get())),
-                  sizes=S, fonts=F)
         time_lbl = tk.Label(bar, text="00:00 / 00:00", bg=theme.BASE,
                             fg=theme.TEXT_DIM, font=F.get("small"))
         time_lbl.pack(side=tk.RIGHT)
@@ -1152,8 +1159,7 @@ class MainWindowTk:
             if s is not None and not state["dragging"] and dur > 0:
                 s.set_value(pos, silent=True)
             time_lbl.configure(text=f"{_fmt(pos)} / {_fmt(dur)}")
-            toggle_btn.configure(text="⏸" if playing else "▶")
-            # 播放→暂停/播完 的状态沿：触发进度持久化
+            # 播放→停止（复选框关/引擎停）的状态沿：触发进度持久化
             if state["was_playing"] and not playing:
                 _save_resume(pos)
             state["was_playing"] = playing
@@ -1420,7 +1426,6 @@ class MainWindowTk:
                 if (self.panel.body.winfo_reqheight()
                         > self.panel.canvas.winfo_height()):
                     self.panel.canvas.yview_scroll(-d, "units")
-                    self.panel.canvas.yview_pickplace("")
                 return
             w = getattr(w, "master", None)
 

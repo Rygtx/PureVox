@@ -13,7 +13,7 @@ except ImportError:
     pyaudio = None
 
 SAMPLE_RATE = 48000
-HOP = 960          # 与网络帧一致 (20ms)
+HOP = 480          # 引擎 hop 10ms @48kHz（与网络帧一致）
 FORMAT = pyaudio.paFloat32 if pyaudio else None
 CHANNELS = 1
 

@@ -38,7 +38,7 @@ logger = logging.getLogger(__name__)
 
 class OpusDecoder:
     def __init__(self, sample_rate: int = 48000, channels: int = 1,
-                 frame_duration_ms: int = 20):
+                 frame_duration_ms: int = 10):   # 10ms 帧 = 480 样本 @48k（与模型 hop 一致）
         self._sample_rate = sample_rate
         self._channels = channels
         self._frame_size = int(sample_rate * frame_duration_ms / 1000)

@@ -26,7 +26,7 @@ import threading
 from typing import List, Optional
 
 SAMPLE_RATE = 48000
-HOP_LENGTH = 1024
+HOP_LENGTH = SAMPLE_RATE // 100   # 10ms @48kHz = 480（202609 模型契约，与 pvengine.context 一致）
 
 # 模块级日志钩子（由 UI 经 audio_processor.set_module_log 注入，同时转发到此）
 _module_log = print

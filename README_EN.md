@@ -140,7 +140,7 @@ Phone 鈫?https://<PC_IP>:59123 (mDNS broadcast _purevox._tcp.local.) 鈫?denois
   self-signed cert, tap the mic button to stream
 - APK: opens and auto-discovers LAN servers, connects and streams automatically
 - Client message: `{"type":"audio","data":"<base64 opus>","seq":N}`; server replies `{"type":"ack","seq":N}`
-- Frame size 960 samples (20 ms @48 kHz), aligned with the Opus encoders
+- Frame size 480 samples (10 ms @48 kHz), aligned with the Opus encoders and the engine hop
 
 ## Project layout
 

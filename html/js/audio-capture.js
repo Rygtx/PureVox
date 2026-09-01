@@ -6,8 +6,8 @@ export class AudioCapture {
         this._encoderWorker = null;
         this._onOpusData = null;
         this._onLevel = null;
-        this._pcmBuffer = new Float32Array(0);
-        this._frameSize = 960;
+        this._backlog = 0;
+        this._frameSize = 480;   // 10ms @ 48kHz（与模型 hop 一致）
         // Debug info
         this._sampleRate = 0;
         this._deviceSampleRate = 0;
@@ -53,29 +53,25 @@ export class AudioCapture {
             }
         };
 
-        this._processor = this._context.createScriptProcessor(1024, 1, 1);
-        this._processor.onaudioprocess = (e) => {
-            const input = e.inputBuffer.getChannelData(0);
-
-            let peak = 0;
-            for (let i = 0; i < input.length; i++) {
-                const abs = Math.abs(input[i]);
-                if (abs > peak) peak = abs;
+        // AudioWorklet：worklet 内按 480 样本（10ms）切帧后投递，
+        // 数据面不出现 1024 等错位块；输出恒静音，连 destination
+        // 仅为让节点保持被音频线程拉动。
+        await this._context.audioWorklet.addModule('js/pcm-worklet.js');
+        this._processor = new AudioWorkletNode(this._context, 'pcm-encoder-processor',
+            { outputChannelCount: [1] });
+        this._processor.port.onmessage = (e) => {
+            const d = e.data;
+            if (d.type === 'level') {
+                if (this._onLevel) this._onLevel(d.level);
+                return;
             }
-            if (this._onLevel) this._onLevel(peak);
-
-            const newBuf = new Float32Array(this._pcmBuffer.length + input.length);
-            newBuf.set(this._pcmBuffer);
-            newBuf.set(input, this._pcmBuffer.length);
-            this._pcmBuffer = newBuf;
-
-            while (this._pcmBuffer.length >= this._frameSize) {
-                const frame = this._pcmBuffer.slice(0, this._frameSize);
-                this._pcmBuffer = this._pcmBuffer.slice(this._frameSize);
+            if (d.type === 'pcm') {
                 this._totalEncoded++;
+                this._backlog = d.backlog;
                 if (this._onOpusData) {
-                    this._encoderWorker.postMessage({ type: 'encode', data: frame },
-                        [frame.buffer]);
+                    this._encoderWorker.postMessage(
+                        { type: 'encode', data: new Float32Array(d.data) },
+                        [d.data]);
                 }
             }
         };
@@ -101,7 +97,7 @@ export class AudioCapture {
             try { this._context.close(); } catch {}
             this._context = null;
         }
-        this._pcmBuffer = new Float32Array(0);  // 清空残留，防止不全帧被发送
+        this._backlog = 0;
         this._totalEncoded = 0;
     }
 
@@ -114,7 +110,7 @@ export class AudioCapture {
     get encoderFrameSize() { return this._frameSize; }
     get encoderSampleRate() { return 48000; }     // Opus encoder hardcoded
     get encoderBitrate() { return 32000; }         // Opus encoder hardcoded
-    get bufferBacklog() { return this._pcmBuffer.length; }
+    get bufferBacklog() { return this._backlog; }
     get totalEncoded() { return this._totalEncoded; }
     get streaming() { return this._stream !== null; }
 }

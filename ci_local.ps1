@@ -37,7 +37,7 @@ function Invoke-Windows {
     if ($LASTEXITCODE -ne 0) { throw "build_win.ps1 failed" }
 
     Write-Host "==> [windows] engine smoke test"
-    python -c "from pvengine import AudioProcessor; ap = AudioProcessor(0.0); out = ap.process([0.0] * 1024); assert len(out) == 1024; print('pvengine OK')"
+    python -c "from pvengine import AudioProcessor; ap = AudioProcessor(0.0); out = ap.process([0.0] * 480); assert len(out) == 480; print('pvengine OK')"
     if ($LASTEXITCODE -ne 0) { throw "engine smoke failed" }
 
     Write-Host "==> [windows] done: dist/PureVox/"

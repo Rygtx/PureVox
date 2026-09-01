@@ -97,9 +97,9 @@ import sys
 import numpy as np
 from pvengine import AudioProcessor
 ap = AudioProcessor(0.0)
-x = (np.sin(np.arange(1024) * 0.05) * 0.3).astype('float32')
+x = (np.sin(np.arange(480) * 0.05) * 0.3).astype('float32')
 out = ap.process(x.tolist())
-assert len(out) == 1024
+assert len(out) == 480
 print('pvengine OK on Python', sys.version.split()[0])
 EOF
 }

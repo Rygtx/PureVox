@@ -22,7 +22,7 @@
 无手搓环形缓冲、不触碰 AudioThread/主体传输层。
 
 多路输出：首设备为主时钟，其回调把每帧混合结果副本投递到其余设备的
-有界队列（满丢最旧，欠载补静音，深度 ~213ms），从设备各自回调消费。
+有界队列（满丢最旧，欠载补静音，深度 ~200ms），从设备各自回调消费。
 输出设备按名称精确匹配 miniaudio 枚举；未选或未匹配 = 系统默认输出
 （Linux 走 pipewire-pulse 时 sink name 即 pw-dump 的 node.name，
 与 plan.outputs 同源）。格式恒 F32 立体声 48kHz（miniaudio 负责与
@@ -34,10 +34,10 @@ import queue
 import numpy as np
 
 _TARGET_SR = 48000
-_HOP = 1024              # 混合粒度（≈21ms，与主线 HOP 一致）
+_HOP = 480              # 混合粒度（10ms @48kHz，与 pvengine.context.HOP_LENGTH 一致）
 _CHANNELS = 2            # 立体声交错输出
 _BUFFER_MS = 60          # 设备周期：延迟/抗抖动平衡
-_QUEUE_N = 10            # 扇出队列深度（≈213ms）
+_QUEUE_N = 20            # 扇出队列深度（≈200ms）
 
 
 class MediaSession:

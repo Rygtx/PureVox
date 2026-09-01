@@ -42,9 +42,12 @@ class _EffectAdapter:
     def __init__(self, eff, enabled=True):
         self.eff = eff
         self.enabled = enabled
+        # 媒体源类插件（音乐/音效板/桌面声音）声明 FADE_THROUGH：
+        # 复选框关断不旁路，插件在 process 内自行淡出（衔接无缝）
+        self.fade_through = bool(getattr(eff, "FADE_THROUGH", False))
 
     def accepts(self, ctx) -> bool:
-        return self.enabled
+        return self.enabled or self.fade_through
 
     def process(self, frame, ctx):
         return self.eff.process(frame.astype(np.float32, copy=False), ctx)
@@ -220,16 +223,6 @@ class AudioProcessor:
         if sp is not None:
             sp.stop_all()
 
-    def plugin_action(self, index: int, action: str):
-        """按 UI 行索引调用插件上的无参动作方法（play/pause/stop/…）。"""
-        if 0 <= index < len(self._entries):
-            t, st, _p, en = self._entries[index]
-            if st is not None and st.enabled:
-                obj = getattr(st, "eff", st)
-                fn = getattr(obj, action, None)
-                if callable(fn):
-                    fn()
-
     def music_status(self, index: int) -> dict:
         """音乐播放器状态（playing/pos秒/dur秒；非该节点返回默认）。"""
         if 0 <= index < len(self._entries):
@@ -255,6 +248,10 @@ class AudioProcessor:
             self._entries[index] = (t, st, p, bool(enabled))
             if st is not None:
                 st.enabled = bool(enabled)
+                # 同步镜像到 Effect（FADE_THROUGH 插件据此自行淡出/淡入）
+                eff = getattr(st, "eff", None)
+                if eff is not None:
+                    eff.enabled = bool(enabled)
 
     def move_plugin(self, index: int, direction: int) -> bool:
         j = index + direction
@@ -300,13 +297,13 @@ class AudioProcessor:
 
     def process(self, mic):
         if len(mic) != HOP_LENGTH:
-            raise RuntimeError("Input audio chunk length must be equal to hop length (1024)")
+            raise RuntimeError(f"Input audio chunk length must be equal to hop length ({HOP_LENGTH})")
         out = self._run_chain(np.asarray(mic, dtype=np.float32))
         return out.tolist()
 
     def process_with_far(self, mic, far_end):
         if len(mic) != HOP_LENGTH:
-            raise RuntimeError("Input audio chunk length must be equal to hop length (1024)")
+            raise RuntimeError(f"Input audio chunk length must be equal to hop length ({HOP_LENGTH})")
         far = np.asarray(far_end, dtype=np.float32) if far_end is not None else None
         out = self._run_chain(np.asarray(mic, dtype=np.float32), far)
         return out.tolist()
@@ -377,12 +374,13 @@ class AudioProcessor:
             a.set_far_sample_rate(self._far_sr)
 
     # ── TSE ──
-    def set_tse_reference(self, ref):
+    def set_tse_reference(self, ref, ref_key=None):
         for t, st in self._typed:
             if t == "tse":
                 obj = getattr(st, "eff", st)
                 if ref:
-                    obj.set_reference(np.asarray(ref, dtype=np.float32))
+                    obj.set_reference(np.asarray(ref, dtype=np.float32),
+                                      ref_key=ref_key)
 
     def is_tse_reference_loaded(self):
         return any(t == "tse" and getattr(getattr(s, "eff", s), "has_reference", False)

@@ -49,28 +49,30 @@ btnTest.onclick = async () => {
 
     const source = ctx.createMediaStreamSource(stream);
 
-    // Step 3: ScriptProcessor test
-    const sp = ctx.createScriptProcessor(1024, 1, 1);
-    let spCalls = 0;
-    sp.onaudioprocess = (e) => {
-        const ch = e.inputBuffer.getChannelData(0);
-        let max = 0;
-        for (let i = 0; i < ch.length; i++) {
-            const a = Math.abs(ch[i]);
-            if (a > max) max = a;
+    // Step 3: AudioWorklet test（480 样本/帧 = 10ms，与引擎 hop 一致）
+    await ctx.audioWorklet.addModule('js/pcm-worklet.js');
+    const node = new AudioWorkletNode(ctx, 'pcm-encoder-processor',
+        { outputChannelCount: [1] });
+    let frameCount = 0;
+    node.port.onmessage = (e) => {
+        if (e.data.type !== 'pcm') return;
+        frameCount++;
+        if (frameCount <= 5) {
+            const ch = new Float32Array(e.data.data);
+            let max = 0;
+            for (let i = 0; i < ch.length; i++) {
+                const a = Math.abs(ch[i]);
+                if (a > max) max = a;
+            }
+            add('  AudioWorklet #' + frameCount + '  len=' + ch.length + '  max=' + max.toFixed(8));
         }
-        spCalls++;
-        if (spCalls <= 5) add('  ScriptProcessor #' + spCalls + '  len=' + ch.length + '  max=' + max.toFixed(8));
     };
-    source.connect(sp);
-    const g = ctx.createGain();
-    g.gain.value = 0;
-    sp.connect(g);
-    g.connect(ctx.destination);
+    source.connect(node);
+    node.connect(ctx.destination);   // worklet 输出恒静音，仅为保持节点被拉动
 
     add('等待 3 秒数据... 请对着麦克风说话');
     await new Promise(r => setTimeout(r, 3000));
-    add('ScriptProcessor 共回调 ' + spCalls + ' 次');
+    add('AudioWorklet 共输出 ' + frameCount + ' 帧 (480/帧=10ms)');
     add('测试完成');
 };
 </script>

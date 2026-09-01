@@ -21,7 +21,7 @@ VUBar   连续三区电平条（绿 -60..-20 / 黄 -20..-9 / 红 -9..0），
         峰值保持 10s 后以 20dB/s 回落，刻度线 + 标签。
 Spectrum 128 段 Mel 实时输入/输出频谱重叠对比（pvengine.compute_spectrum，
         dB 域 -90..-20；输出=绿基准，输入>输出=灰(噪声残留)，
-        输入<输出=浅(增强)；EMA α=0.3 平滑；2048 窗 / 1024 步进累积）。
+        输入<输出=浅(增强)；EMA α=0.3 平滑；960 窗(=2×hop) / 480 步进累积）。
 LevelRing 圆形运行指示灯。
 """
 
@@ -45,11 +45,12 @@ UNLIT_GREEN, UNLIT_YELLOW, UNLIT_RED = "#C8E6C9", "#FFF59D", "#FFCDD2"
 # ── Spectrum（与 legacy SpectrumWidget 同参数）──
 try:
     from pvengine import SPECTRUM_NUM_BANDS as NUM_BANDS
+    from pvengine import SPECTRUM_FFT as FFT_SIZE
 except Exception:
     NUM_BANDS = 128
+    FFT_SIZE = 960              # 2×hop @48kHz（FFT 无损窗长）
+MIN_SAMPLES = FFT_SIZE // 2     # 累积步进 = 480 = hop
 SPEC_BANDS = 80   # 频谱只画前 80 段（自 20Hz 起）
-FFT_SIZE = 2048
-MIN_SAMPLES = FFT_SIZE // 2
 DB_MIN, DB_MAX = -90.0, -20.0
 DB_RANGE = DB_MAX - DB_MIN
 SPEC_EMA = 0.3

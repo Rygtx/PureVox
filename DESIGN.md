@@ -84,12 +84,18 @@ class NodeSpec:
 以下不变量对所有平台成立，违反即为缺陷：
 
 1. **格式**：内部唯一格式 F32 单声道 48kHz；重采样/声道转换只发生在 L0。
-2. **混音**：N 路 input 等权平均；某路暂无数据则跳过该路；全部无数据 = 本帧无输入。
-3. **扇出**：M 路 output 各持独立环形缓冲，写入同一份降噪后音频；
+2. **10ms hop**：所有数据面按 10ms hop 前进——`hop = SAMPLE_RATE // 100`
+   （48kHz → 480 样本，NFFT = 2×hop = 960），**按时间派生而非固定样本数**。
+   引擎 Stage 进出帧、平台回调块、桥接 FIFO 分块、重采样输出、网络 Opus 帧
+   一律对齐 10ms 网格；缓冲水位取 hop 整数倍；禁止引入与网格错位的固定
+   样本块（1024/2048 等）。202609 模型三件套契约一致（波形 hop 进出、
+   STFT 在模型图内、enh_hop 滞后 1 hop），未来多采样率仅换 SAMPLE_RATE。
+3. **混音**：N 路 input 等权平均；某路暂无数据则跳过该路；全部无数据 = 本帧无输入。
+4. **扇出**：M 路 output 各持独立环形缓冲，写入同一份降噪后音频；
    任一路积压/阻塞不得拖累其余路与处理循环。
-4. **顺序**：信号流 = inputs(混合) → [fx 按链序] → outputs ∥ viz。
-5. **旁路**：viz 只读 tap，永不反压、永不修改样本。
-6. **远端参考**：AEC far 是独立采集支路，仅当链中存在启用的 echo_cancel 时建立。
+5. **顺序**：信号流 = inputs(混合) → [fx 按链序] → outputs ∥ viz。
+6. **旁路**：viz 只读 tap，永不反压、永不修改样本。
+7. **远端参考**：AEC far 是独立采集支路，仅当链中存在启用的 echo_cancel 时建立。
 
 ## 4. 会话计划（SessionPlan）契约
 
@@ -183,7 +189,7 @@ class BackendSpec:
 | 变更 | 生效方式 | 机制 |
 |---|---|---|
 | fx 参数滑杆 | 热更 | `update_plugin_param` 直达运行实例 |
-| fx 行启用/停用 | 热更 | `stage.enabled`；AEC 特例：动态起停扬声器采集 |
+| fx 行启用/停用 | 热更 | `set_plugin_enabled` 只翻 Stage/Effect enabled；媒体源类（FADE_THROUGH）自行淡出/淡入。AEC 例外走重启路径（far 端采集生命周期绑定建流） |
 | fx 行增删/排序 | 热更 | 整链 `set_plugins` 重建（模型经 stage_cache 复用，不断流） |
 | EQ 增益/预设 | 热更 | eq 插件参数 |
 | TSE 参考录音/加载 | 热更 | `set_tse_reference` |

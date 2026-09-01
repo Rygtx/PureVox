@@ -15,18 +15,23 @@
 #
 # SPDX-License-Identifier: GPL-3.0-or-later
 
-"""Denoise 组件——v9 模型（2048 FFT / hop 1024 / sqrt-Hann）流式推理。
+"""Denoise 组件——purevox_denoise_202609 模型流式推理。
 
-模型契约：spec [1,1025,1,2]（interleaved 复数谱）+ enc_c/dec_c/tfa_c/inter_c
-四个 RNN 状态输入；输出 enhanced_spec + 对应 *_out 状态。
-状态维度优先从会话元数据读取，动态维回退历史常量。
+模型契约（202609 三件套统一，STFT 在模型图内，引擎零 DSP）：
+  输入  mix_hop  [1,480]  波形 hop (10ms @48kHz)
+        cache_in [1,26080] 扁平流式缓存（首帧零起）
+  输出  enh_hop  [1,480]  增强波形 hop（滞后 1 hop = 10ms，模型内部 tail 语义）
+        cache_out [1,26080]
+从零缓存起步即与训练流式契约一致（无需静音预热）。
 """
 
 import numpy as np
 
-from pvengine.context import NFFT, HOP_LENGTH, FREQ
-from pvengine.dsp.core import make_session, sqrt_hann, state_dim
+from pvengine.context import HOP_LENGTH
+from pvengine.dsp.core import make_session, state_dim
 from pvengine.stages.base import Stage
+
+_CACHE_FALLBACK = 26080
 
 
 class DenoiseEngine:
@@ -34,76 +39,22 @@ class DenoiseEngine:
         self.sess = make_session(model_path)
         self.in_names = [i.name for i in self.sess.get_inputs()]
         self.out_names = [o.name for o in self.sess.get_outputs()]
-        dims = {"enc_c": (77106, "enc_c_out"), "dec_c": (53862, "dec_c_out"),
-                "tfa_c": (1056, "tfa_c_out"), "inter_c": (1024, "inter_c_out")}
-        self.states = {k: np.zeros((1, state_dim(self.sess, k, fb)), dtype=np.float32)
-                       for k, (fb, _o) in dims.items()}
-        self.window = sqrt_hann(NFFT)
-        self.history = np.zeros(NFFT - HOP_LENGTH, dtype=np.float32)
-        self.ola = np.zeros(NFFT, dtype=np.float32)
-        self.win_sum = np.zeros(NFFT, dtype=np.float32)
-        # 预热 3 帧静音（对齐原 C denoise_new，让 RNN 状态收敛到静音基线）
-        for _ in range(3):
-            self.process_chunk(np.zeros(HOP_LENGTH, dtype=np.float32))
-
-    def _analyze(self, block: np.ndarray) -> np.ndarray:
-        x = np.concatenate([self.history, block]) * self.window
-        self.history = block.astype(np.float32).copy()
-        spec = np.fft.rfft(x, n=NFFT)
-        packed = np.empty(2 * FREQ, dtype=np.float32)
-        packed[0::2] = spec.real
-        packed[1::2] = spec.imag
-        packed[1] = 0.0            # DC 虚部
-        packed[2 * FREQ - 1] = 0.0  # Nyquist 虚部
-        return packed
-
-    def _run_onnx(self, spec: np.ndarray) -> None:
-        feed = {}
-        for name in self.in_names:
-            if name == "spec":
-                feed[name] = spec.reshape(1, FREQ, 1, 2)
-            elif name in self.states:
-                feed[name] = self.states[name]
-        outs = self.sess.run(self.out_names, feed)
-        od = dict(zip(self.out_names, outs))
-        enh = od.get("enhanced_spec")
-        if enh is not None:
-            spec[:] = np.asarray(enh, dtype=np.float32).reshape(-1)[:2 * FREQ]
-        for key in self.states:
-            v = od.get(key + "_out")
-            if v is not None:
-                flat = np.asarray(v, dtype=np.float32).reshape(-1)
-                n = min(flat.size, self.states[key].size)
-                self.states[key].reshape(-1)[:n] = flat[:n]
-
-    def _synth(self, spec: np.ndarray) -> np.ndarray:
-        cspec = spec[0::2] + 1j * spec[1::2]
-        frame = np.fft.irfft(cspec, n=NFFT).astype(np.float32) * self.window
-        self.ola += frame
-        self.win_sum += self.window * self.window
-        norm = self.win_sum[:HOP_LENGTH]
-        out = np.where(norm > 1e-6,
-                       self.ola[:HOP_LENGTH] / np.maximum(norm, 1e-30),
-                       self.ola[:HOP_LENGTH]).astype(np.float32)
-        self.ola[:-HOP_LENGTH] = self.ola[HOP_LENGTH:]
-        self.ola[-HOP_LENGTH:] = 0.0
-        self.win_sum[:-HOP_LENGTH] = self.win_sum[HOP_LENGTH:]
-        self.win_sum[-HOP_LENGTH:] = 0.0
-        return out
+        dim = state_dim(self.sess, "cache_in", _CACHE_FALLBACK)
+        self.cache = np.zeros((1, dim), dtype=np.float32)
 
     def process_chunk(self, block: np.ndarray) -> np.ndarray:
         if len(block) != HOP_LENGTH:
-            raise ValueError("denoise: chunk must be 1024 samples")
-        spec = self._analyze(block)
-        self._run_onnx(spec)
-        return self._synth(spec)
+            raise ValueError(f"denoise: chunk must be {HOP_LENGTH} samples (10ms)")
+        outs = self.sess.run(self.out_names, {
+            "mix_hop": np.asarray(block, dtype=np.float32).reshape(1, -1),
+            "cache_in": self.cache,
+        })
+        od = dict(zip(self.out_names, outs))
+        self.cache = np.asarray(od["cache_out"], dtype=np.float32).reshape(1, -1)
+        return np.asarray(od["enh_hop"], dtype=np.float32).reshape(-1)
 
     def reset(self):
-        for k in self.states:
-            self.states[k][:] = 0.0
-        self.history[:] = 0.0
-        self.ola[:] = 0.0
-        self.win_sum[:] = 0.0
+        self.cache[:] = 0.0
 
     def release(self):
         self.sess = None

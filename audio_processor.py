@@ -33,6 +33,7 @@ import struct
 import threading
 import time
 import wave
+from collections import deque
 from typing import Any, List, Optional, Callable, Tuple
 
 # PyAudio（PortAudio）仅 Windows/macOS 后端使用；Linux 走原生 PipeWire，
@@ -87,8 +88,7 @@ except ImportError:
     _module_log("[音频] 引擎模块 pvengine 不可用（缺 numpy/onnxruntime？）")
 
 SAMPLE_RATE = 48000
-FRAME_SIZE = 2048
-HOP_LENGTH = 1024
+HOP_LENGTH = 480                # 10ms @48kHz（202609 模型契约：波形 hop 进出）
 
 
 def _bridge_stream_count(bridge):
@@ -99,8 +99,8 @@ def _bridge_stream_count(bridge):
         return 0
 
 
-TSE_SAMPLE_RATE = 48000        # TSE15 模型采样率 (48kHz)
-TSE_HOP_LENGTH = 1024          # 1024 samples @ 48kHz = 21.3ms
+TSE_SAMPLE_RATE = 48000        # TSE 模型采样率 (48kHz)
+TSE_HOP_LENGTH = 480           # 480 samples @ 48kHz = 10ms
 
 
 #  Speaker loopback capture — 平台抽象（WASAPI / PulseAudio）
@@ -218,6 +218,18 @@ class AudioThread(threading.Thread):
         self._output_stream: Optional[Any] = None
         self._out_channels: int = 1
         self._accum: List[float] = []  # 回调帧累积（frame_count→hop_length）
+        self._out_accum: List[float] = []  # hop 产出累积（hop_length→frame_count）
+        self._out_started = False        # 交付预热：攒够 1 hop 滞后才开始交付
+        # 回调健康诊断（性能/对齐；10s 汇总一行，见 _diag_note）
+        self._diag = {"n": 0, "t_sum": 0.0, "t_max": 0.0, "bad_status": 0,
+                      "odd_frames": 0, "zero_pad": 0, "max_backlog": 0,
+                      "extra_n": 0, "extra_frames": 0, "extra_pad": 0,
+                      "extra_drop": 0, "t0": time.time()}
+        self._extra_carry: List[deque] = []   # 额外输出消费侧结转
+        self._extra_pos: List[float] = []     # ASRC 小数消费位
+        self._extra_hold: List[float] = []    # ASRC 饥饿保持值
+        self._extra_integ: List[float] = []   # ASRC 积分项（稳态速率差）
+        self._extra_primed: List[bool] = []   # 额外输出预热标记
         # 多输出扇出（原「监听」机制的泛化）：主输出之外的全部播放设备
         self._extra_out_ids: List[int] = [i for i in (extra_output_ids or [])
                                           if i is not None]
@@ -453,7 +465,7 @@ class AudioThread(threading.Thread):
         if in_id is None:
             self._last_output_frame = [0.0] * HOP_LENGTH
             self._output_buffer = RingBuffer(SAMPLE_RATE)  # 1秒缓冲吸收网络抖动
-            self._output_buffer.write([0.0] * HOP_LENGTH * 3)  # ~64ms 预填充防 underrun
+            self._output_buffer.write([0.0] * HOP_LENGTH * 3)  # ~30ms 预填充防 underrun
             self._out_channels = max(1, out_max_ch)
             _module_log(f"[输出] {out_max_ch}ch（网络输入模式）")
             for out_ch in (1, out_max_ch):
@@ -504,7 +516,7 @@ class AudioThread(threading.Thread):
 
         if try_full_duplex:
             self._half_duplex = False
-            fpb = HOP_LENGTH  # 1024 frames = 21.3ms
+            fpb = HOP_LENGTH  # 480 frames = 10ms
             last_err = None
             for ch in common_ch:
                 self._channels = ch
@@ -533,12 +545,121 @@ class AudioThread(threading.Thread):
 
         self._create_extra_outputs()
 
+    # ── 跨设备时钟域与音频连续性（2026-09 咔哒/破音专项沉淀）──────────
+    #
+    # 背景：多设备输出链上存在三个各自走钟的时钟域——
+    #   ① 全双工主流（输入麦克风 + 主输出设备耦合同步；PortAudio 交叉
+    #      设备全双工的回调节奏随其内部同步机制波动，实测 ≈47.9k~48.0k
+    #      样本/秒）；
+    #   ② 额外输出设备（蓝牙耳机等，按自己的真实时钟消耗，恒 48k/s）；
+    #   ③ VB-CABLE 等虚拟设备（跟随主流节奏）。
+    # 速率差 ~±2%：缓冲只能吸收抖动，吸收不了速率差——差多少秒就永远
+    # 差多少秒，固定速率消费必然周期性饥饿（垫零=咔哒）或溢出（丢样本
+    # =咔哒）。
+    #
+    # 症状史（对照排查结论，供后人少走弯路）：
+    #   - "物理输入+音乐同开才有，单开没事"：开麦才走全双工+多输出扇出
+    #     路径（关麦为纯媒体会话 miniaudio 直出，不经本机制）；
+    #   - "与麦克风电平/增益无关"：时钟域问题与信号内容无关；
+    #   - "音乐上明显、语音上不明显"：连续波形上的洞/丢样本在稀疏语音
+    #     中易被掩蔽；
+    #   - "音调晃动（怪怪的）"：ASRC 伺服比例项过强，放大了水位拍频
+    #     噪声（已修：小比例阻尼 + 慢速积分，步长稳态恒定）。
+    #
+    # 修复机制（单一实现路径，勿加平行方案）：
+    #   1. _aligned_delivery（主路径）：hop 产出 → 设备帧长交付。设备
+    #      frame_count 不恒等于 hop（WASAPI/MME 周期抖动），硬补零/硬
+    #      截断会在连续音频上挖洞/丢样本。改为：hop 产出进输出累加器，
+    #      启动建立 ~1 hop 交付滞后，按帧长取前缀、余量结转；
+    #   2. 额外输出回调（_get_extra_callback，各设备独立状态）：预热
+    #      ~4 hop 后开始消费；消费侧结转 + ASRC——按结转水位伺服微调
+    #      消费步长（线性插值变率重采样，±3%）：积分项慢速收敛到真实
+    #      速率差，小比例项为双积分环提供阻尼（步长扰动 ≤±0.1%），
+    #      水位低于 1 hop 安全阀温和加速；~300ms 封顶丢最旧防延迟爬升。
+    #      速率差被平滑消化，延迟恒定 ~50ms，音调恒定；
+    #   3. _diag_note：60s 一行健康汇总（字段判读见其 docstring）。
+    #
+    # 经验教训：跨设备音频系统里，"换更大的缓冲"永远解决不了速率差；
+    # 任何跨时钟域的消费者必须变速（ASRC）或受控丢弃，二选一。
+    def _diag_note(self, status, frame_count, dur) -> None:
+        """音频回调健康诊断：60s 窗口汇总一行（仅本地设备路径）。
+
+        各字段含义与判读（正常值见括号）：
+        - n / 平均 / 最大：主流回调次数与耗时。超过 10ms 即错过 hop
+          死线，会触发设备层欠载（听感咔哒）；
+        - 设备异常帧：PyAudio status 标志非零的回调数（输入溢出/输出
+          欠载，0 为正常）；
+        - 非整 hop 帧：frame_count≠480 的回调数（WASAPI/MME 周期抖动，
+          已由 _aligned_delivery 吸收，仅观察）；
+        - 交付垫零：主路径交付时补零样本数（0 为正常，>0 即主路径有洞）；
+        - 积压：输出累加器余量（~480 = 设计的 1 hop 交付滞后，恒定）；
+        - 额外输出 n / 需求：额外输出（蓝牙等）回调次数与需求速率
+          （≈48000/s 为正常）；
+        - ASRC 垫零 / 丢弃：额外输出饥饿补零与超限丢弃（0 为正常）。
+        """
+        try:
+            d = self._diag
+            d["n"] += 1
+            d["t_sum"] += dur
+            d["t_max"] = max(d["t_max"], dur)
+            if status:
+                d["bad_status"] += 1
+            if frame_count != self._hop_length:
+                d["odd_frames"] += 1
+            now = time.time()
+            if now - d["t0"] >= 60.0:
+                win = max(1e-6, now - d["t0"])
+                _module_log(
+                    "[诊断] 音频回调健康（60s）: 主流 n=%d 平均=%.2fms "
+                    "最大=%.2fms 设备异常帧=%d 非整hop帧=%d 交付垫零=%d "
+                    "积压=%d | 额外输出 n=%d 需求=%.0f样本/s ASRC垫零=%d "
+                    "丢弃=%d (正常: 垫/丢=0 需求≈48000)" % (
+                        d["n"], d["t_sum"] / max(1, d["n"]) * 1000.0,
+                        d["t_max"] * 1000.0, d["bad_status"], d["odd_frames"],
+                        d["zero_pad"], d["max_backlog"],
+                        d["extra_n"], d["extra_frames"] / win,
+                        d["extra_pad"], d["extra_drop"]))
+                d.update(n=0, t_sum=0.0, t_max=0.0, bad_status=0,
+                         odd_frames=0, zero_pad=0, max_backlog=0,
+                         extra_n=0, extra_frames=0, extra_pad=0,
+                         extra_drop=0, t0=now)
+        except Exception:
+            pass
+
+    def _aligned_delivery(self, produced: List[float],
+                          frame_count: int) -> List[float]:
+        """hop 产出 → 设备帧长交付（音频连续性关键路径）。
+
+        设备回调 frame_count 不恒等于 hop（WASAPI/MME 周期抖动）：此前
+        硬补零/硬截断会在连续音频上挖洞/丢样本（纯麦克风不显，音乐上
+        即偶发弱咔哒）。改为：hop 产出进输出累加器，启动时建立 ~1 hop
+        交付滞后，此后按帧长取前缀、余量留待下次回调——帧长抖动全部
+        由积压吸收，不挖洞不丢样本。长跑收支由实时钟天然平衡。
+        """
+        self._out_accum.extend(produced)
+        if not self._out_started:
+            if len(self._out_accum) < self._hop_length + frame_count:
+                return [0.0] * frame_count   # 启动预热：攒够 1 hop 再交付
+            self._out_started = True
+        if len(self._out_accum) >= frame_count:
+            out = self._out_accum[:frame_count]
+            del self._out_accum[:frame_count]
+        else:
+            pad = frame_count - len(self._out_accum)
+            out = self._out_accum + [0.0] * pad
+            self._out_accum = []
+            self._diag["zero_pad"] += pad
+        self._diag["max_backlog"] = max(self._diag["max_backlog"],
+                                        len(self._out_accum))
+        return out
+
     def _get_full_duplex_callback(self) -> Callable:
         """全双工模式的音频回调（输入+输出同流）。"""
         def callback(in_data: bytes, frame_count: int, time_info, status) -> Tuple[bytes, int]:
             if self._stop_event.is_set():
                 return (None, pyaudio.paComplete)
 
+            _t0 = time.perf_counter()
             try:
                 # === 第1层：前处理 —— 设备格式 → 48kHz单声道 ===
                 total_samples = frame_count * self._channels
@@ -555,7 +676,7 @@ class AudioThread(threading.Thread):
                 else:
                     mono_chunk = raw
 
-                # 全双工仅 48kHz，累积后分批处理（hop=1024）
+                # 全双工仅 48kHz，累积后按 10ms hop 分批处理（hop=480）
                 self._accum.extend(mono_chunk)
                 denoised_48k: List[float] = []
                 while len(self._accum) >= self._hop_length:
@@ -579,12 +700,9 @@ class AudioThread(threading.Thread):
                         out = self._process_frame(chunk)
                     denoised_48k.extend(out)
 
-                # 补齐/裁剪到 frame_count
-                if len(denoised_48k) < frame_count:
-                    denoised_48k += [0.0] * (frame_count - len(denoised_48k))
-                elif len(denoised_48k) > frame_count:
-                    # 多余的存回 accumulator 供下次回调用（正常不会超过）
-                    denoised_48k = denoised_48k[:frame_count]
+                # 交付对齐 frame_count（余量留待下次回调，不挖洞不丢样本）
+                denoised_48k = self._aligned_delivery(
+                    denoised_48k, frame_count)
 
                 # 录音捕获：降噪后的音频（TSE 前）
                 if self._recording_hook is not None:
@@ -600,7 +718,9 @@ class AudioThread(threading.Thread):
                 denoised = output_48k
 
                 # TSE录音钩子 → 取 post-gain+clip 后、TSE 前的音频
-                if self._tse_hook is not None:
+                # （对话框录音时已挂 _recording_hook 直喂录音器；此处仅在无
+                #   _recording_hook 的场合兜底，避免同一帧双路径重复喂入）
+                if self._tse_hook is not None and self._recording_hook is None:
                     try:
                         pre_tse = self.processor.get_tse_recording_audio()
                         if pre_tse:
@@ -629,9 +749,13 @@ class AudioThread(threading.Thread):
                 else:
                     processed = denoised
 
+                self._diag_note(status, frame_count,
+                                time.perf_counter() - _t0)
                 return (struct.pack(f'{len(processed)}f', *processed), pyaudio.paContinue)
             except Exception as e:
                 _module_log(f"[音频] 全双工回调异常: {e}")
+                self._diag_note(status, frame_count,
+                                time.perf_counter() - _t0)
                 return (struct.pack(f'{frame_count * self._channels}f',
                        *([0.0] * frame_count * self._channels)), pyaudio.paContinue)
 
@@ -655,10 +779,8 @@ class AudioThread(threading.Thread):
                         chunk = self._accum[:self._hop_length]
                         del self._accum[:self._hop_length]
                         out48.extend(self._process_frame(chunk))
-                    if len(out48) < frame_count:
-                        out48 += [0.0] * (frame_count - len(out48))
-                    else:
-                        out48 = out48[:frame_count]
+                    # 交付对齐 frame_count（余量留待下次回调，不丢样本）
+                    out48 = self._aligned_delivery(out48, frame_count)
                     for buf in self._extra_out_buffers:
                         buf.write(list(out48))
                     self._vu_peak = max(abs(x) for x in out48) if out48 else 0.0
@@ -696,16 +818,84 @@ class AudioThread(threading.Thread):
         return callback
 
     def _get_extra_callback(self, idx: int, ch: int) -> Callable:
-        """额外输出流回调：从对应缓冲读取降噪音频 → 上混 → 输出。"""
+        """额外输出流回调：从对应缓冲读取降噪音频 → ASRC → 上混 → 输出。
+
+        跨设备时钟域：主回调产出节奏跟随主流设备时钟，蓝牙等额外设备
+        按自己的时钟消耗——速率差（实测 ~±2%）必须自适应变速消化，
+        否则周期性垫零/丢帧即咔哒。ASRC：按结转水位伺服微调消费步长
+        （线性插值变率重采样 ±3%，水位低放慢/高加快，稳态贴 1.0），
+        语音/音乐上不可闻。预热 ~4 hop，极端漂移丢最旧防延迟爬升。
+        """
         def callback(in_data: bytes, frame_count: int, time_info, status) -> Tuple[bytes, int]:
             if self._stop_event.is_set():
                 return (None, pyaudio.paComplete)
 
             try:
-                buf = self._extra_out_buffers[idx]
-                mono_data = buf.read(frame_count) if buf else None
-                if not mono_data:
+                d = self._diag
+                d["extra_n"] += 1
+                d["extra_frames"] += frame_count
+                buf = self._extra_out_buffers[idx] \
+                    if idx < len(self._extra_out_buffers) else None
+                carry = self._extra_carry[idx]
+                if buf is None:
                     mono_data = [0.0] * frame_count
+                else:
+                    if not self._extra_primed[idx]:
+                        if buf.available() < self._hop_length * 4:
+                            return (struct.pack(f'{frame_count * ch}f',
+                                   *([0.0] * frame_count * ch)),
+                                   pyaudio.paContinue)
+                        self._extra_primed[idx] = True
+                    n = buf.available()
+                    if n > 0:
+                        data = buf.read(n)
+                        if data:
+                            carry.extend(data)
+                    # 结转上限（~300ms）：极端漂移丢最旧，防延迟爬升
+                    cap = self._hop_length * 30
+                    if len(carry) > cap:
+                        d["extra_drop"] += len(carry) - cap
+                        for _ in range(len(carry) - cap):
+                            carry.popleft()
+                    # ASRC 伺服（PI·轻比例阻尼）：积分项只响应真实速率漂移
+                    # （慢速收敛），小比例项为双积分环提供阻尼（限幅 ±0.1
+                    # × 0.01 = 步长扰动 ≤±0.001，不放大水位拍频噪声）→
+                    # 音调恒定不晃；饥饿边缘安全阀温和加速
+                    level = len(carry) - self._extra_pos[idx]
+                    err = (level - self._hop_length * 6) \
+                        / (self._hop_length * 6.0)
+                    integ = self._extra_integ[idx] \
+                        + max(-0.3, min(0.3, err)) * 0.0002
+                    self._extra_integ[idx] = max(-0.03, min(0.03, integ))
+                    r = 1.0 + self._extra_integ[idx] \
+                        + max(-0.1, min(0.1, err)) * 0.01
+                    if level < self._hop_length:
+                        r += 0.01        # 饥饿边缘安全阀（温和加速）
+                    r = max(0.97, min(1.03, r))
+                    pos = self._extra_pos[idx]
+                    hold = self._extra_hold[idx]
+                    mono_data = []
+                    pads = 0
+                    for _i in range(frame_count):
+                        if len(carry) >= 2:
+                            hold = carry[0] + (carry[1] - carry[0]) * pos
+                            mono_data.append(hold)
+                            pos += r
+                            while pos >= 1.0 and len(carry) > 1:
+                                carry.popleft()
+                                pos -= 1.0
+                            if len(carry) <= 1:
+                                pos = 0.0
+                        elif len(carry) == 1:
+                            hold = carry[0]
+                            mono_data.append(hold)
+                            pads += 1
+                        else:
+                            mono_data.append(hold)
+                            pads += 1
+                    self._extra_pos[idx] = pos
+                    self._extra_hold[idx] = hold
+                    d["extra_pad"] += pads
 
                 if ch > 1:
                     out_data = [0.0] * (frame_count * ch)
@@ -717,7 +907,7 @@ class AudioThread(threading.Thread):
 
                 return (struct.pack(f'{len(out_data)}f', *out_data), pyaudio.paContinue)
             except Exception as e:
-                _module_log(f"[音频] 输出回调异常: {e}")
+                _module_log(f"[输出] 额外输出回调异常: {e}")
                 return (struct.pack(f'{frame_count * ch}f',
                        *([0.0] * frame_count * ch)), pyaudio.paContinue)
 
@@ -737,6 +927,8 @@ class AudioThread(threading.Thread):
         self._extra_out_streams = []
         self._extra_out_buffers = []
         self._extra_out_chs = []
+        self._extra_carry = []
+        self._extra_primed = []
         for dev_id in self._extra_out_ids:
             if dev_id is None or dev_id < 0 or dev_id == self._output_id:
                 continue
@@ -745,6 +937,14 @@ class AudioThread(threading.Thread):
                 ch = max(1, int(info.get('maxOutputChannels', 1)))
             except Exception:
                 continue
+            # 缓冲/结转先就位再开流（回调开流即触发，避免竞态）
+            idx = len(self._extra_out_buffers)
+            self._extra_out_buffers.append(RingBuffer(SAMPLE_RATE // 5))
+            self._extra_carry.append(deque())
+            self._extra_pos.append(0.0)
+            self._extra_hold.append(0.0)
+            self._extra_integ.append(0.0)
+            self._extra_primed.append(False)
             try:
                 s = self._p.open(
                     format=pyaudio.paFloat32,
@@ -753,15 +953,19 @@ class AudioThread(threading.Thread):
                     output=True,
                     output_device_index=dev_id,
                     frames_per_buffer=HOP_LENGTH,
-                    stream_callback=self._get_extra_callback(
-                        len(self._extra_out_streams), ch))
+                    stream_callback=self._get_extra_callback(idx, ch))
                 s.start_stream()
                 self._extra_out_streams.append(s)
-                self._extra_out_buffers.append(RingBuffer(SAMPLE_RATE // 5))
                 self._extra_out_chs.append(ch)
                 _module_log(f"[多输出] 已连接额外输出设备 #{dev_id} ({ch}ch)")
             except (OSError, ValueError) as e:
                 _module_log(f"[多输出] 设备 #{dev_id} 打开失败: {e}")
+                self._extra_out_buffers.pop()
+                self._extra_carry.pop()
+                self._extra_pos.pop()
+                self._extra_hold.pop()
+                self._extra_integ.pop()
+                self._extra_primed.pop()
 
     def run(self) -> None:
         """运行音频处理线程。"""
@@ -797,12 +1001,12 @@ class AudioThread(threading.Thread):
     # ── 网络输入处理循环 ──
     def _network_loop(self):
         """网络源 → 累积 → process(HOP_LENGTH) → output_buffer (带时钟漂移补偿 + 速率匹配)"""
-        MAX_ACC = HOP_LENGTH * 8            # 硬上限 ~171ms
-        TARGET_ACC = HOP_LENGTH * 5         # 目标缓冲 ~107ms
-        CROSSFADE_LEN = HOP_LENGTH // 4     # 交叉淡入淡出长度 ~5.3ms
+        MAX_ACC = HOP_LENGTH * 8            # 硬上限 ~80ms
+        TARGET_ACC = HOP_LENGTH * 5         # 目标缓冲 ~50ms
+        CROSSFADE_LEN = HOP_LENGTH // 4     # 交叉淡入淡出长度 ~2.5ms
         STALL_TIMEOUT = 0.15               # 欠载判定：150ms 无新数据
-        TARGET_OBUF = HOP_LENGTH * 3        # 输出缓冲目标 ~64ms（超出则丢帧限速）
-        IDEAL_FRAME_S = HOP_LENGTH / SAMPLE_RATE  # ~21.3ms
+        TARGET_OBUF = HOP_LENGTH * 3        # 输出缓冲目标 ~30ms（超出则丢帧限速）
+        IDEAL_FRAME_S = HOP_LENGTH / SAMPLE_RATE  # 10ms
         acc: List[float] = []
         last_viz = 0
         # ── 诊断 ──
@@ -1342,56 +1546,29 @@ def register_tse_audio_hook(thread, log: Callable):
 def load_tse_reference(processor, wav_path: str) -> bool:
     """加载 TSE 参考音频到处理器，成功返回 True。
 
-    优先加载已缓存的 .bin；否则 WAV → WSOLA 时间压缩 → 缓存 .bin → 送入 引擎。
-    必须在启动音频线程前调用（TSE 模型首帧就需要参考，空参考会崩）。
+    09c 契约: 注册取自然 10s（不足由引擎 fix_ref 平铺），不再做 WSOLA 压缩
+    （10s→2s 是 tse15/2s 时代的遗留，对 10s 全帧 key 契约是错的）。
+    enr_tok 结果缓存为 <wav>_enrtok.npz，键 = 录音 mtime/size + ref_encoder
+    mtime/size —— 录音未变且模型版本未变时启动直接载入缓存（跳过
+    STFT+ref_encoder 处理）；录音变了或换模型版本自动失效重算。
     """
     if not wav_path or not os.path.exists(wav_path):
         _module_log(f"[TSE] 参考 WAV 未找到: {wav_path!r}")
         return False
 
-    bin_path = os.path.splitext(wav_path)[0] + '.bin'
-    audio = None
-
-    # 1) 尝试加载缓存（仅当 .bin 比 WAV 新时有效）
-    if os.path.exists(bin_path) and os.path.getmtime(bin_path) >= os.path.getmtime(wav_path):
-        try:
-            with open(bin_path, 'rb') as f:
-                raw = f.read()
-            n = len(raw) // 4
-            import struct
-            audio = list(struct.unpack(f'{n}f', raw))
-            _module_log(f"[TSE] 加载缓存 .bin ({len(audio)} samples, {len(audio)/TSE_SAMPLE_RATE:.1f}s)")
-        except Exception as e:
-            _module_log(f"[TSE] .bin 加载失败: {e}，重新处理 WAV")
-
-    # 2) 回退到 WAV → WSOLA
-    if audio is None:
-        try:
-            from wav_io import read_wav
-            audio, sr = read_wav(wav_path)
-            if sr != TSE_SAMPLE_RATE:
-                r = Resampler()
-                audio = r.process(audio, float(TSE_SAMPLE_RATE) / sr, True)
-            # WSOLA 时间压缩：10s → 2s，保持音调
-            audio = _process_reference_audio(audio)
-            # 保存加速后的 WAV 用于调试
-            try:
-                from wav_io import write_wav
-                write_wav(os.path.splitext(wav_path)[0] + '_wsola.wav', audio, TSE_SAMPLE_RATE)
-            except Exception:
-                pass
-            # 保存 .bin 缓存
-            import struct
-            with open(bin_path, 'wb') as f:
-                f.write(struct.pack(f'{len(audio)}f', *audio))
-            _module_log(f"[TSE] 处理完成 → 缓存 {bin_path} ({len(audio)} samples, {len(audio)/TSE_SAMPLE_RATE:.1f}s)")
-        except Exception as e:
-            _module_log(f"[TSE] 参考 WAV 加载失败: {e}")
-            return False
+    try:
+        from wav_io import read_wav
+        audio, sr = read_wav(wav_path)
+        if sr != TSE_SAMPLE_RATE:
+            r = Resampler()
+            audio = r.process(audio, float(TSE_SAMPLE_RATE) / sr, True)
+    except Exception as e:
+        _module_log(f"[TSE] 参考 WAV 加载失败: {e}")
+        return False
 
     try:
         if hasattr(processor, 'set_tse_reference'):
-            processor.set_tse_reference(audio)
+            processor.set_tse_reference(audio, ref_key=wav_path)
         return True
     except Exception as e:
         _module_log(f"[TSE] 设置参考失败: {e}")
@@ -1421,7 +1598,7 @@ def start_audio_stream(input_id: Optional[int], output_id: int,
         input_id: 输入设备 ID（网络输入模式下为 None）。
         output_id: 输出设备 ID。
         processor: pvengine.AudioProcessor 实例（处理器，直接使用）。
-        hop_length: 处理 hop 长度（默认 1024）。
+        hop_length: 处理 hop 长度（默认 480，10ms @48kHz）。
         network_source: 网络输入模式下的 RemoteAudioSource（可选）。
         ready_msg: 音频流就绪后由 AudioThread 记录的日志消息。
         extra_output_ids: 额外输出设备 ID 列表（仅 Windows PortAudio 路径，

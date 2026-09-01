@@ -5,7 +5,7 @@ importScripts('libopus-encoder.wasm.min.js');
 const OPUS_APPLICATION_VOIP = 2048;
 const OPUS_SET_BITRATE = 4002;
 const SAMPLE_RATE = 48000;
-const FRAME_SIZE = 960;
+const FRAME_SIZE = 480;   // 10ms @ 48kHz（与模型 hop 一致）
 const MAX_PACKET = 4000;
 
 let encoder = null;

@@ -103,7 +103,7 @@
             <TextView android:id="@+id/dbg_ctx_sr" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="ctx SR --" android:textSize="9sp" android:fontFamily="monospace" android:textColor="?android:textColorSecondary"/>
             <TextView android:id="@+id/dbg_dev_sr" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="dev SR --" android:textSize="9sp" android:fontFamily="monospace" android:textColor="?android:textColorSecondary"/>
             <TextView android:id="@+id/dbg_enc_sr" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="enc SR 48000" android:textSize="9sp" android:fontFamily="monospace" android:textColor="?android:textColorSecondary"/>
-            <TextView android:id="@+id/dbg_frame" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="frame 960" android:textSize="9sp" android:fontFamily="monospace" android:textColor="?android:textColorSecondary"/>
+            <TextView android:id="@+id/dbg_frame" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="frame 480" android:textSize="9sp" android:fontFamily="monospace" android:textColor="?android:textColorSecondary"/>
             <TextView android:id="@+id/dbg_bitrate" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="bitrate 32k" android:textSize="9sp" android:fontFamily="monospace" android:textColor="?android:textColorSecondary"/>
         </LinearLayout>
         <LinearLayout android:layout_width="0dp" android:layout_weight="1"

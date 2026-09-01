@@ -26,7 +26,6 @@ AI 类插件的模型引擎由 AudioProcessor 的 engine_cache 共享（按类�
 import numpy as np
 
 from pvengine.components.effect_base import Effect
-from pvengine.dsp.stft import StftProcessor
 
 
 class GainPlugin(Effect):
@@ -295,8 +294,8 @@ class TsePlugin(_AiPluginBase):
     def has_reference(self):
         return self.stage.has_reference
 
-    def set_reference(self, ref):
-        return self.stage.set_reference(ref)
+    def set_reference(self, ref, ref_key=None):
+        return self.stage.set_reference(ref, ref_key=ref_key)
 
 # ── 工具函数 ──
 def _model_file(name):

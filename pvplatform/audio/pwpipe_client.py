@@ -43,7 +43,10 @@ import numpy as np
 
 IS_LINUX = sys.platform.startswith("linux")
 
-HOP = 1024
+# 桥接数据面粒度：10ms @48kHz = 480（与 pvengine.context.HOP_LENGTH 一致）。
+# _Ring 按此长度分块入队，消费方 read(引擎 hop) 必须与之对齐——
+# 粒度错位会整块弹出后丢弃尾部样本（勿改回 1024）。
+HOP = 480
 
 try:
     import pulsectl  # 纯 Python（ctypes 系统 libpulse）
@@ -272,9 +275,6 @@ class _PlayThread(threading.Thread):
 
     def stop(self):
         self._stop_evt.set()
-
-
-HOP = 1024
 
 
 class _Ring:

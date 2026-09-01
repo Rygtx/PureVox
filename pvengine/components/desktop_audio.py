@@ -22,8 +22,8 @@ Linux=PipeWire monitor 源，macOS 同理），pull 模型：process 每帧读�
 捕获环形缓冲的最新样本与信号相加。链位置语义=注入点：默认链尾=随全部
 输出扇出；注意 AEC 与本节点会各自开一路 loopback（互不干扰）。
 
-音量滑杆实时生效；禁用行（enabled=False）时适配层跳过 process，
-捕获实例随链重建释放。
+音量滑杆实时生效；禁用行（复选框关）时插件自行淡出并释放捕获
+（FADE_THROUGH：适配层不旁路，衔接无缝），勾回原地淡入恢复。
 """
 
 import threading
@@ -36,12 +36,16 @@ from pvengine.components.effect_base import Effect
 class DesktopAudioPlugin(Effect):
     NAME = "desktop_audio"
     LABEL = "桌面声音输入"
+    # 复选框关断不旁路：插件自行淡出并释放捕获（衔接无缝）
+    FADE_THROUGH = True
     PARAMS = {"volume_db": ("音量 dB", -30.0, 6.0, -6.0, 1.0)}
 
     def __init__(self, params=None, stage_cache=None):
         self._lock = threading.Lock()
         self._capture = None
+        self._mix = 0.0        # 混入包络（0..1，每 hop ±1/n 步进）
         self._volume = 10.0 ** (-6.0 / 20.0)
+        self.enabled = True
         super().__init__(params)
 
     def on_params_changed(self):
@@ -71,18 +75,34 @@ class DesktopAudioPlugin(Effect):
 
     # ── 音频面 ──
     def process(self, frame, ctx):
+        n = len(frame)
+        active = bool(self.enabled)
+        if self._mix <= 0.0 and not active:
+            return frame                      # 禁用且已淡出：零开销直通
         if self._capture is None:
+            if not active:
+                return frame
             self._ensure_capture()
             if self._capture is None:
                 return frame
-        n = len(frame)
         data = self._capture.read(n)
-        if not data:
+        m = min(n, len(data)) if data else 0
+        # ── 混入包络：每 hop ±1/n 线性淡入淡出，启停衔接无缝 ──
+        target = 1.0 if (active and m >= n) else 0.0
+        step = 1.0 / max(1, n)
+        if self._mix < target:
+            self._mix = min(target, self._mix + step)
+        elif self._mix > target:
+            self._mix = max(target, self._mix - step)
+        if self._mix <= 0.0:
+            if not active:
+                self._shutdown_capture()
             return frame
         out = frame.astype(np.float32, copy=True)
-        m = min(n, len(data))
-        out[:m] += np.asarray(data[:m], dtype=np.float32) * np.float32(self._volume)
-        np.clip(out, -1.0, 1.0, out=out)
+        if m:
+            out[:m] += np.asarray(data[:m], dtype=np.float32) * \
+                np.float32(self._volume * self._mix)
+            np.clip(out, -1.0, 1.0, out=out)
         return out
 
     def reset(self):

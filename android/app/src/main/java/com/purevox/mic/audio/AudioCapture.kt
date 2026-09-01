@@ -37,7 +37,7 @@ class AudioCapture(private val context: android.content.Context) {
         const val SAMPLE_RATE = 48000
         const val CHANNEL = AudioFormat.CHANNEL_IN_MONO
         const val ENCODING = AudioFormat.ENCODING_PCM_16BIT
-        const val FRAME_SIZE = 960 // 20ms @ 48kHz
+        const val FRAME_SIZE = 480 // 10ms @ 48kHz（与模型 hop 一致）
     }
 
     fun start(audioSource: Int = MediaRecorder.AudioSource.MIC): Boolean {

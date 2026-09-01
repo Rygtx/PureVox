@@ -19,13 +19,16 @@
 
 HTK mel 刻度 20Hz–20kHz 三角滤波器组，Hann 窗 FFT，
 功率谱 scale=1/nfft²，dB 输出 clamp [-90, -20]，静音带钉在 -90。
+窗长恒为 2×hop（NFFT=960，FFT 无损窗长，随 hop 派生）。
 """
 
 import numpy as np
 
+from pvengine.context import NFFT, SAMPLE_RATE
+
 SPECTRUM_NUM_BANDS = 128
-_SPECTRUM_FFT = 2048
-_SPECTRUM_SR = 48000.0
+SPECTRUM_FFT = NFFT                    # 2×hop = 960 @48kHz
+_SPECTRUM_SR = float(SAMPLE_RATE)
 _MEL_LOW = 20.0
 _MEL_HIGH = 20000.0
 _DB_FLOOR = -90.0
@@ -41,7 +44,7 @@ def _mel_to_hz(mel):
 
 
 def _build_filterbank():
-    n_fft = _SPECTRUM_FFT
+    n_fft = SPECTRUM_FFT
     mel_min, mel_max = _hz_to_mel(_MEL_LOW), _hz_to_mel(_MEL_HIGH)
     i = np.arange(SPECTRUM_NUM_BANDS + 2)
     centers = _mel_to_hz(mel_min + (mel_max - mel_min) * i / (SPECTRUM_NUM_BANDS + 1))
@@ -65,16 +68,16 @@ def spectrum_warmup():
 
 
 def compute_spectrum(samples):
-    """输入最新一段样本（不足 2048 前置补零），返回 128 个 dB 值 list。"""
+    """输入最新一段样本（不足 960=2×hop 前置补零），返回 128 个 dB 值 list。"""
     spectrum_warmup()
     if not len(samples):
         return [ _DB_FLOOR ] * SPECTRUM_NUM_BANDS
-    x = np.asarray(samples[-_SPECTRUM_FFT:], dtype=np.float32)
-    buf = np.zeros(_SPECTRUM_FFT)
-    buf[_SPECTRUM_FFT - len(x):] = x
-    win = 0.5 - 0.5 * np.cos(2.0 * np.pi * np.arange(_SPECTRUM_FFT) / _SPECTRUM_FFT)
+    x = np.asarray(samples[-SPECTRUM_FFT:], dtype=np.float32)
+    buf = np.zeros(SPECTRUM_FFT)
+    buf[SPECTRUM_FFT - len(x):] = x
+    win = 0.5 - 0.5 * np.cos(2.0 * np.pi * np.arange(SPECTRUM_FFT) / SPECTRUM_FFT)
     spec = np.fft.rfft(buf * win)
-    power = (spec.real ** 2 + spec.imag ** 2) / float(_SPECTRUM_FFT * _SPECTRUM_FFT)
+    power = (spec.real ** 2 + spec.imag ** 2) / float(SPECTRUM_FFT * SPECTRUM_FFT)
     energy = power @ _FILTERBANK
     db = 10.0 * np.log10(np.maximum(energy, 1e-300))
     out = np.where(energy > 1e-12, np.clip(db, _DB_FLOOR, _DB_CEIL), _DB_FLOOR)

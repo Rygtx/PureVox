@@ -139,7 +139,7 @@ cd android
 - 浏览器：手机与 PC 同局域网，访问 `https://<PC的IP>:59123`，信任自签名证书后点麦克风推流
 - APK：打开自动搜索局域网服务器，发现即自动连接推流
 - 客户端消息：`{"type":"audio","data":"<base64 opus>","seq":N}`，服务器回 `{"type":"ack","seq":N}`
-- 帧大小 960 samples（20ms @48kHz），与 Opus 编码器对齐
+- 帧大小 480 samples（10ms @48kHz），与 Opus 编码器、引擎 hop 对齐
 
 ## 项目结构
 

@@ -110,7 +110,7 @@ def main():
 
     # 模型常驻（仓库根 models/；冻结态在 _MEIPASS/models/）
     def _find_model():
-        rel = os.path.join("models", "v9_fft2048_band256_epoch_261.onnx")
+        rel = os.path.join("models", "purevox_denoise_202609_ep0106.onnx")
         meipass = getattr(sys, "_MEIPASS", None)
         cands = []
         if meipass:
@@ -134,7 +134,7 @@ def main():
              "post": audio.db_to_linear(cfg.get("post_gain_db", 0.0))}
 
     def process_fn(chunk):
-        # 网络 hop(960) 累积切出的 1024：前增益 → 引擎
+        # 网络帧与引擎 hop 对齐（480=10ms）：前增益 → 引擎（任意到达长度仍逐 hop 切）
         x = chunk * gains["pre"]
         return eng.process(x)
 
