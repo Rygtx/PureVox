@@ -37,7 +37,8 @@ from pvengine.components.core_plugins import (
     GainPlugin, AgcPlugin, GatePlugin,
     Eq10Plugin, Eq31Plugin, Eq61Plugin,
     CompressorPlugin,
-    DenoiserPlugin, EchoCancelPlugin, TsePlugin,
+    DenoiserPlugin, DenoiserVadPlugin,
+    EchoCancelPlugin, TsePlugin,
 )
 from pvengine.components.soundpad import SoundPadPlugin
 from pvengine.components.music_player import MusicPlayerPlugin
@@ -58,6 +59,7 @@ class NodeSpec:
 CATALOG: list[type] = [
     GainPlugin,
     DenoiserPlugin,
+    DenoiserVadPlugin,
     EchoCancelPlugin,
     TsePlugin,
     GatePlugin,
@@ -86,6 +88,7 @@ MEDIA_NODE_TYPES = frozenset({"soundpad", "music_player", "desktop_audio"})
 # expand  = 行内控制 + 「展开」按钮弹出独立 UI 对话框
 UI_TIERS = {
     "denoiser": "toggle",
+    "denoiser_vad": "toggle",
     "echo_cancel": "inline",   # 行内含 far 端扬声器设备下拉
     "eq10": "expand",          # 展开：EQ 曲线编辑器（10 段）
     "eq31": "expand",          # 展开：EQ 曲线编辑器（31 段）

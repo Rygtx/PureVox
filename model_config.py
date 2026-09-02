@@ -31,6 +31,7 @@
 #   denoise ep0106 ↔ wav/O-0106.wav；aec cpx ep0124 ↔ results_wav/T-0124.wav；
 #   tse 09c ep0105 ↔ results_wav/torch_e105.wav（训练进行中，终版待训完更新）
 DENOISE_MODEL = "models/purevox_denoise_202609_ep0106.onnx"
+DENOISE_VAD_MODEL = "models/purevox_denoise_202609_vad_ep0138.onnx"
 AEC_MODEL = "models/purevox_aec_202609_cpx_ep0124.onnx"
 TSE_MODEL = "models/purevox_tse_202609c_ep0105.onnx"
 TSE_REF_ENCODER = "models/purevox_tse_202609c_ref_encoder.onnx"

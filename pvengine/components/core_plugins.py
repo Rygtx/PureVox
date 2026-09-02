@@ -266,8 +266,16 @@ class DenoiserPlugin(_AiPluginBase):
     """AI 智能降噪（202609 模型）。引擎经 cache 共享，重建链不重复加载。"""
 
     NAME = "denoiser"
-    LABEL = "AI 智能降噪"
+    LABEL = "AI 降噪"
     _KIND = "denoise"
+
+
+class DenoiserVadPlugin(_AiPluginBase):
+    """AI 智能降噪 VAD（202609 VAD 变体模型）。引擎经 cache 共享，重建链不重复加载。"""
+
+    NAME = "denoiser_vad"
+    LABEL = "AI 降噪 VAD"
+    _KIND = "denoise_vad"
 
 
 class EchoCancelPlugin(_AiPluginBase):
@@ -330,6 +338,9 @@ def _make_stage(kind):
     if kind == "denoise":
         from pvengine.components.denoise import DenoiseStage
         return DenoiseStage(_model_file(_mc.DENOISE_MODEL))
+    if kind == "denoise_vad":
+        from pvengine.components.denoise import DenoiseVadStage
+        return DenoiseVadStage(_model_file(_mc.DENOISE_VAD_MODEL))
     if kind == "aec":
         from pvengine.components.aec import AecStage
         return AecStage(_model_file(_mc.AEC_MODEL))
