@@ -29,8 +29,8 @@
 # ── ONNX 模型（相对应用根目录，仓库与打包产物同布局：models/）──
 # 版本对应训练侧 epoch-end 试听 wav (PureVoxModel/7_output/*/results_wav)：
 #   denoise ep0106 ↔ wav/O-0106.wav；aec cpx ep0124 ↔ results_wav/T-0124.wav；
-#   tse 09c ep0034 ↔ results_wav/torch_e34.wav（训练进行中，终版待训完更新）
+#   tse 09c ep0105 ↔ results_wav/torch_e105.wav（训练进行中，终版待训完更新）
 DENOISE_MODEL = "models/purevox_denoise_202609_ep0106.onnx"
 AEC_MODEL = "models/purevox_aec_202609_cpx_ep0124.onnx"
-TSE_MODEL = "models/purevox_tse_202609c_ep0034.onnx"
+TSE_MODEL = "models/purevox_tse_202609c_ep0105.onnx"
 TSE_REF_ENCODER = "models/purevox_tse_202609c_ref_encoder.onnx"
