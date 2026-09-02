@@ -2,7 +2,7 @@
 
 Windows / Linux 桌面应用 + Android 客户端：实时 AI 音频降噪 / 目标说话人提取 / 回声消除，支持本地麦克风和远程网络推流。
 
-**栈**: Python 3.12+ 标准库 Tkinter（桌面 UI）+ 纯 Python 组件化音频引擎（`pvengine` 包：numpy + scipy + onnxruntime，无任何自编译二进制）+ pulsectl（Linux 音频桥，ctypes 系统 libpulse）
+**栈**: Python 3.12+ 标准库 Tkinter（桌面 UI）+ 纯 Python 组件化音频引擎（`pvengine` 包：numpy + scipy + onnxruntime，无任何自编译二进制）+ 自研 ctypes libpulse 绑定（Linux 音频桥，系统 libpulse）
 **桌面入口**: `python run_tk.py`
 **Android 入口**: `android/` — Kotlin + OkHttp + Opus JNI
 
@@ -41,7 +41,7 @@ Windows / Linux 桌面应用 + Android 客户端：实时 AI 音频降噪 / 目�
 - 音频引擎为**纯 Python 组件化管线**（`pvengine/` 包）：Stage 接口（process/reset/release）
   是组件唯一契约，组件按 active_modes 声明生效模式，可随意增删替换；所有调用方直接用 pvengine。
 - Linux 音频采集/输出走 **pipewire-pulse 兼容层**（`pvplatform/audio/pwpipe_client.py`，
-  pulsectl 经 ctypes 调系统 libpulse）。ALSA 备选接口已整体移除（2026-08-22 纯 py 迁移）。
+  自研 ctypes 绑定直调系统 libpulse）。ALSA 备选接口已整体移除（2026-08-22 纯 py 迁移）。
 - 虚拟麦克风（Linux）= 单一生产者 + 双出口，全部健康，详见下方「Linux 音频架构」：
   ① 单声道 null-sink `purevox_out`（唯一写入口）；② 内置 monitor
   `purevox_out.monitor`（宽口径源）+ 非 monitor 真源 `purevox_mic`
@@ -105,7 +105,7 @@ deb 布局：`/opt/purevox/` 放全部源码+模型+html+捆绑的内嵌 `python
 全部 pip 依赖，无任何自编译 .so）；`/usr/bin/purevox` 启动脚本直接 exec。
 rpm（pack_rpm.sh）与 AppImage 是同一实现路径，同样捆绑内嵌 python312，Requires/无系统 Python 依赖。
 `/usr/share/applications/purevox.desktop` + hicolor 图标。Depends 只留 pipewire。
-Linux 输入/输出/设备枚举/AEC 全走 pipewire-pulse（pulsectl）；opuslib 缺失时 `pip install --user`。
+Linux 输入/输出/设备枚举/AEC 全走 pipewire-pulse（libpulse 绑定桥）；opuslib 缺失时 `pip install --user`。
 
 ### Android
 
@@ -122,7 +122,20 @@ cd android
 
 ### CI（`.github/workflows/ci.yml`，精简为通用包 deb/rpm/appimage + 产物目录 + apk）
 
-- **触发方式：push tag 触发 CI 构建 + 自动发 release 两件事**，分支 push 不触发（保持日常快速提交零成本）；需验证分支时可 `workflow_dispatch` 手动跑（仅触发三构建 job，不触发 release）。
+- **触发方式：push tag 触发 CI 构建 + 自动发 release 两件事**，分支 push 不触发构建（保持日常快速提交零成本）；需验证分支时可 `workflow_dispatch` 手动跑（仅触发三构建 job，不触发 release）。
+- **测试工作流独立（`.github/workflows/test.yml`）**：**每次分支 push / 手动
+  触发**，零打包、分钟级——compileall + 引擎冒烟 + `tests/run_all.py` 全套
+  （`test_session_plan.py` 会话计划纯函数 / `test_playback_sink.py` 播放
+  正确性合成测试 / `test_transport.py` 传输层优雅降级 / `test_devices.py`
+  设备面[枚举/虚拟麦克风/配置键]）。运行时 = 内嵌 python312（与发行产物
+  同款）；cache **只读复用**共享桶（restore 的 key 与 ci.yml 一致，**无
+  save 步骤**——落盘仍由 ci.yml 单写者负责，勿在此加缓存写入）。构建
+  job 里保留同款轻量测试步（守打包环境），另有产物级冒烟（见下）。
+- **产物级冒烟（打包流程自检，tag 时运行）**：deb/rpm 解包后用**包内嵌
+  python312** 跑引擎冒烟 + `tests/`（依赖缺装/内嵌解释器问题在此暴露；
+  fedora job 的 sysdeps 因此含 `cpio`）；AppImage `--appimage-extract`
+  免 FUSE 后同样处理（随 AppImage best-effort）；Windows 断言
+  `dist/PureVox` 布局关键项（exe / about 三页 / models / opus.dll / html）。
 - **tag 命名规则**：`v<yyyy.MM.dd.HHmm>`（如 `v2026.08.10.1517`）。tag 名同时定义产物体内版本（`v` 去掉即 `yyyy.MM.dd.HHmm`），所有 job 的产物时间戳/版本都从 `${GITHUB_REF_NAME}` 推导，避免各 job 并发时刻漂移。回复发版即 `git tag v<yyyy.MM.dd.HHmm> && git push origin <tag>`。
 - `linux` job：容器矩阵只留 3 项，产出通用安装包——
   - `ubuntu-22.04`：pip 装最新 numpy/onnxruntime/scipy 等 + 引擎冒烟（加载模型跑一帧）+ `pack_deb.sh` 出 deb + `pack_appimage.sh` 出 AppImage（best-effort，捆绑内嵌 python312）
@@ -198,25 +211,30 @@ cd android
 | `uitk/` | 主 UI（纯标准库 Tkinter）——**单列节点面板**：顶部单一工具条（启动/退出 · 添加节点▾ · 清空 · 设置▾[快捷键/自动运行/开机自启/系统声音/虚拟声卡/关于]）+ PluginPanel（输入/处理/输出/可视化全部为可增删排序的节点行；排序走**拖拽手柄**）；EQ 曲线编辑器 / TSE 参考录音 / 关于页（文档标签）都在 `uitk/dialogs.py`；VB-CABLE 状态卡内嵌在虚拟输出行。设备选择在 input/output 节点行内（Linux 存 node.name）。**外观为星露谷像素浅色主题**（theme.py 单份令牌定义），无明暗切换 |
 | `about_content.py` + `about/` | **关于页文本（无 GUI 依赖的单一来源）**——`about/changelog.md` 更新日志、`about/windows.md`、`about/linux.md` 使用手册（uitk 直接读文件渲染）；`about_content.py` 只存元数据（应用信息/URLS/LIBS）与介绍页、许可证页文本，打包须随包携带 `about/` |
 | `session_plan.py` | **L3 会话层**——`SessionPlan.from_chain(chain_cfg)` 纯函数：链文档 → 校验后的可执行计划（inputs/outputs/remote_url/viz/fx_chain/problems/warnings）。UI 启动流程只消费计划，不做内联解析 |
-| `audio_processor.py` | 核心音频线程 —— `AudioThread`(全双工流/PipeWire 循环/网络循环/**多输入混音+多输出扇出**[Windows extras 回调])、`SpeakerCapture`(AEC loopback)、`RingBuffer`、设备枚举、TSE 参考录音工具(`_recorder`/`load_tse_reference`/`_wsola_time_stretch`) |
-| `pvengine/` | **纯 Python 组件化音频引擎**——Stage 接口（process/reset/release）是唯一契约；`components/`(denoise/aec/tse/gain/eq/vad/agc/compressor/clip/recorder/tap) 每文件一个组件、按 active_modes 声明生效模式；`dsp/`(窗/环形缓冲/重采样/Mel 频谱/ONNX 会话) 可独立复用；`pipeline.py` 按序执行+模式旁路；`processor.py` 是 AudioProcessor 门面。模型：202609 三件套（denoise/aec/tse，波形 hop [1,480] 进出、STFT 在模型图内、enh_hop 滞后 1 hop），全部 numpy + onnxruntime 实现 |
-| `pvplatform/` | 平台抽象层 —— `audio/`(SpeakerCapture 三端、device_api、pwpipe_client[纯 py pulsectl 桥])、`system/`(单实例/自启动/防火墙/虚拟麦克风，win+posix) |
+| `audio_processor.py` | 核心音频线程 —— `AudioThread`(**统一处理循环** read→process→sinks.write；本地/网络同一循环)、每输出一个 `PlaybackSink`(pvengine)、后端装配(`_create_stream`：Linux=PwBridge / Windows=PaBridge，哑传输)、`SpeakerCapture`(AEC loopback)、`RingBuffer`、设备枚举、TSE 参考录音工具(`_recorder`/`load_tse_reference`/`_wsola_time_stretch`) |
+| `pvengine/` | **纯 Python 组件化音频引擎**——Stage 接口（process/reset/release）是唯一契约；`components/`(denoise/aec/tse/gain/eq/vad/agc/compressor/clip/recorder/tap) 每文件一个组件、按 active_modes 声明生效模式；`dsp/`(窗/环形缓冲/重采样/**PlaybackSink 跨时钟域播放**/Mel 频谱/ONNX 会话) 可独立复用；`pipeline.py` 按序执行+模式旁路；`processor.py` 是 AudioProcessor 门面。模型：202609 三件套（denoise/aec/tse，波形 hop [1,480] 进出、STFT 在模型图内、enh_hop 滞后 1 hop），全部 numpy + onnxruntime 实现 |
+| `pvplatform/` | 平台抽象层 —— `audio/`(SpeakerCapture 三端、device_api、backends[后端注册表]、pwpipe_client[ctypes libpulse 桥]、pa_backend[Windows PortAudio 桥]、media_session[miniaudio 纯媒体会话]、_libpulse[libpulse 最小绑定])、`system/`(单实例/自启动/防火墙/虚拟麦克风，win+posix) |
 | `server/` | 远程麦克风 HTTPS/WSS 服务器 —— `https_server.py`、`audio_bridge.py`(RemoteAudioSource)、`opus_codec.py`、`mdns_publisher.py`、`tls_manager.py` |
 | `config_manager.py` | JSON 配置读写（强配置，无迁移）；api_type 平台感知默认值、设备键按接口后缀（`<方向>_device_<接口后缀>` / `aec_far_sink_<接口后缀>`，全部接口显式写全） |
 | `model_config.py` | ONNX 模型文件名常量 |
 | `html/` | 浏览器端远程推流页面 —— `index.html`、`app.js`、`audio-capture.js`、`pcm-worklet.js`（AudioWorklet 采集恒 480 帧切分）、`ws-client.js`、Opus WASM 编码器 |
 | `build_win.ps1` / `pack_deb.sh` / `pack_rpm.sh` / `pack_appimage.sh` | Windows 产物目录打包（PyInstaller，CI 上传自动压缩）/ Linux deb / rpm / AppImage 打包。全部产物为纯 Python（依赖随内嵌 python312 或系统环境携带），无任何自编译二进制 |
 
-### Linux 音频架构（pipewire-pulse 兼容层 + pulsectl，强制）
+### Linux 音频架构（pipewire-pulse 兼容层 + 自研 ctypes libpulse 绑定，强制）
 
-数据流（本地）：麦克风源 → pulsectl 录制流 → pvengine 降噪 → pulsectl 播放流 → `purevox_out`（虚拟麦克风 sink）
+数据流（本地）：麦克风源 → libpulse 录制流（读回调→输入环）→ pvengine 降噪 → 每输出 PlaybackSink → libpulse 播放流（写回调按设备时钟 pull）→ `purevox_out`（虚拟麦克风 sink）
 监听：独立录制流指向扬声器 monitor 源（同一路降噪音频）
 AEC far-end：独立录制流指向 `far_sink.monitor`（会话内创建/销毁，恒 48kHz 单声道）
 
-- 实现：`pvplatform/audio/pwpipe_client.py` 的 `PwBridge` 用 **pulsectl**（ctypes 到系统
-  libpulse，走 pipewire-pulse 兼容层）——每条流独占一个线程 + 一个 Pulse 连接
-  （libpulse 主循环有线程亲和性），录制/播放回调搬运到内部 `_Ring` 缓冲，
-  Python 线程 read()/write() 消费。无任何自编译二进制。
+- 实现：`pvplatform/audio/_libpulse.py`（系统 libpulse 的最小 ctypes 绑定，
+  `pa_threaded_mainloop` + pa_stream 读写回调）+ `pwpipe_client.py` 的
+  `PwBridge`。**不用 pulsectl**——其流式 API（connect_recording 等）在
+  PyPI 全版本中不存在（旧代码调的是未记录 fork，干净安装必断）。
+  无任何自编译二进制。
+- 时钟模型：**设备回调是唯一主时钟**。播放 = libpulse 写回调(nbytes) →
+  `out_pull[i](n)`（PlaybackSink.pull，速率差由 sink 伺服消化）→ 写流；
+  录制 = 读回调 → 各输入独立环形缓冲（200ms）→ 引擎线程 read(hop) 混合。
+  桥内零缓冲策略，播放正确性只在 `pvengine/dsp/playback.py`。
 - 格式协商 **F32 单声道 48000Hz**：PipeWire 内置重采样 + 声道转换，模型永远拿 48k 单声道，
   输出自动上混到目标设备声道数
 - 虚拟麦克风（Linux 虚拟声卡）= **单一生产者 + 双出口**，实现见 `pvplatform/system/_posix.py`：
@@ -236,7 +254,7 @@ AEC far-end：独立录制流指向 `far_sink.monitor`（会话内创建/销毁�
   - remap-source 会强制覆盖 node.description（显示 "Remapped ... source"），set-param 改不掉。
   - **ALSA 备选接口已整体移除（2026-08-22）**：旧混合实现（输入 plughw/pulse:、
     输出经 PipeWire 原生流写 purevox_out）连同 alsa_client.c/pvalsa.py 一并删除；
-    单一实现路径 = pulsectl。历史踩坑结论（默认 source 抢占回读、snd_pcm_drain 阻塞等）
+    单一实现路径 = libpulse 绑定桥。历史踩坑结论（默认 source 抢占回读、snd_pcm_drain 阻塞等）
     不再适用。
 - 设备列表（pw-dump）：Linux **按声卡枚举设备**——一个声卡有多个接口各对应真实设备
   （数字麦 Mic1 / 模拟麦 Mic2 / 扬声器 / HDMI 等）。PureVox 自身输入 = Audio/Source 物理
@@ -336,11 +354,16 @@ AEC far-end：独立录制流指向 `far_sink.monitor`（会话内创建/销毁�
 ## 注意事项
 
 - **AEC SpeakerCapture**: Linux 端 AEC far 走 `PwBridge.set_far(sink_name, True)`（监听 `far_sink.monitor` 源，恒 48k 单声道免重采样，会话内创建/销毁）。Windows 用 WASAPI loopback 采集扬声器（共享模式**必须用引擎 MixFormat**）；音频引擎 `set_aec_far_sample_rate()` 将 far-end 重采样到 48kHz。
+- **播放时钟域（2026-09 重构，勿回退）**: 设备回调是唯一主时钟；全部输出路
+  （主输出/额外输出/网络输出/媒体从设备）各持一个 `pvengine.dsp.playback.PlaybackSink`
+  （PI 伺服 ASRC ±3% + 预热 + 欠载静音重同步 + 封顶丢最旧），速率差/调度抖动
+  由 sink 消化。**禁止在任何回调里写缓冲策略**（垫零/丢帧/复用上一帧/手写
+  重采样均为平行实现）；播放正确性只在 playback.py 一处，合成测试见
+  `tests/test_playback_sink.py`（CI 冒烟运行）。
 - **网络模式缓冲**（未做低延迟优化，目标以稳为主，不追求最小延迟；水位全部按
   `HOP_LENGTH`=10ms 派生，ms 数即准确值）:
-  - `_output_buffer`: `RingBuffer(48000)` + 预填充 `HOP_LENGTH*3` (30ms)
-  - `_network_loop TARGET_ACC`: `HOP_LENGTH*5` (50ms), `MAX_ACC`: `HOP_LENGTH*8` (80ms)
-  - 速率补偿: 输出缓冲 >60ms 时主动丢弃多余帧
+  - `_network_reader acc`: 目标 `HOP_LENGTH*5` (50ms)，硬顶 `HOP_LENGTH*8` (80ms，突发兜底截断)
+  - 速率补偿: 稳态漂移由 PlaybackSink 伺服连续消化，acc 侧不再做 drop/pad
 - **强配置（无迁移）**: `ConfigManager.load_config` 不做旧配置迁移，只保留已知键；
   旧 `WASAPI_*` / 通用设备键一律丢弃回退默认。设备键为带接口后缀的
   `<方向>_device_<接口后缀>`（如 `input_device_wasapi`、`input_device_mme`）。
@@ -357,10 +380,15 @@ AEC far-end：独立录制流指向 `far_sink.monitor`（会话内创建/销毁�
   追加且只增不减（~1.4GB/小时）。纯 py 版 viz 改为 `BufferTapStage`：有界上限丢最旧 +
   仅在 `process_pipeline` 内临时启用，本地路径零开销，泄漏不可能再发生。
 - **无数值溢出/延迟累积（安全）**：环形缓冲游标单调递增、水位阈值夹牢；AGC/EQ/压缩器
-  状态皆为有界信号值。网络模式 acc 硬顶 171ms、输出缓冲 >128ms 即丢。
-- **事件型弱点（继承自旧架构，待办）**：pulsectl 流无 core error/lost 监听与自动重连；
-  运行中 USB 拔插/PipeWire 重启 → 对应流线程异常退出、桥接静默失效。
-  「重启」类手动恢复路径可用，自动重连留作 TODO。
+  状态皆为有界信号值。网络模式 acc 硬顶 80ms；各输出 sink 水位封顶 300ms。
+- **播放时钟域已收敛（2026-09 重构）**：此前 5 条播放路径 4 种时钟策略
+  （全双工内联处理/主输出帧长硬对齐/额外输出手写 ASRC/网络 drop+pad/Linux
+  无节奏 push），速率差反复成病；现全部收敛到后端哑插件 + 唯一
+  PlaybackSink（合成测试可验证：±2% 速率差、抖动、断流、突发均不连续有界）。
+- **事件型弱点（继承自旧架构，待办）**：libpulse 流无 core error/lost 监听与
+  自动重连；运行中 USB 拔插/PipeWire 重启 → 对应流失败、桥接静默失效
+  （统一循环 ~2s 健康探测会退出线程走会话重启路径，但无流级自动恢复）。
+  自动重连留作 TODO。
 
 ---
 

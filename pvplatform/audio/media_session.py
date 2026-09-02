@@ -17,19 +17,16 @@
 
 """纯媒体播放会话（无设备输入的本地媒体：文件/音效板/桌面声音）。
 
-唯一实现：miniaudio PlaybackDevice（自包含 C，WASAPI/Pulse 直开）拉模型——
-播放库回调生成器向 media_read 拉混合帧，设备时钟即节拍；无泵线程、
-无手搓环形缓冲、不触碰 AudioThread/主体传输层。
+唯一实现：miniaudio PlaybackDevice（自包含 C，WASAPI/Pulse 直开）拉模型。
+播放正确性收敛到 PlaybackSink（make_sink 注入，pvengine 持有实现）：
+主设备回调驱动引擎帧源（read_frame → 写全部 sink），每个设备——
+主/从地位对等——各自从自己的 sink pull 帧输出。设备间速率差由
+sink 变速消化（此前从设备走队列+垫零，速率差必周期性咔哒）。
 
-多路输出：首设备为主时钟，其回调把每帧混合结果副本投递到其余设备的
-有界队列（满丢最旧，欠载补静音，深度 ~200ms），从设备各自回调消费。
 输出设备按名称精确匹配 miniaudio 枚举；未选或未匹配 = 系统默认输出
-（Linux 走 pipewire-pulse 时 sink name 即 pw-dump 的 node.name，
-与 plan.outputs 同源）。格式恒 F32 立体声 48kHz（miniaudio 负责与
-设备混音格式的转换）。
+（Linux 走 pipewire-pulse 时 sink name 即 pw-dump 的 node.name）。
+格式恒 F32 立体声 48kHz（miniaudio 负责与设备混音格式的转换）。
 """
-
-import queue
 
 import numpy as np
 
@@ -37,18 +34,18 @@ _TARGET_SR = 48000
 _HOP = 480              # 混合粒度（10ms @48kHz，与 pvengine.context.HOP_LENGTH 一致）
 _CHANNELS = 2            # 立体声交错输出
 _BUFFER_MS = 60          # 设备周期：延迟/抗抖动平衡
-_QUEUE_N = 20            # 扇出队列深度（≈200ms）
 
 
 class MediaSession:
-    """read_frame(n) → 单声道 float 帧；写全部输出设备（多路扇出）。"""
+    """read_frame(n) 引擎帧源；每输出设备一个 sink（write/pull 注入）。"""
 
-    def __init__(self, read_frame, out_names):
+    def __init__(self, read_frame, out_names, make_sink):
         self._read = read_frame
         self._names = [str(n) for n in (out_names or []) if n]
-        self._devs = None          # Devices 上下文（设备 id 生命周期随它）
-        self._devices = []         # [PlaybackDevice]
-        self._queues = []          # 从设备扇出队列
+        self._make_sink = make_sink   # () -> sink 对象（write/pull）
+        self._sinks = []              # 与设备一一对应
+        self._devs = None             # Devices 上下文（设备 id 生命周期随它）
+        self._devices = []            # [PlaybackDevice]
         self._err = None
 
     @property
@@ -64,11 +61,9 @@ class MediaSession:
             ids = [i for i in ids if i is not None]
             if not ids:
                 ids = [None]       # 未选/未匹配输出 = 系统默认输出
-            self._queues = [queue.Queue(maxsize=_QUEUE_N)
-                            for _ in ids[1:]]
+            self._sinks = [self._make_sink() for _ in ids]
             for i, dev_id in enumerate(ids):
-                gen = (self._master_gen() if i == 0
-                       else self._slave_gen(self._queues[i - 1]))
+                gen = self._master_gen() if i == 0 else self._slave_gen(i)
                 next(gen)          # 生成器须先启动再交给设备
                 dev = miniaudio.PlaybackDevice(
                     output_format=miniaudio.SampleFormat.FLOAT32,
@@ -90,53 +85,39 @@ class MediaSession:
                 return d["id"]
         return None
 
-    def _pull_stereo_bytes(self) -> bytes:
-        """拉一帧混合结果（media_read → F32 mono）→ 立体声交错 bytes，
-        同时向扇出队列投递副本（满丢最旧控延迟）。欠载补零帧。"""
-        try:
-            frame = self._read(_HOP)
-        except Exception:
-            frame = None
-        x = np.asarray(frame, dtype=np.float32) \
-            if frame is not None and len(frame) else None
-        if x is None or len(x) < _HOP:
-            x = np.zeros(_HOP, dtype=np.float32)
-        data = np.repeat(x[:_HOP], _CHANNELS).tobytes()
-        for q in self._queues:
-            try:
-                if q.full():
-                    q.get_nowait()
-                q.put_nowait(data)
-            except Exception:
-                pass
-        return data
+    def _write_all(self, frame) -> None:
+        """引擎产出的混合帧写全部 sink（主设备回调驱动）。"""
+        if not frame:
+            return
+        for s in self._sinks:
+            s.write(frame)
 
     def _master_gen(self):
-        """主设备回调生成器：按需拉帧凑满请求数（产出必须精确）。"""
-        fb = 4 * _CHANNELS
-        buf = bytearray()
-        need = yield b""
-        while True:
-            while len(buf) < need * fb:
-                buf += self._pull_stereo_bytes()
-            out = bytes(buf[:need * fb])
-            del buf[:need * fb]
-            need = yield out
+        """主设备回调生成器：驱动引擎帧源，再从自己 sink 拉满请求数。
 
-    def _slave_gen(self, q: queue.Queue):
-        """从设备回调生成器：消费扇出队列；欠载补静音。"""
-        fb = 4 * _CHANNELS
-        buf = bytearray()
+        每轮 read 一个 hop → 写全部 sink → 消费等量（主时钟收支恒平，
+        sink 只做 hop→need 的粒度适配与预热）。
+        """
         need = yield b""
         while True:
-            while len(buf) < need * fb:
+            data = []
+            while len(data) < need:
                 try:
-                    buf += q.get_nowait()
-                except queue.Empty:
-                    buf += bytes(_HOP * fb)
-            out = bytes(buf[:need * fb])
-            del buf[:need * fb]
-            need = yield out
+                    frame = self._read(_HOP)
+                except Exception:
+                    frame = None
+                if not frame or len(frame) < _HOP:
+                    frame = [0.0] * _HOP
+                self._write_all(frame)
+                data.extend(self._sinks[0].pull(min(_HOP, need - len(data))))
+            need = yield _stereo_bytes(data, need)
+
+    def _slave_gen(self, i: int):
+        """从设备回调生成器：从自己的 sink 拉帧（sink 消化设备间速率差）。"""
+        need = yield b""
+        while True:
+            data = self._sinks[i].pull(need)
+            need = yield _stereo_bytes(data, need)
 
     def stop(self):
         for d in self._devices:
@@ -145,5 +126,11 @@ class MediaSession:
             except Exception:
                 pass
         self._devices = []
-        self._queues = []
+        self._sinks = []
         self._devs = None
+
+
+def _stereo_bytes(data, n: int) -> bytes:
+    """单声道 n 样本 → F32 立体声交错 bytes。"""
+    x = np.asarray(data[:n], dtype=np.float32)
+    return np.repeat(x, _CHANNELS).tobytes()

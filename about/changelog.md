@@ -1,5 +1,42 @@
 # 更新日志
 
+## 2026-09-02 — 播放时钟域收敛：唯一 PlaybackSink + 后端哑传输插件化（架构重构）
+
+- **播放正确性收敛到唯一组件（重要）**：新增 `pvengine/dsp/playback.py`
+  `PlaybackSink`——设备时钟唯一主时钟，全部跨时钟域消费（主输出/额外
+  输出/网络输出/媒体从设备）统一经它：PI 伺服变速（±3% ASRC，积分收敛
+  ~0.3s）消化速率差、预热水位、欠载静音重同步（绝不适配"复用上一帧"）、
+  封顶丢最旧防延迟爬升、欠载边界 32 样本淡入淡出除咔哒。此前 5 条播放
+  路径 4 种时钟策略（全双工内联处理/主输出帧长硬对齐/额外输出手写 ASRC/
+  网络 drop-crossfade+pad/复用上一帧/Linux 无节奏 push+垫静音）收敛为
+  一处；新增合成测试 `tests/test_playback_sink.py`（±2% 速率差长跑、帧长
+  抖动、断流恢复、突发封顶全部不连续有界，CI 冒烟运行）；
+- **传输后端真插件化（哑传输）**：Windows 新增 `pvplatform/audio/pa_backend.py`
+  `PaBridge`（输入回调环 + 每输出设备一条独立回调流，回调按设备时钟经
+  `out_pull` 拉 sink 帧，上混声道），与 Linux `PwBridge` 同形契约
+  （open/read/close/active/set_far）；`audio_processor` 收敛为**统一处理
+  循环**（本地/网络同一循环：read hop → process → sinks.write），删除全部
+  5 套平台回调与平行缓冲（全双工单流内联处理、`_aligned_delivery`、额外
+  输出 ASRC 结转、`_output_buffer` 网络环、"复用上一帧"）——播放正确性
+  不再有第二实现点；输入与输出、主输出与额外输出改为地位对等的独立流
+  （各自时钟域各自 sink），不再受 PortAudio 全双工单流同步抖动牵连；
+- **修复 Linux 桥接依赖断裂（重要）**：旧桥调用的 pulsectl 流式 API
+  （`connect_recording`/`connect_playback`）在 PyPI 全版本 pulsectl 中
+  不存在（来自未记录 fork），干净安装（CI 打包的 deb/rpm/AppImage、内嵌
+  python312）必现 AttributeError 起不来。改为自研最小绑定
+  `pvplatform/audio/_libpulse.py`（ctypes 直调系统 libpulse：threaded
+  mainloop + pa_stream 读写回调，播放 tlength 100ms/minreq 20ms、录制
+  fragsize 20ms），**删除 pulsectl 依赖**（requirements 与关于页同步）；
+  Linux 播放改为 libpulse 写回调按设备时钟 pull（无节奏 Python 轮询
+  线程与垫静音循环删除），AEC far 流同构；
+- **纯媒体会话多设备咔哒根除**：MediaSession 从设备由"队列扇出+欠载垫
+  零"改为各自 PlaybackSink（设备间速率差变速消化），主从设备地位对等；
+- 网络模式输出不再"缓冲 >60ms 丢帧"与欠载"复用上一帧"（冻结伪影），
+  稳态漂移由 sink 伺服连续消化，acc 侧仅保留 80ms 硬顶兜突发；
+- 处理循环健康诊断统一为一行（60s：fps/处理耗时/sink 最小水位/欠载·
+  垫零·丢最旧），替代原回调诊断；
+- TSE 参考录音钩子在 Linux 本地路径生效（此前仅 Windows 全双工路径接入）。
+
 ## 2026-09-01 — 10ms hop 规约全链对齐；修复 Linux 桥接数据丢失
 
 - **修复 Linux 音频数据丢失（重要）**：PipeWire 桥接（pulsectl）数据粒度

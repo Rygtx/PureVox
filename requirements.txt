@@ -19,9 +19,8 @@ zeroconf==0.150.0
 aiohttp==3.14.3
 opuslib==3.0.1
 zipp
-# Linux 音频桥：ctypes 到系统 libpulse（pipewire-pulse 兼容层），无自编译组件；
-# 仅 Linux 运行需要，装了也无害
-pulsectl
+# Linux 音频桥：pvplatform/audio/_libpulse.py（ctypes 到系统 libpulse，
+# threaded mainloop + pa_stream 读写回调），无第三方依赖、无自编译组件
 
 # ── 媒体解码/网络组件 ──
 # websockets = Lite Net WSS 服务器（仅 Windows 发行）；

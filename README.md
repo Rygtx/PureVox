@@ -73,7 +73,7 @@ Linux 音频基于原生 PipeWire：格式协商 F32 单声道 48000Hz，重采�
  PipeWire 负责。虚拟麦克风是单声道 null-sink `purevox_out` 的 monitor，
 其它应用可选 **"PureVox 虚拟麦克风"** 作为输入设备。AEC 远端采集（回声参考）
 同样是原生 PipeWire（`stream.capture.sink` 监听扬声器输出）。
-Linux 输入/输出/设备枚举/AEC 全部走 pipewire-pulse 兼容层（pulsectl），
+Linux 输入/输出/设备枚举/AEC 全部走 pipewire-pulse 兼容层（自研 ctypes libpulse 绑定），
 无任何自编译二进制。
 
 ### Windows 远程麦克风附加组件
@@ -168,7 +168,7 @@ bootstrap_python312.sh / .ps1  # 内嵌 Python 3.12 引导（Linux 下载预编�
 |---|---|
 | 桌面 GUI | Python 标准库 Tkinter（uitk，星露谷像素浅色主题） |
 | 音频处理 | 纯 Python 引擎 pvengine（numpy + scipy + onnxruntime） |
-| Linux 音频 | PipeWire（pipewire-pulse 兼容层，pulsectl 经 ctypes 调系统 libpulse） |
+| Linux 音频 | PipeWire（pipewire-pulse 兼容层，自研 ctypes 绑定直调系统 libpulse） |
 | Windows 音频 | WASAPI 全双工（默认）/ MME 备选 |
 | 服务端 | Python aiohttp + zeroconf + cryptography |
 | 音频编码 | Opus（PC: opuslib，APK: NDK 编译，Web: WASM） |

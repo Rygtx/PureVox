@@ -61,9 +61,9 @@ LIBS = [
     {'name': 'opuslib', 'ver': '3.0.x', 'license': 'BSD-3',
      'url': 'https://github.com/STACi32/opuslib-python',
      'desc': 'Opus 编解码绑定（ctypes 系统 libopus）'},
-    {'name': 'pulsectl', 'ver': '24.12', 'license': 'MIT',
-     'url': 'https://github.com/OpenVoiceOS/pulsectl',
-     'desc': 'Linux 音频桥（ctypes 系统 libpulse）'},
+    {'name': 'miniaudio', 'ver': '1.71', 'license': 'MIT',
+     'url': 'https://github.com/serge-rgb/miniaudio',
+     'desc': '媒体解码/播放（自包含 C）'},
 ]
 
 _INTRO_TEXT = """\

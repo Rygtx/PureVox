@@ -10,15 +10,16 @@
 
 ```
 ┌─────────────────────────────────────────────────────┐
-│ L4 UI        ui_pyside6.py / dialog_*.py            │
+│ L4 UI        uitk/（Tkinter）                        │
 │              渲染节点行 · 收集用户意图 · 展示状态      │
 ├─────────────────────────────────────────────────────┤
-│ L3 会话      session_plan.py                        │
+│ L3 会话      session_plan.py + uitk/engine.py        │
 │              链文档 → 可执行会话计划（纯函数，可单测） │
 ├─────────────────────────────────────────────────────┤
-│ L2 传输      audio_processor.AudioThread            │
-│              流编排 · 输入混音 · 输出扇出 · AEC far   │
-│              pvplatform/audio/pwpipe_client.PwBridge │
+│ L2 传输      audio_processor.AudioThread             │
+│              统一处理循环(read→process→sinks.write)   │
+│              后端插件：PwBridge(Linux) / PaBridge(Win) │
+│              每输出一个 pvengine.dsp.playback.PlaybackSink │
 ├─────────────────────────────────────────────────────┤
 │ L1 引擎      pvengine（Stage 管线，纯 DSP，无 I/O） │
 ├─────────────────────────────────────────────────────┤
@@ -91,11 +92,16 @@ class NodeSpec:
    样本块（1024/2048 等）。202609 模型三件套契约一致（波形 hop 进出、
    STFT 在模型图内、enh_hop 滞后 1 hop），未来多采样率仅换 SAMPLE_RATE。
 3. **混音**：N 路 input 等权平均；某路暂无数据则跳过该路；全部无数据 = 本帧无输入。
-4. **扇出**：M 路 output 各持独立环形缓冲，写入同一份降噪后音频；
-   任一路积压/阻塞不得拖累其余路与处理循环。
+4. **扇出**：M 路 output 各持一个 PlaybackSink，写入同一份降噪后音频（或
+   各自链位置的线性抽头帧）；任一路积压/阻塞不得拖累其余路与处理循环。
 5. **顺序**：信号流 = inputs(混合) → [fx 按链序] → outputs ∥ viz。
 6. **旁路**：viz 只读 tap，永不反压、永不修改样本。
 7. **远端参考**：AEC far 是独立采集支路，仅当链中存在启用的 echo_cancel 时建立。
+8. **设备时钟唯一主时钟（2026-09 播放重构）**：处理线程按自身节奏推进 hop，
+   播放侧由设备回调经 PlaybackSink.pull 拉帧；一切跨时钟域消费（多输出设备、
+   网络流、媒体从设备）的速率差由 PlaybackSink 变速消化（PI 伺服 ASRC ±3%、
+   预热、欠载静音重同步、封顶丢最旧）。**禁止在任何回调里重写缓冲策略**
+   （垫零/丢帧/复用上一帧/手写重采样都是平行实现，一律不得新增）。
 
 ## 4. 会话计划（SessionPlan）契约
 
@@ -141,9 +147,13 @@ class BackendSpec:
     capabilities: frozenset  # {"multi_input","multi_output","loopback_far"}
 ```
 
-后端数据面对象与 PwBridge 同形（这是既成事实的标准接口）：
-`open(inputs, outputs)` / `read(n)`（混音）/ `write(samples)`（扇出）/
-`close()` / `active()` / `last_error()` / `set_far(sink, enabled)` / `read_far(n)`。
+后端数据面为**哑传输**（2026-09 播放重构后）：
+`open(inputs, outputs, out_pull)` / `read(n)`（混音输入）/ `close()` /
+`active()` / `last_error()` / `set_far(sink, enabled)` / `read_far(n)`。
+
+- 后端不做任何缓冲策略与时钟逻辑；`out_pull[i]` 是输出 i 的帧供给函数
+  （PlaybackSink.pull，由后端在设备回调线程按设备时钟调用）。
+- 产出侧不经后端：处理循环把每帧结果直接写入各 PlaybackSink（L2 持有）。
 
 ### 5.2 注册表与选择规则
 
@@ -158,16 +168,18 @@ class BackendSpec:
 
 | 后端 | 平台 | 能力 | 实现状态 |
 |---|---|---|---|
-| pipewire | Linux | multi_input, multi_output, loopback_far | ✅ PwBridge 已完全类化 |
-| wasapi | Windows | loopback_far | ⚠️ 数据面内联于 AudioThread 回调，类化提取为 TODO v2 |
-| mme | Windows | （无 loopback；驱动自动重采样故 48k 检测宽松） | 同上 |
+| pipewire | Linux | multi_input, multi_output, loopback_far | ✅ PwBridge，`_libpulse` ctypes 绑定（threaded mainloop + 流回调） |
+| wasapi | Windows | multi_output, loopback_far | ✅ PaBridge（输入/输出独立回调流，每输出一个 pull） |
+| mme | Windows | multi_output（无 loopback；驱动自动重采样故 48k 检测宽松） | ✅ 同 PaBridge |
 | network | 全平台 | multi_input（作为一路输入注入） | 经服务器 RemoteAudioSource 注入，随会话建立 |
 
 ### 5.4 其他传输规范
 
 - 「监听」概念已废除——监听就是一个 output 节点实例。
 - 网络：remote_mic 节点经 HTTPS/WSS 服务器注入，等同一路 input；
-  输出侧与本地一致（Linux 扇出走 PwBridge，Windows extras 回调）。
+  输出侧与本地完全一致（同一处理循环 + 同一组 PlaybackSink）。
+- 纯媒体会话（无设备输入）：MediaSession（miniaudio 拉模型），
+  每设备一个注入的 PlaybackSink，主设备回调驱动引擎帧源。
 
 ## 6. 错误处理与降级
 
@@ -177,7 +189,7 @@ class BackendSpec:
 | 主输入或主输出建流失败 | 整体启动失败，报错（48k 检测前置拦截常见原因） |
 | 额外输出建流失败 | 跳过该路，日志告警，主流程继续 |
 | fx 插件实例化失败 | 该节点不入管线，记入 plugin_errors，其余继续 |
-| 传输中断线 | 健康检查重建有限次；用尽后停线程（继承既有策略） |
+| 传输流死亡（设备拔出/断连） | 统一循环 ~2s 健康探测 → 退出线程，走会话重启路径 |
 
 ## 7. 变更生效矩阵（热更 vs 重启）
 

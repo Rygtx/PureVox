@@ -118,12 +118,14 @@ class EngineController:
 
             # ── 纯媒体会话（无设备输入）：MediaSession 独立播放，
             # 不启动 AudioThread——播放库（miniaudio PlaybackDevice）拉模型
-            # 直出，设备时钟即节拍；确定性本地播放与不确定实时流（网络）
-            # 互不掺杂 ──
+            # 直出，设备时钟即节拍；跨时钟域由注入的 PlaybackSink 消化；
+            # 确定性本地播放与不确定实时流（网络）互不掺杂 ──
             if not plan.inputs:
                 from pvplatform.audio.media_session import MediaSession
+                from pvengine import PlaybackSink
                 self._media = MediaSession(
-                    lambda n: proc.media_read(n), list(plan.outputs))
+                    lambda n: proc.media_read(n), list(plan.outputs),
+                    make_sink=lambda: PlaybackSink(hop=HOP_LENGTH))
                 if not self._media.start():
                     err = self._media.error or "媒体输出设备打开失败"
                     self._media = None

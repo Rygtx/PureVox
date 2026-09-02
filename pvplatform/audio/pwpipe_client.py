@@ -17,19 +17,24 @@
 
 """Linux 音频桥（纯 Python，pipewire-pulse 兼容层）。
 
-历史：曾用自编 C 库 libpvpipe.so（原生 pw_stream）。迁移为纯 Python 后改用
-`pulsectl`（ctypes 到系统 libpulse，走 pipewire-pulse 协议兼容层），
-不再有任何自编译二进制。格式仍统一 F32 单声道 48000Hz，
-重采样与声道转换由 PipeWire 完成。
+数据面 = 自研 ctypes 绑定（`_libpulse`，系统 libpulse 的 threaded
+mainloop + pa_stream 读写回调）。历史：曾用自编 C 库 libpvpipe.so，
+纯 Python 化时一度用 pulsectl 高层流 API——但那些 API（connect_recording
+等）在 PyPI 全版本中不存在（来自未记录 fork），干净安装必断，故收敛为
+本文件内的显式绑定。设备枚举走 `pw-dump` 标准 introspection，与传输无关。
 
-设备列表 = `pw-dump` 标准 introspection 解析的节点名（node.name 稳定）：
+格式统一 F32 单声道 48000Hz，重采样与声道转换由 PipeWire 完成。
+
+时钟模型（播放正确性关键）：
+- **播放**：libpulse 写回调（设备时钟）→ `out_pull[i](n)` 拉帧 → 写流。
+  速率差/抖动由上层 PlaybackSink（pvengine）消化，本桥零缓冲策略；
+- **录制**：libpulse 读回调 → 各输入独立环形缓冲（200ms）→ 引擎线程
+  read(hop) 混合消费。
+
+设备列表 = `pw-dump` 解析的节点名（node.name 稳定）：
   - 输入：media.class=Audio/Source（物理麦克风 + 虚拟麦克风 monitor）
   - 输出：media.class=Audio/Sink（扬声器 + purevox_out）
   排除 PureVox 自身流节点与真源 purevox_mic（对外虚拟麦克风，不参与自身输入）。
-
-结构：
-  - list_sources() / list_destinations()   节点名列表（去重/净化）
-  - PwBridge                               input/output(/monitor/far) 多流桥
 """
 
 import json
@@ -37,38 +42,37 @@ import subprocess
 import sys
 import threading
 import time
-from typing import Dict, List, Optional
+from typing import Callable, List, Optional
 
 import numpy as np
 
 IS_LINUX = sys.platform.startswith("linux")
 
 # 桥接数据面粒度：10ms @48kHz = 480（与 pvengine.context.HOP_LENGTH 一致）。
-# _Ring 按此长度分块入队，消费方 read(引擎 hop) 必须与之对齐——
-# 粒度错位会整块弹出后丢弃尾部样本（勿改回 1024）。
 HOP = 480
 
-try:
-    import pulsectl  # 纯 Python（ctypes 系统 libpulse）
-    PULSE_AVAILABLE = True
-except Exception:
-    PULSE_AVAILABLE = False
+from pvplatform.audio.common import RingBuffer
+from pvplatform.audio._libpulse import (
+    PA_STREAM_READY, U32_MINUS1, PaBufferAttr, _Link, libpulse_available)
 
-# libpulse pa_sample_spec.format 枚举值：FLOAT32LE = 3
-_FORMAT_FLOAT32LE = 3
+# 录制块 20ms / 播放 tlength 100ms、minreq 20ms（见 _libpulse 模块注释）
+_REC_FRAG = HOP * 2
+_PLAY_TLENGTH = HOP * 10
+_PLAY_MINREQ = HOP * 2
+_RING_CAP = 48000 // 5          # 输入/far 环 200ms（吸收调度抖动）
 
 
 def pw_available() -> bool:
-    """音频桥是否可用（Linux + pulsectl 就绪）。"""
-    return IS_LINUX and PULSE_AVAILABLE
+    """音频桥是否可用（Linux + 系统 libpulse 就绪）。"""
+    return IS_LINUX and libpulse_available()
 
 
-def _list_nodes() -> List[Dict[str, str]]:
+def _list_nodes() -> List[dict]:
     """解析 `pw-dump`（PipeWire 标准全量 introspection），返回节点列表。
 
     每个节点含：id / name / description / media_class / api_alsa_path / state。
     """
-    nodes: List[Dict[str, str]] = []
+    nodes: List[dict] = []
     try:
         out = subprocess.run(["pw-dump"], capture_output=True, text=True, timeout=5).stdout
         objs = json.loads(out)
@@ -198,124 +202,59 @@ def speaker_sink_name() -> str:
 
 
 # ---------------------------------------------------------------------------
-#  流线程：每条流独占一个线程 + 一个 pulsectl.Pulse 连接
-#  （libpulse 主循环有线程亲和性，连接必须在创建它的线程内使用）
+#  流回调：libpulse 主循环线程派发（GIL 下短平快）
 # ---------------------------------------------------------------------------
 
-class _RecordThread(threading.Thread):
-    """从 source 录制 F32 单声道 48kHz，推入环形缓冲。"""
-
-    def __init__(self, tag: str, source_name: str, ring, block: int = HOP):
-        super().__init__(daemon=True, name=f"pv-rec-{tag}")
-        self._client = f"PureVox-{tag}"
-        self._source = source_name
-        self.ring = ring
-        self._block = block
-        self._stop_evt = threading.Event()
-        self.ready = threading.Event()
-        self.error: str = ""
-
-    def run(self):
-        import pulsectl
-        try:
-            with pulsectl.Pulse(self._client) as pulse:
-                self.ready.set()
-                with pulse.connect_recording(
-                        source_name=self._source,
-                        stream_name=self._client,
-                        rate=48000, channels=1,
-                        format=getattr(pulsectl, "PA_SAMPLE_FLOAT32LE", _FORMAT_FLOAT32LE),
-                ) as rec:
-                    while not self._stop_evt.is_set():
-                        data = rec.read(self._block)
-                        if data:
-                            self.ring.write(np.frombuffer(bytes(data), dtype=np.float32))
-        except Exception as e:
-            self.error = str(e)
-            self.ready.set()
-
-    def stop(self):
-        self._stop_evt.set()
+_PLAY_ATTR = PaBufferAttr(U32_MINUS1, _PLAY_TLENGTH, U32_MINUS1,
+                          _PLAY_MINREQ, _PLAY_TLENGTH)
+_REC_ATTR = PaBufferAttr(U32_MINUS1, U32_MINUS1, U32_MINUS1,
+                         U32_MINUS1, _REC_FRAG)
 
 
-class _PlayThread(threading.Thread):
-    """向 sink 播放 F32 单声道 48kHz；从缓冲拉取数据，欠载补静音。"""
+def _make_record_reader(ring: RingBuffer):
+    """读回调：pa_stream_peek 循环 → F32 样本入环形缓冲。"""
+    from pvplatform.audio._libpulse import read_float32
 
-    def __init__(self, tag: str, sink_name: str, ring, block: int = HOP):
-        super().__init__(daemon=True, name=f"pv-play-{tag}")
-        self._client = f"PureVox-{tag}"
-        self._sink = sink_name
-        self.ring = ring
-        self._block = block
-        self._stop_evt = threading.Event()
-        self.ready = threading.Event()
-        self.error: str = ""
-
-    def run(self):
-        import pulsectl
-        try:
-            with pulsectl.Pulse(self._client) as pulse:
-                self.ready.set()
-                with pulse.connect_playback(
-                        sink_name=self._sink,
-                        stream_name=self._client,
-                        rate=48000, channels=1,
-                        format=getattr(pulsectl, "PA_SAMPLE_FLOAT32LE", _FORMAT_FLOAT32LE),
-                ) as play:
-                    silence = bytes(self._block * 4)
-                    while not self._stop_evt.is_set():
-                        got = self.ring.read(self._block)
-                        if got:
-                            play.write(np.asarray(got, dtype=np.float32).tobytes())
-                        else:
-                            play.write(silence)
-        except Exception as e:
-            self.error = str(e)
-            self.ready.set()
-
-    def stop(self):
-        self._stop_evt.set()
-
-
-class _Ring:
-    """轻量 FIFO（满丢最旧 / 读不足返回 None）。"""
-
-    def __init__(self, capacity: int):
-        from collections import deque
-        self._dq = deque(maxlen=max(capacity // HOP, 4))  # 以 hop 为单位存块
-        self._lock = threading.Lock()
-
-    def write(self, samples):
-        x = np.asarray(samples, dtype=np.float32).reshape(-1)
-        with self._lock:
-            for i in range(0, len(x), HOP):
-                self._dq.append(x[i:i + HOP])
-
-    def read(self, n: int):
-        need = max(1, min(int(n), HOP))
-        with self._lock:
-            if not self._dq:
-                return None
-            chunk = self._dq.popleft()
-        return chunk[:need].tolist()
+    def on_read(s, nbytes: int) -> None:
+        from pvplatform.audio._libpulse import _get_funcs
+        f = _get_funcs()
+        from ctypes import byref, c_size_t, c_void_p
+        total = 0
+        while total < 64:            # 单次回调上限防御
+            data = c_void_p()
+            size = c_size_t()
+            if f.s_peek(s, byref(data), byref(size)) < 0:
+                break
+            if size.value == 0:
+                break
+            if data.value:           # data==NULL 且 size>0 = 洞，只 drop
+                ring.write(read_float32(data.value, size.value))
+            f.s_drop(s)
+            total += 1
+            if size.value == 0:
+                break
+    return on_read
 
 
 class PwBridge:
-    """PureVox 纯 Python 音频桥：N 路输入采集（自动混音）+ M 路输出播放（扇出）+ 可选 AEC far。
+    """PureVox 纯 Python 音频桥：N 路输入采集（自动混音）+ M 路输出播放
+    + 可选 AEC far。
 
     所有流以 F32 单声道 48000Hz 协商，PipeWire 负责重采样与声道转换。
-    read() 对全部输入环取平均（缺席的路跳过）；write() 把同一份降噪音频
-    推进每一路输出环。Python 线程 read()/write() 经内部缓冲搬运。
+    read() 对全部输入环取平均（缺席的路跳过）；输出按设备时钟写回调
+    从 `out_pull[i]` 拉帧（PlaybackSink），本桥不做任何缓冲策略。
     """
 
     def __init__(self):
-        self._in_threads: List[_RecordThread] = []
-        self._in_rings: List[_Ring] = []
-        self._out_threads: List[_PlayThread] = []
-        self._out_rings: List[_Ring] = []
-        self._far_thread: Optional[_RecordThread] = None
-        self._far_ring = _Ring(HOP * 8)
+        self._link: Optional[_Link] = None
+        self._in_rings: List[RingBuffer] = []
+        self._in_streams: List = []
+        self._out_streams: List = []
+        self._out_pull: List[Callable] = []
+        self._far_stream = None
+        self._far_ring = RingBuffer(_RING_CAP)
         self._error: str = ""
+        self._lock = threading.Lock()   # open/close/set_far 与回调的簿记互斥
 
     @property
     def available(self) -> bool:
@@ -323,73 +262,122 @@ class PwBridge:
 
     # ── 连接管理 ──
 
-    def open(self, inputs: List[str], outputs: List[str]) -> bool:
-        """打开 N 路采集 + M 路播放（node.name 列表，空串项忽略）。"""
+    def open(self, inputs: List[str], outputs: List[str],
+             out_pull: Optional[List[Callable]] = None) -> bool:
+        """打开 N 路采集 + M 路播放（node.name 列表，空串项忽略）。
+
+        out_pull[i]：输出 i 的帧供给函数（libpulse 主循环线程调用，
+        参数 = 需要的样本数，返回等长 float 列表；PlaybackSink.pull）。
+        """
         if not self.available:
-            self._error = "pulsectl 不可用（pip install pulsectl）"
+            self._error = "系统 libpulse 不可用（pipewire-pulse 环境）"
             return False
         inputs = [s for s in (inputs or []) if s]
         outputs = [s for s in (outputs or []) if s]
-        for i, name in enumerate(inputs):
-            ring = _Ring(HOP * 8)
-            t = _RecordThread(f"in{i}", name, ring)
-            self._in_threads.append(t)
-            self._in_rings.append(ring)
-            t.start()
-        for i, name in enumerate(outputs):
-            tag = "out" if i == 0 else f"out{i}"
-            ring = _Ring(48000)          # 每路独立 1s 缓冲
-            t = _PlayThread(tag, name, ring)
-            self._out_threads.append(t)
-            self._out_rings.append(ring)
-            t.start()
-        if not (self._in_threads or self._out_threads):
+        if not (inputs or outputs):
             self._error = "未指定任何输入/输出节点"
             return False
-        # 等各流就绪或报错
-        deadline = time.time() + 3.0
-        for t in (*self._in_threads, *self._out_threads):
-            while not t.ready.is_set() and time.time() < deadline:
-                time.sleep(0.02)
-            if t.error:
-                self._error = t.error
+        out_pull = list(out_pull or [])
+        try:
+            self._link = _Link("PureVox")
+        except OSError as e:
+            self._error = str(e)
+            self._link = None
+            return False
+
+        deadline = time.time() + 5.0
+        try:
+            for i, name in enumerate(inputs):
+                ring = RingBuffer(_RING_CAP)
+                s = self._link.add_stream(
+                    f"PureVox-in{i}", 48000, 1, record=True, dev=name,
+                    attr=_REC_ATTR, on_read=_make_record_reader(ring))
+                self._in_rings.append(ring)
+                self._in_streams.append(s)
+            for i, name in enumerate(outputs):
+                pull = out_pull[i] if i < len(out_pull) else None
+                s = self._link.add_stream(
+                    "PureVox-out" if i == 0 else f"PureVox-out{i}",
+                    48000, 1, record=False, dev=name, attr=_PLAY_ATTR,
+                    on_write=self._make_play_writer(pull))
+                self._out_streams.append(s)
+            for s in (*self._in_streams, *self._out_streams):
+                wait = max(0.1, deadline - time.time())
+                if not self._link.wait_stream_ready(s, wait):
+                    raise OSError(self._link.last_error() or "流未就绪")
+        except OSError as e:
+            self._error = str(e)
+            self.close()
+            return False
+        return True
+
+    def _make_play_writer(self, pull: Optional[Callable]):
+        """写回调：按设备时钟拉帧（PlaybackSink）→ F32LE bytes → 写流。"""
+        def on_write(s, nbytes: int) -> None:
+            n = nbytes // 4
+            if n <= 0:
+                return
+            if pull is not None:
+                mono = pull(n)
+                if mono is None or len(mono) < n:
+                    mono = list(mono or []) + [0.0] * (n - len(mono))
+            else:
+                mono = [0.0] * n
+            data = np.asarray(mono, dtype=np.float32).tobytes()
+            from pvplatform.audio._libpulse import _get_funcs
+            f = _get_funcs()
+            f.s_write(s, data, len(data), None, 0, 0)  # PA_SEEK_RELATIVE=0
+        return on_write
+
+    def close(self) -> None:
+        with self._lock:
+            link = self._link
+            self._link = None
+            self._in_rings = []
+            self._in_streams = []
+            self._out_streams = []
+            self._out_pull = []
+            self._far_stream = None
+        if link is not None:
+            try:
+                link.close()
+            except Exception:
+                pass
+
+    def active(self) -> bool:
+        link = self._link
+        if link is None:
+            return False
+        with self._lock:
+            streams = (*self._in_streams, *self._out_streams)
+        if not streams:
+            return False
+        for s in streams:
+            if link.stream_state(s) != PA_STREAM_READY:
                 return False
         return True
 
-    def close(self) -> None:
-        threads = [*self._in_threads, *self._out_threads]
-        if self._far_thread is not None:
-            threads.append(self._far_thread)
-        for t in threads:
-            t.stop()
-        for t in threads:
-            t.join(timeout=1.0)
-        self._in_threads = []
-        self._in_rings = []
-        self._out_threads = []
-        self._out_rings = []
-        self._far_thread = None
-
-    def active(self) -> bool:
-        started = [t for t in (*self._in_threads, *self._out_threads)]
-        if not started:
-            return False
-        return all(t.is_alive() for t in started)
-
     def last_error(self) -> str:
-        return self._error or "未知错误"
+        return self._error or (self._link.last_error()
+                               if self._link is not None else "") or "未知错误"
 
     def sample_rate(self) -> int:
         return 48000 if self.active() else 0
+
+    def output_count(self) -> int:
+        """当前播放路数（线性多出对齐判断用）。"""
+        return len(self._out_streams)
 
     # ── 数据面 ──
 
     def read(self, n: int) -> Optional[List[float]]:
         """读取并混合全部输入路（等权平均；无数据返回 None）。"""
-        if not self.available:
+        if self._link is None:
             return None
         chunks = []
-        for ring in self._in_rings:
+        with self._lock:
+            rings = list(self._in_rings)
+        for ring in rings:
             got = ring.read(n)
             if got is not None:
                 chunks.append(got)
@@ -404,48 +392,43 @@ class PwBridge:
         k = 1.0 / len(chunks)
         return [v * k for v in acc]
 
-    def write(self, samples) -> None:
-        """把降噪后的音频扇出到全部输出路。"""
-        if not (self.available and samples):
-            return
-        for ring in self._out_rings:
-            ring.write(samples)
-
-    def write_per_output(self, frames: List[Optional[List[float]]]) -> None:
-        """按输出路分别写入（线性多出：每路拿自己链位置上的信号）。
-
-        frames[i] 对应第 i 路输出；None/空 表示该路本帧静音跳过；
-        列表短于路数时，多余的路复用最后一个非空帧（单出兼容）。
-        """
-        if not (self.available and self._out_rings):
-            return
-        last = None
-        for i, ring in enumerate(self._out_rings):
-            f = frames[i] if i < len(frames) else None
-            if f:
-                last = f
-                ring.write(f)
-            elif last:
-                ring.write(last)
-
     def set_far(self, sink_name: str, enabled: bool) -> bool:
-        """运行时开关 AEC far 采集流（监听 <sink>.monitor 源）。"""
+        """运行时开关 AEC far 采集流（监听 <sink>.monitor 源）。
+
+        未 open 主流时也可独立使用（桌面声音等自建桥场景）。
+        """
         if not self.available:
             return False
-        if enabled and sink_name:
-            if self._far_thread is not None:
-                self._far_thread.stop()
-            src = sink_name if sink_name.endswith(".monitor") else f"{sink_name}.monitor"
-            self._far_thread = _RecordThread("far", src, self._far_ring)
-            self._far_thread.start()
-            return True
-        if not enabled:
-            if self._far_thread is not None:
-                self._far_thread.stop()
-            self._far_thread = None
+        with self._lock:
+            if enabled and sink_name:
+                if self._link is None:
+                    try:
+                        self._link = _Link("PureVox-far")
+                    except OSError as e:
+                        self._error = str(e)
+                        return False
+                if self._far_stream is not None:
+                    self._link.drop_stream(self._far_stream)
+                    self._far_stream = None
+                src = sink_name if sink_name.endswith(".monitor") \
+                    else f"{sink_name}.monitor"
+                try:
+                    self._far_stream = self._link.add_stream(
+                        "PureVox-far", 48000, 1, record=True, dev=src,
+                        attr=_REC_ATTR, on_read=_make_record_reader(
+                            self._far_ring))
+                except OSError as e:
+                    self._error = str(e)
+                    self._far_stream = None
+                    return False
+                return True
+            if not enabled:
+                if self._link is not None and self._far_stream is not None:
+                    self._link.drop_stream(self._far_stream)
+                self._far_stream = None
         return True
 
     def read_far(self, n: int) -> Optional[List[float]]:
-        if not self.available:
+        if self._link is None:
             return None
         return self._far_ring.read(n)

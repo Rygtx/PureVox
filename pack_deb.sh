@@ -11,7 +11,7 @@
 #   /usr/share/applications/purevox.desktop
 #   /usr/share/icons/hicolor/256x256/apps/purevox.png
 #
-# Depends: pipewire（音频走 pipewire-pulse 兼容层，pulsectl 经 ctypes 调系统 libpulse）；
+# Depends: pipewire（音频走 pipewire-pulse 兼容层，libpulse 经 ctypes 直调（_libpulse））；
 #          numpy/onnxruntime/scipy 等 Python 依赖已捆绑进内嵌 python312。
 # Python 依赖全部捆绑进 python312（与 AppImage 同一实现路径），不依赖系统
 # python 及发行版 python 包名，故 Depends 只留 PipeWire，不再写任何 Python 依赖。

@@ -79,7 +79,7 @@ Linux audio uses native PipeWire: the format is negotiated as F32 mono 48000 Hz,
 (echo reference) is also captured natively via PipeWire (`stream.capture.sink` on the
 speaker sink).
 Linux input/output/device enumeration/AEC all go through the pipewire-pulse
-compatibility layer (pulsectl via ctypes to the system libpulse); no self-compiled
+compatibility layer (in-house ctypes binding to system libpulse); no self-compiled
 binaries are involved.
 
 ### Windows remote-mic add-ons
@@ -169,7 +169,7 @@ bootstrap_python312.sh / .ps1  # embedded Python 3.12 bootstrap (Linux downloads
 |---|---|
 | Desktop GUI | Python stdlib Tkinter (uitk, Stardew-pixel light theme) |
 | Audio processing | Pure-Python engine pvengine (numpy + scipy + onnxruntime) |
-| Linux audio | PipeWire (pipewire-pulse compatibility layer; pulsectl via ctypes to system libpulse) |
+| Linux audio | PipeWire (pipewire-pulse compatibility layer; in-house ctypes binding to system libpulse) |
 | Windows audio | WASAPI full-duplex (default) / MME fallback |
 | Server | Python aiohttp + zeroconf + cryptography |
 | Audio codec | Opus (PC: opuslib, APK: NDK build, Web: WASM) |

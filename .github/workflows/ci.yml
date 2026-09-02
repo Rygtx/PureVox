@@ -30,8 +30,9 @@ jobs:
             pkg_appimage: true
           - distro: fedora
             container: fedora:latest
-            # wget: bootstrap tarball download; ImageMagick: icon ico->png
-            sysdeps: "make python3 python3-pip python3-setuptools rpm-build wget ImageMagick"
+            # wget: bootstrap tarball download; ImageMagick: icon ico->png;
+            # cpio: rpm 产物解包冒烟（rpm2cpio | cpio）
+            sysdeps: "make python3 python3-pip python3-setuptools rpm-build wget ImageMagick cpio"
             pkg_rpm: true
           # Python 3.12 baseline: verify the pure-Python engine imports and runs there
           # (CI matrix uses 3.12; bundled runtime is 3.12).
@@ -109,6 +110,10 @@ jobs:
           print('pvengine OK on Python', sys.version.split()[0])
           EOF
 
+      - name: Test suite (playback / transport / devices / session plan)
+        run: |
+          $PY tests/run_all.py
+
       - name: Assert Python 3.12 baseline (python3.12 only)
         if: matrix.baseline
         run: |
@@ -119,6 +124,22 @@ jobs:
         run: |
           bash pack_deb.sh
           ls -lh dist/PureVox-Linux-x64-*.deb
+
+      # 产物级冒烟：解包 deb，用包内嵌的 python312 跑引擎与测试——
+      # 检测的就是「被打包物体和环境」（依赖缺装/内嵌解释器问题在此暴露）
+      - name: Bundled-runtime smoke (deb artifact, embedded python312)
+        if: matrix.pkg_deb
+        run: |
+          root=$(mktemp -d)
+          dpkg-deb -x dist/PureVox-Linux-x64-*.deb "$root"
+          PV="$root/opt/purevox"
+          test -x "$PV/python312/bin/python3.12"
+          test "$(ls "$PV/models" | grep -c '\.onnx$')" -ge 4
+          cp -r tests "$PV/tests"
+          cd "$PV"
+          export PYTHONHOME="$PV/python312"
+          "$PV/python312/bin/python3.12" -c "from pvengine import AudioProcessor; ap = AudioProcessor(0.0); out = ap.process([0.0] * 480); assert len(out) == 480; print('bundled pvengine OK')"
+          "$PV/python312/bin/python3.12" tests/run_all.py
 
       - name: Upload deb artifact
         if: matrix.pkg_deb
@@ -134,6 +155,22 @@ jobs:
           bash pack_rpm.sh
           ls -lh dist/PureVox-Linux-x64-*.rpm
 
+      # 产物级冒烟：解包 rpm，用包内嵌 python312 跑引擎与测试（同 deb）
+      - name: Bundled-runtime smoke (rpm artifact, embedded python312)
+        if: matrix.pkg_rpm
+        run: |
+          set -o pipefail
+          root=$(mktemp -d)
+          rpm2cpio dist/PureVox-Linux-x64-*.rpm | cpio -idmD "$root"
+          PV="$root/opt/purevox"
+          test -x "$PV/python312/bin/python3.12"
+          test "$(ls "$PV/models" | grep -c '\.onnx$')" -ge 4
+          cp -r tests "$PV/tests"
+          cd "$PV"
+          export PYTHONHOME="$PV/python312"
+          "$PV/python312/bin/python3.12" -c "from pvengine import AudioProcessor; ap = AudioProcessor(0.0); out = ap.process([0.0] * 480); assert len(out) == 480; print('bundled pvengine OK')"
+          "$PV/python312/bin/python3.12" tests/run_all.py
+
       - name: Upload rpm artifact
         if: matrix.pkg_rpm
         uses: actions/upload-artifact@v7
@@ -148,6 +185,23 @@ jobs:
         run: |
           bash pack_appimage.sh
           ls -lh dist/PureVox-Linux-x64-*.AppImage
+
+      # 产物级冒烟（随 AppImage 一并 best-effort）：--appimage-extract 免 FUSE，
+      # 用包内嵌 python312 跑测试
+      - name: Bundled-runtime smoke (AppImage artifact)
+        if: matrix.pkg_appimage
+        continue-on-error: true
+        run: |
+          cd dist
+          ./PureVox-Linux-x64-*.AppImage --appimage-extract >/dev/null
+          PV="$PWD/squashfs-root/usr/lib/purevox"
+          test -x "$PWD/squashfs-root/usr/python312/bin/python3"
+          cp -r ../tests "$PV/tests"
+          cd "$PV"
+          export PYTHONHOME="$PWD/../python312"
+          export LD_LIBRARY_PATH="$PWD${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+          ../python312/bin/python3 -c "from pvengine import AudioProcessor; ap = AudioProcessor(0.0); out = ap.process([0.0] * 480); assert len(out) == 480; print('bundled pvengine OK')"
+          ../python312/bin/python3 tests/run_all.py
 
       - name: Upload AppImage artifact
         if: matrix.pkg_appimage
@@ -223,6 +277,30 @@ jobs:
         shell: pwsh
         run: |
           python -c "from pvengine import AudioProcessor; ap = AudioProcessor(0.0); out = ap.process([0.0] * 480); assert len(out) == 480; print('pvengine OK on Python', __import__('sys').version.split()[0])"
+
+      - name: Test suite (playback / transport / devices / session plan)
+        shell: pwsh
+        run: |
+          python tests\run_all.py
+
+      # 产物布局断言：PyInstaller one-folder 的关键内容齐备
+      # （exe / about 三页 add-data / 模型 / opus.dll / html 推流页）
+      - name: Assert packaged bundle layout (PyInstaller output)
+        shell: pwsh
+        run: |
+          $checks = @(
+            "dist/PureVox/PureVox.exe",
+            "dist/PureVox/_internal/about/changelog.md",
+            "dist/PureVox/_internal/about/windows.md",
+            "dist/PureVox/_internal/about/linux.md",
+            "dist/PureVox/_internal/models",
+            "dist/PureVox/_internal/server/opus.dll",
+            "dist/PureVox/_internal/html/index.html"
+          )
+          foreach ($c in $checks) {
+            if (-not (Test-Path $c)) { throw "bundle missing: $c" }
+          }
+          Write-Host "bundle layout OK"
 
       - name: Upload Windows bundle
         uses: actions/upload-artifact@v7
