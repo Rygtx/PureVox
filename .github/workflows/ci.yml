@@ -354,7 +354,7 @@ jobs:
           fi
 
       - name: Save opus source cache (single writer, main-dispatch only)
-        if: !cancelled() && github.ref == 'refs/heads/main'
+        if: ${{ !cancelled() && github.ref == 'refs/heads/main' }}
         uses: actions/cache/save@v6
         with:
           path: android/opus-src
