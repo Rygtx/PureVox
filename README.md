@@ -48,8 +48,8 @@ powershell -ExecutionPolicy Bypass -File bootstrap_python312.ps1   # -> packages
 若不想用内嵌解释器，也可直接使用系统 Python 3.12+：
 
 ```bash
-# 平台差异已用环境标记写在清单内，直接安装即可
-pip install -r requirements.txt
+# Windows 系统 Python：
+pip install -r requirements-win.txt
 
 python run_tk.py
 ```

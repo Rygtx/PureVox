@@ -85,9 +85,9 @@ relocate_if_vboxsf() {
 }
 
 install_pydeps() {
-    echo "==> 安装 Python 依赖（requirements.txt，与 CI 同源 pin 版本）"
-    py -m pip install -r requirements.txt pillow 2>/dev/null \
-        || py -m pip install --break-system-packages -r requirements.txt pillow
+    echo "==> 安装 Python 依赖（requirements-linux.txt，与 CI 同源 pin 版本）"
+    py -m pip install -r requirements-linux.txt pillow 2>/dev/null \
+        || py -m pip install --break-system-packages -r requirements-linux.txt pillow
 }
 
 smoke() {

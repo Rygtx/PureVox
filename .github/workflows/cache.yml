@@ -1,0 +1,65 @@
+name: Cache
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'requirements-win.txt'
+      - 'requirements-linux.txt'
+      - 'bootstrap_python312.sh'
+      - 'android/opus-src/**'
+  workflow_dispatch:
+
+jobs:
+  pip-windows:
+    name: Pip cache (Windows)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - name: Install deps
+        shell: pwsh
+        run: python -m pip install -q -r requirements-win.txt
+      - name: Save pip cache
+        uses: actions/cache/save@v6
+        with:
+          path: ~\AppData\Local\pip\Cache
+          key: purevox-windows-pip-v2-${{ hashFiles('requirements-win.txt') }}
+
+  bootstrap-linux:
+    name: Bootstrap cache (Linux)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Bootstrap embedded Python + deps
+        run: ./bootstrap_python312.sh
+      - name: Save bootstrap cache
+        uses: actions/cache/save@v6
+        with:
+          path: ~/.cache/purevox
+          key: purevox-linux-cache-v1-cpython-3.12.14-appimagetool-x64
+
+  opus-android:
+    name: Opus source (Android)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Download Opus source
+        run: |
+          if [ -f android/opus-src/CMakeLists.txt ]; then
+            echo "opus-src cached, skip"
+          else
+            mkdir -p android/opus-src
+            wget -q -O /tmp/opus.zip https://github.com/xiph/opus/archive/refs/tags/v1.5.2.zip
+            unzip -q /tmp/opus.zip -d /tmp
+            mv /tmp/opus-1.5.2/* android/opus-src/
+          fi
+      - name: Save opus cache
+        uses: actions/cache/save@v6
+        with:
+          path: android/opus-src
+          key: purevox-android-opus-src-1.5.2

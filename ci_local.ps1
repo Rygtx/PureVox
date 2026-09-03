@@ -24,7 +24,7 @@ Set-Location -LiteralPath $PSScriptRoot
 
 function Invoke-Windows {
     Write-Host "==> [windows] install Python deps"
-    python -m pip install -q -r requirements.txt
+    python -m pip install -q -r requirements-win.txt
     if ($LASTEXITCODE -ne 0) { throw "pip install failed" }
 
     Write-Host "==> [windows] compileall (syntax check)"

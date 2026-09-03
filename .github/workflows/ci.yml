@@ -72,17 +72,17 @@ jobs:
             echo "stamp=$(date +'%Y-%m-%d-%H%M')" >> "$GITHUB_OUTPUT"
           fi
 
-      # 与本地同一套 pin 版本（requirements.txt），避免 CI 与本地行为漂移。
+      # 与本地同一套 pin 版本（requirements-win.txt），避免 CI 与本地行为漂移。
       # 三段回退：普通安装 → PEP668 系统用 --break-system-packages → --user。
       # 不加 || true：依赖装不上必须让步骤红，否则冒烟必挂且难排查
       # （ubuntu:22.04 容器老 pip 不认 --break-system-packages 的教训）。
-      - name: Install Python deps (pinned, from requirements.txt)
+      - name: Install Python deps (pinned, from requirements-linux.txt)
         shell: bash
         run: |
           PY="python3"; [ "${{ matrix.distro }}" = "python3.12" ] && PY="python"
-          $PY -m pip install -q -r requirements.txt pillow \
-            || $PY -m pip install -q --break-system-packages -r requirements.txt pillow \
-            || $PY -m pip install -q --user -r requirements.txt pillow
+          $PY -m pip install -q -r requirements-linux.txt pillow \
+            || $PY -m pip install -q --break-system-packages -r requirements-linux.txt pillow \
+            || $PY -m pip install -q --user -r requirements-linux.txt pillow
 
       # ── 预置缓存：~/.cache/purevox = pbs cpython tarball + appimagetool。
       # key 固定为组件版本，命中即免下载；解压产物 packages/python312 不缓存——
@@ -112,7 +112,7 @@ jobs:
 
       - name: Test suite (playback / transport / devices / session plan)
         run: |
-          $PY tests/run_all.py
+          python tests/run_all.py
 
       - name: Assert Python 3.12 baseline (python3.12 only)
         if: matrix.baseline
@@ -251,14 +251,14 @@ jobs:
         uses: actions/cache/restore@v6
         with:
           path: ~\AppData\Local\pip\Cache
-          key: purevox-windows-pip-v1-${{ hashFiles('requirements.txt') }}
+          key: purevox-windows-pip-v2-${{ hashFiles('requirements-win.txt') }}
           restore-keys: |
-            purevox-windows-pip-v1-
+            purevox-windows-pip-v2-
 
-      - name: Install Python deps
+      - name: Install Python deps (pinned, from requirements-win.txt)
         shell: pwsh
         run: |
-          python -m pip install -q -r requirements.txt
+          python -m pip install -q -r requirements-win.txt
 
       - name: Compile all Python sources (catch syntax errors before packaging)
         shell: pwsh
@@ -309,15 +309,6 @@ jobs:
           name: PureVox-Windows-x64-${{ steps.ts.outputs.stamp }}-release
           path: dist/PureVox
           if-no-files-found: error
-
-      # pip 缓存单写者：仅 main 分支（手动 dispatch）落盘，tag 触发只读不写，
-      # 避免 tag 作用域里堆同键重复条目（a7f5471 同一教训的 pip 维度）
-      - name: Save pip wheel cache (single writer, main-dispatch only)
-        if: github.ref == 'refs/heads/main' && !cancelled()
-        uses: actions/cache/save@v6
-        with:
-          path: ~\AppData\Local\pip\Cache
-          key: purevox-windows-pip-v1-${{ hashFiles('requirements.txt') }}
 
   android:
     name: Android (debug APK)

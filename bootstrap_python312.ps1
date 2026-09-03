@@ -35,7 +35,7 @@ if (-not (Test-Path $py)) {
 & $py -m ensurepip --upgrade
 if ($LASTEXITCODE -ne 0) { throw "ensurepip failed" }
 & $py -m pip install --upgrade pip setuptools wheel
-& $py -m pip install -r (Join-Path $root "requirements.txt")
+& $py -m pip install -r (Join-Path $root "requirements-win.txt")
 
 Write-Host "PureVox bundled Python 3.12 ready: $py"
 Write-Host "Use build_win.ps1 to package (it will pick up packages\python312w\python.exe)"

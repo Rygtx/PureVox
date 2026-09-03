@@ -47,7 +47,7 @@ fi
 
 # 3. 安装依赖（缺什么装什么）
 "$PY_BIN" -m pip install --upgrade pip setuptools wheel
-"$PY_BIN" -m pip install -r "$APP_DIR/requirements.txt"
+"$PY_BIN" -m pip install -r "$APP_DIR/requirements-linux.txt"
 
 cat <<EOF
 

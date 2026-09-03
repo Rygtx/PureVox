@@ -23,8 +23,8 @@ elseif (Get-Command py -ErrorAction SilentlyContinue) { $PY = @("py", "-3") }
 else { throw "no python found" }
 & $PY --version
 
-# --- Deps (single source of truth = requirements.txt; platform diff via env markers) ---
-& $PY -m pip install -q -r requirements.txt
+# --- Deps (requirements-win.txt: Windows 全量依赖) ---
+& $PY -m pip install -q -r requirements-win.txt
 if ($LASTEXITCODE -ne 0) { throw "pip install failed" }
 
 # --- Syntax check + smoke import ---
@@ -50,6 +50,11 @@ Set-Content _build_version.py "BUILD_DATE = `"$ver`"" -Encoding UTF8
     --collect-all PIL `
     --hidden-import=pyaudio `
     --exclude-module PIL._avif `
+    --exclude-module torch `
+    --exclude-module torchvision `
+    --exclude-module torchaudio `
+    --exclude-module numba `
+    --exclude-module pytest `
     --add-data "models\purevox_denoise_202609_ep0106.onnx;models" `
     --add-data "assets\fonts\*.ttf;assets/fonts" `
     --add-data "assets\icons\lite_tray.ico;assets\icons" `

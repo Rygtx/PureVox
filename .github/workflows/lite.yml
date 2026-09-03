@@ -35,10 +35,8 @@ jobs:
           "ver=$ver" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
           "BUILD_DATE=$ver" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
-      # pip 缓存 restore-only：与主线 ci.yml windows job 同键共享（主线是
-      # 唯一写者，且仅在 main 分支 dispatch 时落盘）；restore-keys 前缀回退
-      # 使依赖变更后仍能部分复用旧桶（版本交集的轮子不重下）。
-      # 不在此工作流写缓存——否则 tag 作用域里每发版堆一份 110MB 重复
+      # pip 缓存 restore-only：缓存由 cache.yml 统一管理写入，
+      # 本工作流只读不写。
       - name: Set up Python 3.12
         uses: actions/setup-python@v7
         with:
@@ -48,9 +46,9 @@ jobs:
         uses: actions/cache/restore@v6
         with:
           path: ~\AppData\Local\pip\Cache
-          key: purevox-windows-pip-v1-${{ hashFiles('requirements.txt') }}
+          key: purevox-windows-pip-v2-${{ hashFiles('requirements-win.txt') }}
           restore-keys: |
-            purevox-windows-pip-v1-
+            purevox-windows-pip-v2-
 
       - name: Build Lite Denoiser exe (build_lite_mic.ps1, single recipe local+CI)
         shell: pwsh

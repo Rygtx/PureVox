@@ -77,7 +77,7 @@ Windows / Linux 桌面应用 + Android 客户端：实时 AI 音频降噪 / 目�
 chcp 65001
 # 方式一（内嵌 3.12，推荐）：
 powershell -ExecutionPolicy Bypass -File bootstrap_python312.ps1
-# 方式二（系统 Python）：pip install -r requirements.txt
+# 方式二（系统 Python）：pip install -r requirements-win.txt
 python run_tk.py
 powershell -ExecutionPolicy Bypass -File build_win.ps1   # 打包产物目录 dist/PureVox/（自动用 packages\python312w\python.exe）
 ```
@@ -156,7 +156,7 @@ cd android
     PYZ），但三个 markdown 页按文件路径读取，PyInstaller 必须显式
     `--add-data="about;about"`，否则关于页手册/日志缺失（build_win.ps1 已带）。
 - **onnxruntime 走 pip 最新版（2026-08-22 纯 py 迁移）**：不再捆绑预编译 C SDK；
-  `requirements.txt` 不锁版本，CI/全新环境安装即最新。模型 opset ≤18，
+  `requirements-win.txt` / `requirements-linux.txt` 不锁版本，CI/全新环境安装即最新。模型 opset ≤18，
   onnxruntime 长期向后兼容
 - **外部下载全部预置化（2026-08-22）**：`server/opus.dll`（预编译 libopus，BSD）
   直接提交进仓库（`.gitignore` 对其白名单），CI 与本地开发均不再下载；
@@ -181,8 +181,7 @@ cd android
    `continue-on-error: true`），捆绑内嵌 python312——该 job 需先装 `libssl-dev`
   （否则编译出的 CPython 无 ssl 模块，pip 无网络，`bootstrap_python312.sh` 失败）
   与 `file`（appimagetool 打包必需），并确保 `PyAudio` 不在 Linux 依赖里
-  （requirements.txt 内以 `sys_platform == "win32"` 环境标记限定，否则编译缺
-  `portaudio.h` 让 AppImage 静默失败）。
+  （`requirements-linux.txt` 不含 PyAudio，Windows 专用包只在 `requirements-win.txt`）。
 - **CI 踩坑（实测细节补充，避免重踩）**：
   - 容器 job 在 checkout 前先装系统依赖（含 `git`）——REST API 下载不支持 submodules；
     cpython 子模块已移除（2026-08-23），bootstrap 按需下载 tarball
