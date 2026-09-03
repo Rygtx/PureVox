@@ -36,7 +36,7 @@ mkdir -p "$ROOT/opt/purevox" "$ROOT/usr/bin" \
 echo "==> copy sources/models/icon"
 for f in \
     audio_processor.py config_manager.py about_content.py logger.py \
-    model_config.py run_tk.py user_paths.py wav_io.py; do
+    model_config.py run_tk.py user_paths.py wav_io.py session_plan.py; do
     cp "$f" "$ROOT/opt/purevox/"
 done
 mkdir -p "$ROOT/opt/purevox/models" "$ROOT/opt/purevox/assets/icons" \
