@@ -278,19 +278,6 @@ class DenoiserVadPlugin(_AiPluginBase):
     _KIND = "denoise_vad"
 
 
-class EchoCancelPlugin(_AiPluginBase):
-    """回声消除（202609 AEC）。far-end 参考经 FrameContext.far 注入；
-    需要扬声器采集配合（由音频线程在启用时建立 SpeakerCapture）。
-    far 非 48k 时由 AecStage 内部的流式重采样器转换。"""
-
-    NAME = "echo_cancel"
-    LABEL = "回声消除 AEC"
-    _KIND = "aec"
-
-    def set_far_sample_rate(self, sr: int):
-        self.stage.set_far_sample_rate(sr)
-
-
 class TsePlugin(_AiPluginBase):
     """目标说话人提取（202609 TSE）。需先加载参考音频；无参考时直通。"""
 
@@ -332,8 +319,9 @@ def _model_file(name):
 
 
 def _make_stage(kind):
-    """按类型构建并缓存完整 AI Stage——AecStage 自带 far 流式重采样，
-    TseStage 自带共享 STFT。"""
+    """按类型构建并缓存完整 AI Stage——TseStage 自带共享 STFT。
+    AEC 不在此：行级 AEC 走 pvengine/aec_row.py（AecRow，一行一状态，
+    会话多行共享），不进 fx 链。"""
     import model_config as _mc
     if kind == "denoise":
         from pvengine.components.denoise import DenoiseStage
@@ -341,9 +329,6 @@ def _make_stage(kind):
     if kind == "denoise_vad":
         from pvengine.components.denoise import DenoiseVadStage
         return DenoiseVadStage(_model_file(_mc.DENOISE_VAD_MODEL))
-    if kind == "aec":
-        from pvengine.components.aec import AecStage
-        return AecStage(_model_file(_mc.AEC_MODEL))
     if kind == "tse":
         from pvengine.components.tse import TseStage
         return TseStage(_model_file(_mc.TSE_MODEL))

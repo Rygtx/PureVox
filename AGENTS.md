@@ -209,10 +209,10 @@ cd android
 | `run_tk.py` | 单实例锁、启动入口，导入 `uitk.main_window.MainWindowTk` |
 | `uitk/` | 主 UI（纯标准库 Tkinter）——**单列节点面板**：顶部单一工具条（启动/退出 · 添加节点▾ · 清空 · 设置▾[快捷键/自动运行/开机自启/系统声音/虚拟声卡/关于]）+ PluginPanel（输入/处理/输出/可视化全部为可增删排序的节点行；排序走**拖拽手柄**）；EQ 曲线编辑器 / TSE 参考录音 / 关于页（文档标签）都在 `uitk/dialogs.py`；VB-CABLE 状态卡内嵌在虚拟输出行。设备选择在 input/output 节点行内（Linux 存 node.name）。**外观为星露谷像素浅色主题**（theme.py 单份令牌定义），无明暗切换 |
 | `about_content.py` + `about/` | **关于页文本（无 GUI 依赖的单一来源）**——`about/changelog.md` 更新日志、`about/windows.md`、`about/linux.md` 使用手册（uitk 直接读文件渲染）；`about_content.py` 只存元数据（应用信息/URLS/LIBS）与介绍页、许可证页文本，打包须随包携带 `about/` |
-| `session_plan.py` | **L3 会话层**——`SessionPlan.from_chain(chain_cfg)` 纯函数：链文档 → 校验后的可执行计划（inputs/outputs/remote_url/viz/fx_chain/problems/warnings）。UI 启动流程只消费计划，不做内联解析 |
-| `audio_processor.py` | 核心音频线程 —— `AudioThread`(**统一处理循环** read→process→sinks.write；本地/网络同一循环)、每输出一个 `PlaybackSink`(pvengine)、后端装配(`_create_stream`：Linux=PwBridge / Windows=PaBridge，哑传输)、`SpeakerCapture`(AEC loopback)、`RingBuffer`、设备枚举、TSE 参考录音工具(`_recorder`/`load_tse_reference`/`_wsola_time_stretch`) |
-| `pvengine/` | **纯 Python 组件化音频引擎**——Stage 接口（process/reset/release）是唯一契约；`components/`(denoise/aec/tse/gain/eq/vad/agc/compressor/clip/recorder/tap) 每文件一个组件、按 active_modes 声明生效模式；`dsp/`(窗/环形缓冲/重采样/**PlaybackSink 跨时钟域播放**/Mel 频谱/ONNX 会话) 可独立复用；`pipeline.py` 按序执行+模式旁路；`processor.py` 是 AudioProcessor 门面。模型：202609 三件套（denoise/aec/tse，波形 hop [1,480] 进出、STFT 在模型图内、enh_hop 滞后 1 hop），全部 numpy + onnxruntime 实现 |
-| `pvplatform/` | 平台抽象层 —— `audio/`(SpeakerCapture 三端、device_api、backends[后端注册表]、pwpipe_client[ctypes libpulse 桥]、pa_backend[Windows PortAudio 桥]、media_session[miniaudio 纯媒体会话]、_libpulse[libpulse 最小绑定])、`system/`(单实例/自启动/防火墙/虚拟麦克风，win+posix) |
+| `session_plan.py` | **L3 会话层**——`SessionPlan.from_chain(chain_cfg)` 纯函数：链文档 → 校验后的可执行计划（inputs/outputs/remote_url/viz/fx_chain/aec_rows/aec_far_mics/loopbacks/problems/warnings）。UI 启动流程只消费计划，不做内联解析 |
+| `audio_processor.py` | 核心音频线程 —— `AudioThread`(**统一处理循环** read→process→sinks.write；本地/网络同一循环)、每输出一个 `PlaybackSink`(pvengine)、后端装配(`_create_stream`：Linux=PwBridge / Windows=PaBridge，哑传输)、行级 AEC（`echo_cancel` 输入行：一路一路装配 far 采集 + `AecRow`）+ 回环输入行（`loopback`，FarTap 拉齐进混音）、`SpeakerCapture`(回环采集)/`MicCapture`(麦克风专用采集)、`RingBuffer`、设备枚举、TSE 参考录音工具(`_recorder`/`load_tse_reference`/`_wsola_time_stretch`) |
+| `pvengine/` | **纯 Python 组件化音频引擎**——Stage 接口（process/reset/release）是唯一契约；`components/`(denoise/tse/gain/eq/vad/agc/compressor/clip/recorder/tap) 每文件一个组件、按 active_modes 声明生效模式；`aec_row.py`(行级 AEC：一行一路 FarTap far 直达，会话多行共享)；`dsp/`(窗/环形缓冲/重采样/**PlaybackSink 跨时钟域播放**/**FarSync+FarTap 采集对齐**/Mel 频谱/ONNX 会话) 可独立复用；`pipeline.py` 按序执行+模式旁路；`processor.py` 是 AudioProcessor 门面。模型：202609 三件套（denoise/aec/tse，波形 hop [1,480] 进出、STFT 在模型图内、enh_hop 滞后 1 hop），全部 numpy + onnxruntime 实现 |
+| `pvplatform/` | 平台抽象层 —— `audio/`(SpeakerCapture 三端[回环采集]/MicCapture[麦克风专用采集]、device_api、backends[后端注册表]、pwpipe_client[ctypes libpulse 桥，read_each + 多路 far 专用流]、pa_backend[Windows PortAudio 桥]、media_session[miniaudio 纯媒体会话]、_libpulse[libpulse 最小绑定])、`system/`(单实例/自启动/防火墙/虚拟麦克风，win+posix) |
 | `server/` | 远程麦克风 HTTPS/WSS 服务器 —— `https_server.py`、`audio_bridge.py`(RemoteAudioSource)、`opus_codec.py`、`mdns_publisher.py`、`tls_manager.py` |
 | `config_manager.py` | JSON 配置读写（强配置，无迁移）；api_type 平台感知默认值、设备键按接口后缀（`<方向>_device_<接口后缀>` / `aec_far_sink_<接口后缀>`，全部接口显式写全） |
 | `model_config.py` | ONNX 模型文件名常量 |
@@ -223,7 +223,7 @@ cd android
 
 数据流（本地）：麦克风源 → libpulse 录制流（读回调→输入环）→ pvengine 降噪 → 每输出 PlaybackSink → libpulse 播放流（写回调按设备时钟 pull）→ `purevox_out`（虚拟麦克风 sink）
 监听：独立录制流指向扬声器 monitor 源（同一路降噪音频）
-AEC far-end：独立录制流指向 `far_sink.monitor`（会话内创建/销毁，恒 48kHz 单声道）
+AEC far-end：独立录制流指向 `far_sink.monitor`（扬声器）或麦克风真源（far=mic），一行一路，会话内创建/销毁，恒 48kHz 单声道；`loopback` 回环输入行与 AEC far=扬声器继承同一套回环采集机制
 
 - 实现：`pvplatform/audio/_libpulse.py`（系统 libpulse 的最小 ctypes 绑定，
   `pa_threaded_mainloop` + pa_stream 读写回调）+ `pwpipe_client.py` 的
@@ -352,7 +352,7 @@ AEC far-end：独立录制流指向 `far_sink.monitor`（会话内创建/销毁�
 
 ## 注意事项
 
-- **AEC SpeakerCapture**: Linux 端 AEC far 走 `PwBridge.set_far(sink_name, True)`（监听 `far_sink.monitor` 源，恒 48k 单声道免重采样，会话内创建/销毁）。Windows 用 WASAPI loopback 采集扬声器（共享模式**必须用引擎 MixFormat**）；音频引擎 `set_aec_far_sample_rate()` 将 far-end 重采样到 48kHz。
+- **AEC 行级采集**: AEC 是 input 种节点（`echo_cancel` 行：一行一路 mic + far 二选一），far=扬声器走回环采集（Linux `PwBridge.open_far` 监听 monitor 源，会话内创建/销毁；Windows WASAPI loopback，共享模式**必须用引擎 MixFormat**），far=麦克风走 `MicCapture` 专用采集（不进混音）；far 经行内 `FarTap` 按 mic 主时钟拉齐后直达 `AecRow`（`pvengine/aec_row.py`，会话多行共享，会话内 cache 独立），不经过任何 fx。行配置变更走重启（与输入行一致，无运行时热切换）。
 - **播放时钟域（2026-09 重构，勿回退）**: 设备回调是唯一主时钟；全部输出路
   （主输出/额外输出/网络输出/媒体从设备）各持一个 `pvengine.dsp.playback.PlaybackSink`
   （PI 伺服 ASRC ±3% + 预热 + 欠载静音重同步 + 封顶丢最旧），速率差/调度抖动

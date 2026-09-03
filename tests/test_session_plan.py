@@ -135,6 +135,81 @@ def test_multiple_outputs_ordered():
     print("  多输出按链序  OK")
 
 
+def test_aec_row_is_input():
+    """AEC 行即输入：只有 AEC 行 + 输出也是合法会话，不报无输入；
+    mic 进 inputs，far=扬声器进 aec_rows。"""
+    plan = SessionPlan.from_chain([
+        {"type": "echo_cancel", "enabled": True,
+         "params": {"device": "Mic",
+                    "far_kind": "speaker", "far_device": "Spk"}},
+        {"type": "audio_output", "enabled": True, "params": {"device": "Spk"}},
+    ])
+    assert plan.ok(), plan.problems
+    assert plan.inputs == ("Mic",)
+    assert plan.aec_rows == ({"mic": "Mic", "far_gain_db": 0.0,
+                              "far_kind": "speaker", "far_device": "Spk"},)
+    assert plan.aec_far_mics == ()
+    print("  AEC 行计入输入、行配置抽取正确  OK")
+
+
+def test_aec_owns_mic_plain_duplicate_skipped():
+    """AEC 行接管 mic：普通音频输入同设备行跳过并告警（与链序无关）。"""
+    plan = SessionPlan.from_chain([
+        {"type": "audio_input", "enabled": True, "params": {"device": "Mic"}},
+        {"type": "echo_cancel", "enabled": True,
+         "params": {"device": "Mic",
+                    "far_kind": "speaker", "far_device": "Spk"}},
+        {"type": "audio_output", "enabled": True, "params": {"device": "Spk"}},
+    ])
+    assert plan.ok(), plan.problems
+    assert plan.inputs == ("Mic",)
+    assert any("接管" in w for w in plan.warnings)
+    print("  AEC 接管 mic、同设备普通输入跳过告警  OK")
+
+
+def test_aec_far_mic_routed():
+    """AEC far=麦克风：far 设备进 aec_far_mics（专用采集，不进混音）。"""
+    plan = SessionPlan.from_chain([
+        {"type": "echo_cancel", "enabled": True,
+         "params": {"device": "Mic",
+                    "far_kind": "mic", "far_device": "Mic2"}},
+        {"type": "audio_output", "enabled": True, "params": {"device": "Spk"}},
+    ])
+    assert plan.ok(), plan.problems
+    assert plan.inputs == ("Mic",)
+    assert plan.aec_far_mics == ("Mic2",)
+    assert plan.aec_rows[0]["far_kind"] == "mic"
+    print("  AEC far 麦克风路由到专用采集  OK")
+
+
+def test_aec_row_empty_far_skipped():
+    """AEC 行未选 far：该行跳过（不阻断，普通输入仍可建流）。"""
+    plan = SessionPlan.from_chain([
+        {"type": "audio_input", "enabled": True, "params": {"device": "Mic"}},
+        {"type": "echo_cancel", "enabled": True,
+         "params": {"device": "Mic2",
+                    "far_kind": "speaker", "far_device": ""}},
+        {"type": "audio_output", "enabled": True, "params": {"device": "Spk"}},
+    ])
+    assert plan.ok(), plan.problems
+    assert plan.aec_rows == ()
+    assert plan.inputs == ("Mic",)   # 缺 far 整行跳过，Mic2 不进输入
+    assert any("far" in w for w in plan.warnings)
+    print("  AEC 行缺 far 跳过告警  OK")
+
+
+def test_loopback_row_is_input():
+    """回环输入行即输入：只有回环行 + 输出也是合法会话。"""
+    plan = SessionPlan.from_chain([
+        {"type": "loopback", "enabled": True, "params": {"device": "Spk"}},
+        {"type": "audio_output", "enabled": True, "params": {"device": "Spk"}},
+    ])
+    assert plan.ok(), plan.problems
+    assert plan.loopbacks == ("Spk",)
+    assert plan.inputs == ()
+    print("  回环输入行计入输入  OK")
+
+
 if __name__ == "__main__":
     print("SessionPlan 测试:")
     test_valid_chain()
@@ -146,4 +221,9 @@ if __name__ == "__main__":
     test_remote_mic()
     test_pure_media_session()
     test_multiple_outputs_ordered()
+    test_aec_row_is_input()
+    test_aec_owns_mic_plain_duplicate_skipped()
+    test_aec_far_mic_routed()
+    test_aec_row_empty_far_skipped()
+    test_loopback_row_is_input()
     print("全部通过")

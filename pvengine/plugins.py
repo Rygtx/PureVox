@@ -38,7 +38,7 @@ from pvengine.components.core_plugins import (
     Eq10Plugin, Eq31Plugin, Eq61Plugin,
     CompressorPlugin,
     DenoiserPlugin, DenoiserVadPlugin,
-    EchoCancelPlugin, TsePlugin,
+    TsePlugin,
 )
 from pvengine.components.soundpad import SoundPadPlugin
 from pvengine.components.music_player import MusicPlayerPlugin
@@ -60,7 +60,6 @@ CATALOG: list[type] = [
     GainPlugin,
     DenoiserPlugin,
     DenoiserVadPlugin,
-    EchoCancelPlugin,
     TsePlugin,
     GatePlugin,
     AgcPlugin,
@@ -89,7 +88,6 @@ MEDIA_NODE_TYPES = frozenset({"soundpad", "music_player", "desktop_audio"})
 UI_TIERS = {
     "denoiser": "toggle",
     "denoiser_vad": "toggle",
-    "echo_cancel": "inline",   # 行内含 far 端扬声器设备下拉
     "eq10": "expand",          # 展开：EQ 曲线编辑器（10 段）
     "eq31": "expand",          # 展开：EQ 曲线编辑器（31 段）
     "eq61": "expand",          # 展开：EQ 曲线编辑器（61 段）
@@ -108,8 +106,15 @@ EXPAND_TITLES = {
 }
 
 # ── 系统节点显式注册（input/output/viz；fx 由插件类派生）──
+# echo_cancel 是输入种节点（一行一路 AEC：mic 设备 + mic 增益 + far 源），
+# 行级状态与采集由 AudioThread 按 SessionPlan.aec_rows 装配，不进 fx 链。
+# loopback 是回环输入种节点（一路扬声器播出直采为输入，代码名 loopback）；
+# AEC 行 far=扬声器与它继承同一套回环采集机制（两者的组合即完整 AEC 行）。
 _SYSTEM_SPECS = [
     NodeSpec("audio_input", "音频输入", "input"),
+    NodeSpec("loopback", "桌面输入", "input"),
+    NodeSpec("echo_cancel", "回声消除 AEC", "input", tier="inline",
+             params={"far_gain_db": ("参考 dB", -30.0, 12.0, 0.0, 1.0)}),
     NodeSpec("remote_mic", "远程推流输入", "input"),
     NodeSpec("audio_output", "音频输出", "output"),
     NodeSpec("virtual_output", "虚拟输出设备", "output"),

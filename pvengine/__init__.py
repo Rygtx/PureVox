@@ -32,12 +32,13 @@ from pvengine.processor import AudioProcessor
 from pvengine.dsp.ring_buffer import RingBuffer
 from pvengine.dsp.resampler import Resampler
 from pvengine.dsp.playback import PlaybackSink
+from pvengine.dsp.far_sync import FarSync
 from pvengine.dsp.spectrum import (SPECTRUM_NUM_BANDS, SPECTRUM_FFT,
                                    compute_spectrum, spectrum_warmup)
 
 __all__ = [
     "AudioProcessor", "Pipeline", "FrameContext",
-    "RingBuffer", "Resampler", "PlaybackSink",
+    "RingBuffer", "Resampler", "PlaybackSink", "FarSync",
     "compute_spectrum", "spectrum_warmup",
     "SAMPLE_RATE", "HOP_LENGTH", "NFFT", "FREQ",
     "SPECTRUM_NUM_BANDS", "SPECTRUM_FFT",

@@ -47,12 +47,15 @@ from .viz import VUCanvas, SpectrumCanvas
 
 KIND_LABELS = {"input": "输入", "output": "输出", "fx": "处理", "viz": "可视化"}
 KIND_ORDER = ["input", "fx", "viz", "output"]
-# 需要设备下拉的节点类型：input/output 选 device，echo_cancel 选 far_device
+# 需要设备下拉的节点类型：input/output 选 device。
+# echo_cancel 的 mic 继承 audio_input 同一套机制（("device", "inputs")，
+# 同解析同回填）；far 参考源是第二下拉（_build_far_combo），不另起炉灶。
 DEV_KEY = {"audio_input": ("device", "inputs"),
            "audio_output": ("device", "outputs"),
            "remote_mic": None,
            "virtual_output": ("device", "voutputs"),
-           "echo_cancel": ("far_device", "outputs")}
+           "loopback": ("device", "outputs"),
+           "echo_cancel": ("device", "inputs")}
 
 
 class ParamSlider(tk.Frame):
@@ -143,8 +146,12 @@ class NodeRow(tk.Frame):
                       padx=(0, self.sizes["pad_sm"]))
         self.dev_combo = None
         self._build_device_combo()
+        self.far_combo = None
+        self._far_items = {}
+        self._build_far_combo()
         # 多参数/编辑入口/viz 走下方参数区（始终显示）
         self.body_frame = tk.Frame(self, bg=theme.BASE)
+        self._build_ec_body()
         self._build_inline(on_param)
         self.ensure_body()
 
@@ -158,7 +165,10 @@ class NodeRow(tk.Frame):
         return DEV_KEY.get(self.spec.name)
 
     def _build_device_combo(self):
-        """设备下拉置于行头最右端（值存 params.device/far_device）。"""
+        """设备下拉置于行头最右端（值存 params.device/far_device）。
+        echo_cancel 行除外：mic 与 far 各占下方一行（见 _build_ec_body）。"""
+        if self.spec.name == "echo_cancel":
+            return
         dspec = self._dev_spec()
         if not dspec:
             return
@@ -179,12 +189,95 @@ class NodeRow(tk.Frame):
 
     def _on_dev_changed(self, holder, key):
         val = self.dev_var.get()
-        if val in ("（默认）", "自动（默认物理扬声器）"):
+        if val in ("（默认）",):
             val = ""
         self.cfg.setdefault("params", {})[key] = val
         cb = getattr(self, "_on_param_cb", None)
         if cb:
             cb()
+
+    # ── echo_cancel far 参考源第二下拉（扬声器/麦克风分组二选一）──
+
+    def _far_label(self, kind, name):
+        return ("扬声器 | " if kind == "speaker" else "麦克风 | ") + name
+
+    def _build_far_combo(self):
+        """旧行头版 far 下拉已废弃：echo_cancel 行的 far 在下方参数区
+        独占第三行（见 _build_ec_body）。此函数保留空实现。"""
+        return
+
+    def _ec_line(self, label):
+        """下方参数区一行：左侧标签 + 右侧下拉（撑满剩余宽度）。"""
+        line = tk.Frame(self.body_frame, bg=theme.BASE)
+        line.pack(fill=tk.X, padx=self.sizes["pad_sm"], pady=2)
+        tk.Label(line, text=label, bg=theme.BASE, fg=theme.TEXT_DIM,
+                 font=self.fonts.get("small")).pack(
+            side=tk.LEFT, padx=(0, self.sizes["pad_sm"]))
+        return line
+
+    def _build_ec_body(self):
+        """仅 echo_cancel 行：第二行输入麦克风，第三行远端参考。
+        第一行（行头：标题 + 麦克风 dB 滑杆）走通用 inline 滑杆机制。"""
+        if self.spec.name != "echo_cancel":
+            return
+        # 第二行：输入麦克风（与 audio_input 同一套 device 机制）
+        var = tk.StringVar(value=str((self.cfg.get("params") or {}).get(
+            "device", "")))
+        self.dev_var = var
+        self.dev_combo = DarkCombo(
+            self._ec_line("输入麦克风"), ["（默认）"] if not var.get() else [var.get()],
+            var, on_change=lambda: self._on_dev_changed({}, "device"),
+            sizes=self.sizes, fonts=self.fonts)
+        self.dev_combo.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        # 第三行：远端参考（扬声器/麦克风分组二选一）
+        fvar = tk.StringVar(value="（默认）")
+        self.far_var = fvar
+        self._far_items = {}
+        self.far_combo = DarkCombo(
+            self._ec_line("远端参考"), ["（默认）"], fvar,
+            on_change=self._on_far_changed,
+            sizes=self.sizes, fonts=self.fonts)
+        self.far_combo.pack(side=tk.LEFT, fill=tk.X, expand=True)
+
+    def _on_far_changed(self):
+        kind, name = self._far_items.get(self.far_var.get(), ("", ""))
+        self.cfg.setdefault("params", {})["far_kind"] = kind
+        self.cfg.setdefault("params", {})["far_device"] = name
+        cb = getattr(self, "_on_param_cb", None)
+        if cb:
+            cb()
+
+    def _refresh_far_combo(self, devices):
+        """按输出/输入分组成 far 候选；恢复已存选择，缺省首个扬声器。"""
+        if self.spec.name != "echo_cancel" or self.far_combo is None:
+            return
+        items = {}
+        for t, _d in devices.get("outputs", []):
+            items[self._far_label("speaker", t)] = ("speaker", t)
+        for t, _d in devices.get("inputs", []):
+            items[self._far_label("mic", t)] = ("mic", t)
+        self._far_items = items
+        labels = list(items) or ["（默认）"]
+        self.far_combo.set_values(labels)
+        saved = ((self.cfg.get("params") or {}).get("far_kind", ""),
+                 (self.cfg.get("params") or {}).get("far_device", ""))
+        cur = self._far_label(*saved) if saved[1] and \
+            self._far_label(*saved) in items else ""
+        if not cur:
+            # 缺省首个扬声器并回写（行配置显式化，不留空歧义）
+            for lb, (k, n) in items.items():
+                if k == "speaker":
+                    cur = lb
+                    self.cfg.setdefault("params", {})["far_kind"] = k
+                    self.cfg.setdefault("params", {})["far_device"] = n
+                    break
+            else:
+                cur = labels[0]
+        self.far_var.set(cur)
+        if cur in items:
+            k, n = items[cur]
+            self.cfg.setdefault("params", {})["far_kind"] = k
+            self.cfg.setdefault("params", {})["far_device"] = n
 
     def set_devices(self, devices):
         """刷新设备下拉（保持当前选择）。"""
@@ -217,25 +310,23 @@ class NodeRow(tk.Frame):
                 if cb:
                     cb()
                 return
-        if self.spec.name == "echo_cancel":
-            items = ["自动（默认物理扬声器）"] + items
-        elif not items:
+        if not items:
             items = ["（默认）"]
         saved_dev = str((self.cfg.get("params") or {}).get(dspec[0], ""))
-        cur = saved_dev or ("自动（默认物理扬声器）"
-                            if self.spec.name == "echo_cancel" else "")
+        cur = saved_dev
         self.dev_combo.set_values(items)
         if cur in items:
             self.dev_var.set(cur)
         elif items:
             # 未选/失效：自动选第一个真实设备（空设备会被 SessionPlan 跳过）
-            first = items[0] if self.spec.name != "echo_cancel" else items[0]
+            first = items[0]
             self.dev_var.set(first)
-            if self.spec.name != "echo_cancel":
-                self.cfg.setdefault("params", {})[dspec[0]] = first
-                cb = getattr(self, "_on_param_cb", None)
-                if cb and first != saved_dev:
-                    cb()
+            self.cfg.setdefault("params", {})[dspec[0]] = first
+            cb = getattr(self, "_on_param_cb", None)
+            if cb and first != saved_dev:
+                cb()
+        # echo_cancel 行同步刷新 far 第二下拉（mic 走上面同一套机制）
+        self._refresh_far_combo(devices)
 
     def _build_inline(self, on_param):
         saved = self.cfg.get("params") or {}
@@ -273,8 +364,9 @@ class NodeRow(tk.Frame):
         self._apply_enabled_look()
 
     def _hot_toggle_ok(self):
-        # fx 行热更；echo_cancel 例外（far 端采集生命周期绑定建流，走重启）
-        return self.spec.kind == "fx" and self.spec.name != "echo_cancel"
+        # fx 行热更；输入/输出/viz 行（含 echo_cancel）走重启
+        # （AEC 行采集生命周期绑定建流，与输入行一致）
+        return self.spec.kind == "fx"
 
     _on_toggle_cb = None
     _hot_toggle_cb = None
@@ -836,6 +928,10 @@ class MainWindowTk:
                         command=self.add_virtual_input)
         dev.add_command(label="网络输入设备",
                         command=lambda: self.add_spec(get_spec("remote_mic")))
+        dev.add_command(label="回声消除输入",
+                        command=lambda: self.add_spec(get_spec("echo_cancel")))
+        dev.add_command(label="桌面输入",
+                        command=lambda: self.add_spec(get_spec("loopback")))
         dev.add_command(label="本地输出设备",
                         command=lambda: self.add_spec(get_spec("audio_output")))
         dev.add_command(label="虚拟输出设备",
@@ -896,8 +992,9 @@ class MainWindowTk:
         row.set_hot_toggle_cb(self._hot_toggle)
         row._on_param_cb = self._apply_chain_change
         row._apply_enabled_look()
-        # viz 行：内嵌实时控件
-        if spec.kind == "viz" and bool(cfg.get("enabled", True)):
+        # viz 行：内嵌实时控件（无论是否勾选都挂载，未勾选时
+        # _viz_tick 跳过喂数——否则未勾选启动只剩标题）
+        if spec.kind == "viz":
             self._attach_viz(row, spec.name)
         # eq 行（三种规格）：展开区提供曲线编辑入口
         if spec.name in ("eq10", "eq31", "eq61"):

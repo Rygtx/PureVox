@@ -237,12 +237,15 @@ def _make_record_reader(ring: RingBuffer):
 
 
 class PwBridge:
-    """PureVox 纯 Python 音频桥：N 路输入采集（自动混音）+ M 路输出播放
-    + 可选 AEC far。
+    """PureVox 纯 Python 音频桥：N 路输入采集（自动混音/逐路可读）
+    + M 路输出播放 + 多路 AEC far 专用采集。
 
     所有流以 F32 单声道 48000Hz 协商，PipeWire 负责重采样与声道转换。
-    read() 对全部输入环取平均（缺席的路跳过）；输出按设备时钟写回调
-    从 `out_pull[i]` 拉帧（PlaybackSink），本桥不做任何缓冲策略。
+    read() 对全部输入环取平均（缺席的路跳过），read_each() 逐路返回
+    （AEC 行按路取 mic 用）；输出按设备时钟写回调从 `out_pull[i]`
+    拉帧（PlaybackSink），本桥不做任何缓冲策略。
+    far 专用流（open_far：monitor 源或麦克风真源）直达 AEC 行，
+    不进混音。
     """
 
     def __init__(self):
@@ -251,10 +254,10 @@ class PwBridge:
         self._in_streams: List = []
         self._out_streams: List = []
         self._out_pull: List[Callable] = []
-        self._far_stream = None
-        self._far_ring = RingBuffer(_RING_CAP)
+        self._far_streams: List = []    # AEC far 专用流（与输入环同构，多路）
+        self._far_rings: List[RingBuffer] = []
         self._error: str = ""
-        self._lock = threading.Lock()   # open/close/set_far 与回调的簿记互斥
+        self._lock = threading.Lock()   # open/close/open_far 与回调的簿记互斥
 
     @property
     def available(self) -> bool:
@@ -337,7 +340,8 @@ class PwBridge:
             self._in_streams = []
             self._out_streams = []
             self._out_pull = []
-            self._far_stream = None
+            self._far_streams = []
+            self._far_rings = []
         if link is not None:
             try:
                 link.close()
@@ -370,17 +374,24 @@ class PwBridge:
 
     # ── 数据面 ──
 
-    def read(self, n: int) -> Optional[List[float]]:
-        """读取并混合全部输入路（等权平均；无数据返回 None）。"""
+    def read_each(self, n: int) -> Optional[List[Optional[List[float]]]]:
+        """逐路读取输入环（与 open 时 inputs 顺序对齐；缺席的路为 None；
+        无任何数据返回 None）。AEC 行按路取本路 mic 用。"""
         if self._link is None:
             return None
-        chunks = []
         with self._lock:
             rings = list(self._in_rings)
-        for ring in rings:
-            got = ring.read(n)
-            if got is not None:
-                chunks.append(got)
+        hops = [ring.read(n) for ring in rings]
+        if not any(h is not None for h in hops):
+            return None
+        return hops
+
+    def read(self, n: int) -> Optional[List[float]]:
+        """读取并混合全部输入路（等权平均；无数据返回 None）。"""
+        hops = self.read_each(n)
+        if not hops:
+            return None
+        chunks = [h for h in hops if h is not None]
         if not chunks:
             return None
         if len(chunks) == 1:
@@ -392,43 +403,62 @@ class PwBridge:
         k = 1.0 / len(chunks)
         return [v * k for v in acc]
 
-    def set_far(self, sink_name: str, enabled: bool) -> bool:
-        """运行时开关 AEC far 采集流（监听 <sink>.monitor 源）。
+    def open_far(self, dev_name: str, monitor: bool = True) -> int:
+        """开一路 AEC far 专用采集流，返回句柄（<0 表示失败）。
 
-        未 open 主流时也可独立使用（桌面声音等自建桥场景）。
+        monitor=True 监听 <sink>.monitor（扬声器 far），False 直录
+        真源（麦克风 far）。未 open 主流时也可独立使用（自建会话）。
+        far 流直达 AEC 行，不进混音。
         """
         if not self.available:
-            return False
+            return -1
         with self._lock:
-            if enabled and sink_name:
-                if self._link is None:
-                    try:
-                        self._link = _Link("PureVox-far")
-                    except OSError as e:
-                        self._error = str(e)
-                        return False
-                if self._far_stream is not None:
-                    self._link.drop_stream(self._far_stream)
-                    self._far_stream = None
-                src = sink_name if sink_name.endswith(".monitor") \
-                    else f"{sink_name}.monitor"
+            if self._link is None:
                 try:
-                    self._far_stream = self._link.add_stream(
-                        "PureVox-far", 48000, 1, record=True, dev=src,
-                        attr=_REC_ATTR, on_read=_make_record_reader(
-                            self._far_ring))
+                    self._link = _Link("PureVox-far")
                 except OSError as e:
                     self._error = str(e)
-                    self._far_stream = None
-                    return False
-                return True
-            if not enabled:
-                if self._link is not None and self._far_stream is not None:
-                    self._link.drop_stream(self._far_stream)
-                self._far_stream = None
-        return True
+                    return -1
+            src = dev_name
+            if monitor and not src.endswith(".monitor"):
+                src = f"{src}.monitor"
+            try:
+                ring = RingBuffer(_RING_CAP)
+                s = self._link.add_stream(
+                    f"PureVox-far{len(self._far_streams)}", 48000, 1,
+                    record=True, dev=src, attr=_REC_ATTR,
+                    on_read=_make_record_reader(ring))
+                self._far_streams.append(s)
+                self._far_rings.append(ring)
+                return len(self._far_streams) - 1
+            except OSError as e:
+                self._error = str(e)
+                return -1
 
-    def read_far(self, n: int) -> Optional[List[float]]:
+    def close_far(self, handle: int) -> None:
+        """关闭一路 far 专用流（句柄失效后读操作返回 None）。"""
+        with self._lock:
+            if self._link is not None and 0 <= handle < len(self._far_streams):
+                s = self._far_streams[handle]
+                if s is not None:
+                    self._link.drop_stream(s)
+                self._far_streams[handle] = None
+                self._far_rings[handle] = None
+
+    def read_far_h(self, handle: int, n: int) -> Optional[List[float]]:
+        """从指定 far 流读 n 个样本（FIFO；无数据返回 None）。"""
         if self._link is None:
             return None
-        return self._far_ring.read(n)
+        with self._lock:
+            ring = self._far_rings[handle] \
+                if 0 <= handle < len(self._far_rings) else None
+        if ring is None:
+            return None
+        return ring.read(n)
+
+    def far_available(self, handle: int) -> int:
+        """指定 far 流当前可用样本数（句柄失效返回 0）。"""
+        with self._lock:
+            ring = self._far_rings[handle] \
+                if 0 <= handle < len(self._far_rings) else None
+        return ring.available() if ring is not None else 0

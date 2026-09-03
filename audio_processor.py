@@ -233,12 +233,20 @@ class AudioThread(threading.Thread):
         self._tse_hook: Optional[Callable[[List[float]], None]] = None  # TSE audio hook
         self._recording_hook: Optional[Callable[[List[float]], None]] = None  # 录音捕获钩子
 
-        # ── AEC（SpeakerCapture 采集扬声器音频，AEC 处理在引擎管线内）──
-        self._aec_enabled: bool = False
-        self._speaker_capture: Optional[SpeakerCapture] = None
-        self._aec_far_sink: str = ""  # AEC far 端手动选择的扬声器 sink（node.name）
-        self._aec_warmup_frames: int = 0  # AEC 启动预填充计数器，>0 时喂静音积累远端缓冲
-        self._aec_far_gain: float = 0.5623  # -5dB 固定衰减，防止远端回声过强
+        # ── AEC（行级：一行 echo_cancel 输入对应一路 AEC）──
+        # cfg: SessionPlan.aec_rows（{mic, far_gain_db, far_kind, far_device}）；
+        # live: 建流后装配的 [{mic_index, capture, row}]，随流共存亡。
+        # far 样本直达行内 FarTap → AecRow，不经过任何 fx 处理。
+        self._aec_cfg: list = []
+        self._aec_inputs: list = []   # 建桥时的输入顺序（与 read_each 对齐）
+        self._aec_live: list = []
+        # ── 回环输入（一行 loopback 输入对应一路回采，进混音）──
+        # cfg: SessionPlan.loopbacks（扬声器设备名）；live: [{capture, tap}]。
+        # 与 AEC 行 far=扬声器继承同一套回环采集机制。
+        self._loopback_cfg: list = []
+        self._loopback_live: list = []
+        # ── AEC 诊断（每 100 帧=1s 打印一次，配合参考音量滑杆实时看效果）──
+        self._aec_diag_count: int = 0
 
     def set_pw_ports(self, input_names: List[str], output_names: List[str]) -> None:
         """设置 Linux PipeWire 输入/输出节点名列表（node.name）。
@@ -249,22 +257,18 @@ class AudioThread(threading.Thread):
         self._use_pw = bool(input_names or output_names) and IS_LINUX
         self._pw_ports = (list(input_names or []), list(output_names or []))
 
-    def set_aec_far_sink(self, sink_name: str) -> bool:
-        """运行时切换 AEC far 端扬声器 sink（Linux PipeWire，capture.sink 重挂）。
+    def set_aec_rows(self, rows, input_names) -> None:
+        """设置行级 AEC 配置（SessionPlan.aec_rows 原样 + 建桥输入顺序）。
 
-        AEC 未启用时仅记录目标；已启用时先停后开以换到新 sink。
+        须在 run() 之前调用；AEC 行随流装配、随流释放，行配置变更走重启
+        （与输入行一致，不做运行时热切换）。
         """
-        self._aec_far_sink = sink_name or ""
-        if self._speaker_capture is not None and IS_LINUX:
-            was_enabled = self._aec_enabled
-            if was_enabled:
-                self.set_aec_enabled(False)
-            if was_enabled:
-                if self.set_aec_enabled(True):
-                    _module_log(f"[AEC] far 端扬声器切换: {self._aec_far_sink or '(自动物理扬声器)'}")
-                    return True
-                return False
-        return True
+        self._aec_cfg = [dict(r) for r in (rows or [])]
+        self._aec_inputs = list(input_names or [])
+
+    def set_loopback_rows(self, devices) -> None:
+        """设置回环输入行（SessionPlan.loopbacks 原样）。须在 run() 之前调用."""
+        self._loopback_cfg = [d for d in (devices or []) if d]
 
     def set_bypass(self, bypass: bool) -> None:
         """直通模式：跳过引擎处理，纯重采样透传。"""
@@ -284,57 +288,107 @@ class AudioThread(threading.Thread):
             for buf in (self._spectrum_in, self._spectrum_out):
                 if buf: buf.read_latest(HOP_LENGTH)
 
-    def set_aec_enabled(self, enabled: bool, onnx_path: str = "") -> bool:
-        """启用/禁用 AEC 扬声器采集。AEC 处理在引擎管线内完成。"""
-        if enabled == self._aec_enabled:
-            return True
-        if enabled:
-            try:
-                if IS_LINUX and self._use_pw:
-                    # Linux：AEC far 走原生 PipeWire（监听扬声器 sink 的 monitor 源）
-                    far_sink = self._aec_far_sink
-                    self._speaker_capture = SpeakerCapture(
-                        on_device_changed=self._on_speaker_device_changed,
-                        pw_bridge=self._bridge,
-                        far_sink=far_sink,
-                    )
-                else:
-                    self._speaker_capture = SpeakerCapture(
-                        on_device_changed=self._on_speaker_device_changed
-                    )
-                if not self._speaker_capture.start():
-                    _module_log("[AEC] speaker capture failed")
-                    self._speaker_capture = None
-                    return False
-                # 告知引擎 far-end 采样率（内部重采样到 48kHz）
-                dev_sr = self._speaker_capture.dev_sr
-                self.processor.set_aec_far_sample_rate(dev_sr)
-                self.processor.set_aec_enabled(True)
-                self._aec_enabled = True
-                self._aec_warmup_frames = 8  # ~170ms 预填充，让远端缓冲积累
-                return True
-            except Exception as e:
-                import traceback
-                _module_log(f"[AEC] enable failed: {e}")
-                _module_log(traceback.format_exc())
-                self._aec_enabled = False
-                if self._speaker_capture:
-                    self._speaker_capture.stop()
-                    self._speaker_capture = None
-                return False
-        else:
-            self._aec_enabled = False
-            self.processor.set_aec_enabled(False)
-            if self._speaker_capture:
-                self._speaker_capture.stop()
-                self._speaker_capture = None
-            _module_log("[AEC] disabled")
-            return True
+    def _open_loopback_capture(self, dev: str):
+        """开一路回环采集（扬声器播出直采），AEC far 与回环输入行共用。
 
-    def _on_speaker_device_changed(self, new_dev_sr: int) -> None:
-        """回调：扬声器设备切换，更新 引擎 端的远端采样率。"""
-        self.processor.set_aec_far_sample_rate(new_dev_sr)
-        _module_log(f"[AEC] far-end sample rate updated: {new_dev_sr}Hz")
+        失败抛 OSError（大声失败，不静默降级）。
+        """
+        if IS_LINUX and self._use_pw:
+            cap = SpeakerCapture(pw_bridge=self._bridge, far_sink=dev)
+        else:
+            cap = SpeakerCapture()
+        if not cap.start():
+            raise OSError(f"回环采集启动失败: {dev or '(默认)'}")
+        return cap
+
+    def _open_mic_capture(self, dev: str):
+        """开一路麦克风专用采集（AEC far=mic 用，不进混音）。失败抛 OSError."""
+        from pvplatform.audio import create_mic_capture
+        if IS_LINUX and self._use_pw:
+            cap = create_mic_capture(dev, pw_bridge=self._bridge)
+        else:
+            far_id = get_device_id(dev, True, api_type=self._api_type)
+            if far_id is None:
+                raise OSError(f"AEC far 麦克风无匹配设备: {dev}")
+            cap = create_mic_capture(far_id)
+        if not cap.start():
+            raise OSError(f"麦克风 far 采集启动失败: {dev}")
+        return cap
+
+    def _build_aec_rows(self) -> None:
+        """按 _aec_cfg 逐行装配 AEC（far 采集 + 行级 AecRow），建流后调用。
+
+        far=扬声器继承回环采集机制（_open_loopback_capture），far=麦克风
+        走麦克风专用采集；far 样本直达行内 FarTap，不经过任何 fx。
+        """
+        self._aec_live = []
+        if not self._aec_cfg:
+            return
+        import model_config
+        from pvengine.aec_row import AecRow, find_model_file
+        model_path = find_model_file(model_config.AEC_MODEL)
+        for cfg in self._aec_cfg:
+            mic = cfg["mic"]
+            mic_index = self._aec_inputs.index(mic) \
+                if mic in self._aec_inputs else -1
+            if mic_index < 0:
+                raise OSError(f"AEC 行麦克风不在输入列表: {mic}")
+            far_kind = cfg.get("far_kind", "speaker")
+            far_device = cfg.get("far_device", "")
+            if far_kind == "mic":
+                cap = self._open_mic_capture(far_device)
+            else:
+                cap = self._open_loopback_capture(far_device)
+            row = AecRow(model_path, far_sample_rate=cap.dev_sr,
+                         far_gain_db=cfg.get("far_gain_db", 0.0))
+            self._aec_live.append({"mic_index": mic_index, "capture": cap,
+                                   "row": row, "mic": mic,
+                                   "far_kind": far_kind,
+                                   "far_device": far_device})
+            _module_log(f"[AEC] 行装配: mic={mic} far({far_kind})={far_device} "
+                        f"sr={cap.dev_sr}Hz far_gain={cfg.get('far_gain_db', 0.0)}dB")
+
+    def _stop_aec_rows(self) -> None:
+        """释放全部 AEC 行采集（流关闭时调用）。"""
+        for live in self._aec_live:
+            try:
+                live["capture"].stop()
+            except Exception as e:
+                _module_log(f"[AEC] 行采集关闭异常: {e}")
+        self._aec_live = []
+
+    def _build_loopback_rows(self) -> None:
+        """按 _loopback_cfg 逐行装配回环输入（回环采集 + FarTap），建流后调用。"""
+        self._loopback_live = []
+        if not self._loopback_cfg:
+            return
+        from pvengine.dsp.far_sync import FarTap
+        for dev in self._loopback_cfg:
+            cap = self._open_loopback_capture(dev)
+            tap = FarTap(cap.dev_sr, HOP_LENGTH)
+            self._loopback_live.append({"capture": cap, "tap": tap,
+                                        "device": dev})
+            _module_log(f"[回环] 行装配: {dev} sr={cap.dev_sr}Hz")
+
+    def _stop_loopback_rows(self) -> None:
+        """释放全部回环输入采集（流关闭时调用）。"""
+        for live in self._loopback_live:
+            try:
+                live["capture"].stop()
+            except Exception as e:
+                _module_log(f"[回环] 行采集关闭异常: {e}")
+        self._loopback_live = []
+
+    def set_aec_far_gain(self, mic: str, db: float) -> bool:
+        """运行时实时改某 AEC 行的参考音量（只缩放进模型的 far 帧）。
+
+        单 float 赋值，线程安全；返回 False 表示该行不在运行中。
+        """
+        for live in self._aec_live:
+            if live["mic"] == mic:
+                live["row"].set_far_gain_db(db)
+                return True
+        return False
 
     def _validate_and_fix_device(self, device_id: int, want_input: bool) -> int:
         """验证设备 ID 是否仍然存在；如已拔出则自动查找备选设备。
@@ -454,11 +508,15 @@ class AudioThread(threading.Thread):
         self._stop_event.clear()
         try:
             self._create_stream()
+            self._build_aec_rows()
+            self._build_loopback_rows()
         except Exception as e:
             _module_log(f"[音频] 音频流创建失败（线程将退出）: {e}")
             import traceback as _tb
             _module_log(f"[音频] 堆栈: {_tb.format_exc()}")
             self._start_error = str(e)
+            self._stop_aec_rows()
+            self._stop_loopback_rows()
             self._ready_event.set()  # 通知等待方：失败
             return
 
@@ -539,11 +597,57 @@ class AudioThread(threading.Thread):
             for sink in self._sinks:
                 sink.write(out)
 
+    def _read_mix(self) -> Optional[List[float]]:
+        """统一本地读侧：逐路取 hop → 各 AEC 行（mic 增益 + far 直达 + AEC）
+        → 回环输入行（FarTap 拉齐进混音）→ 等权混音。无数据返回 None。
+
+        far/回采搬运（capture.available 全搬 → tap.push_far/push）与 mic
+        同一 hop 节拍，far 经行内 FarTap 按 mic 主时钟拉齐，恒满帧不断档。
+        本路 mic 缺席时该 AEC 行本 hop 跳过（不喂零，避免污染 AEC cache）。
+        """
+        hops = self._bridge.read_each(HOP_LENGTH) \
+            if self._bridge is not None else None
+        if hops is None:
+            hops = []
+        for live in self._aec_live:
+            idx = live["mic_index"]
+            hop = hops[idx] if 0 <= idx < len(hops) else None
+            if hop is None:
+                continue
+            cap = live["capture"]
+            navail = cap.available()
+            if navail > 0:
+                got = cap.read(navail)
+                if got:
+                    live["row"].push_far(got)
+            live["far_buf"] = navail
+            hops[idx] = live["row"].process_mic(hop).tolist()
+        for lb in self._loopback_live:
+            cap = lb["capture"]
+            navail = cap.available()
+            if navail > 0:
+                got = cap.read(navail)
+                if got:
+                    lb["tap"].push(got)
+            hops.append(lb["tap"].pull().tolist())
+        chunks = [h for h in hops if h is not None]
+        if not chunks:
+            return None
+        if len(chunks) == 1:
+            return chunks[0]
+        acc = [0.0] * len(chunks[0])
+        for c in chunks:
+            for i, v in enumerate(c):
+                acc[i] += v
+        k = 1.0 / len(chunks)
+        return [v * k for v in acc]
+
     def _bridge_loop(self, network: bool) -> None:
         """统一处理循环：read(hop) → process → sinks.write。
 
-        本地模式 read 自传输后端混合输入环；网络模式 read 自
-        _network_reader。处理/可视化/录音钩子/AEC far 两条路径共用，
+        本地模式走 _read_mix（逐路取 hop → AEC 行独立处理 →
+        回环输入行拉齐 → 等权混音，无 AEC/回环时退化为 plain 混音）；
+        网络模式 read 自 _network_reader。处理/可视化/录音钩子路径共用，
         平台差异只在后端插件。每 ~2s 检查后端健康，流死即退出
         （上层走会话重启路径）。
         """
@@ -554,8 +658,7 @@ class AudioThread(threading.Thread):
             if network:
                 data = self._network_reader()
             else:
-                data = self._bridge.read(HOP_LENGTH) \
-                    if self._bridge is not None else None
+                data = self._read_mix()
             if not data:
                 time.sleep(0.002)
                 continue
@@ -563,20 +666,28 @@ class AudioThread(threading.Thread):
             t0 = time.perf_counter()
             chunk = data if len(data) == HOP_LENGTH else data[-HOP_LENGTH:]
 
-            if not network and self._aec_enabled and self._speaker_capture:
-                far_need = int(HOP_LENGTH * self._speaker_capture.dev_sr
-                               / SAMPLE_RATE)
-                far_data = self._speaker_capture.read(far_need)
-                if far_data is not None:
-                    far_data = [x * self._aec_far_gain for x in far_data]
-                if self._aec_warmup_frames > 0:
-                    self._aec_warmup_frames -= 1
-                    out = self.processor.process_with_far(
-                        chunk, [0.0] * far_need)
-                else:
-                    out = self.processor.process_with_far(
-                        chunk, far_data if far_data is not None
-                        else [0.0] * far_need)
+            if not network and self._aec_live:
+                out = self._process_frame(chunk)
+                # ── AEC 诊断：每 100 帧 (1s) 一行 ──
+                self._aec_diag_count += 1
+                if self._aec_diag_count >= 100:
+                    self._aec_diag_count = 0
+                    for live in self._aec_live:
+                        row = live["row"]
+                        sd = row.diag()
+                        far = row.last_far
+                        far_rms = (sum(x * x for x in far) / len(far)) ** 0.5 \
+                            if len(far) else 0.0
+                        out_rms = (sum(x * x for x in chunk) / len(chunk)) ** 0.5
+                        _module_log(
+                            "[AEC诊断] mic=%s far(%s)=%s | buf=%d lvl=%d "
+                            "rate=%.4f conc=%d drop=%d | far=%.4f out=%.4f "
+                            "cache=%.1f"
+                            % (live["mic"], live["far_kind"],
+                               live["far_device"], live.get("far_buf", 0),
+                               sd["level"], sd["rate"], sd["conceals"],
+                               sd["drops"], far_rms, out_rms,
+                               sd["cache_norm"]))
             elif network:
                 out = self.processor.process_pipeline(chunk)
             else:
@@ -673,7 +784,9 @@ class AudioThread(threading.Thread):
         self._cleanup()
 
     def _cleanup(self) -> None:
-        """释放音频资源（后端流 + PyAudio 实例）。"""
+        """释放音频资源（AEC/回环行采集 + 后端流 + PyAudio 实例）。"""
+        self._stop_aec_rows()
+        self._stop_loopback_rows()
         if self._bridge is not None:
             try:
                 self._bridge.close()
@@ -957,7 +1070,10 @@ def start_audio_stream(input_id: Optional[int], output_id: int,
                        api_type: int = 13,
                        ready_msg: str = "",
                        extra_output_ids=None,
-                       pw_ports: Tuple[List[str], List[str]] = ([], [])) -> AudioThread:
+                       pw_ports: Tuple[List[str], List[str]] = ([], []),
+                       aec_rows=None,
+                       aec_inputs=None,
+                       loopbacks=None) -> AudioThread:
     """启动音频流并返回线程实例。
 
     参数:
@@ -971,6 +1087,10 @@ def start_audio_stream(input_id: Optional[int], output_id: int,
             多输出扇出同一路降噪音频）。
         pw_ports: Linux PipeWire 模式的 (输入节点列表, 输出节点列表)；
             多输入自动混音、多输出扇出同一路降噪音频。
+        aec_rows: 行级 AEC 配置（SessionPlan.aec_rows 原样）；
+            须在线程 start 前就位，随流装配。
+        aec_inputs: 建桥输入顺序（与 read_each 对齐，供 AEC 行定位 mic）。
+        loopbacks: 回环输入行（SessionPlan.loopbacks 原样），随流装配。
     """
     if hop_length is None:
         hop_length = HOP_LENGTH
@@ -980,6 +1100,9 @@ def start_audio_stream(input_id: Optional[int], output_id: int,
                          extra_output_ids=extra_output_ids)
     if any(pw_ports[0]) or any(pw_ports[1]):
         thread.set_pw_ports(pw_ports[0], pw_ports[1])
+    thread.set_aec_rows(aec_rows, aec_inputs if aec_inputs is not None
+                        else (list(pw_ports[0]) if pw_ports else []))
+    thread.set_loopback_rows(loopbacks)
     thread.start()
     return thread
 

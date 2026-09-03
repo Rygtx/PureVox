@@ -18,8 +18,8 @@
 """传输后端注册表（DESIGN.md §5）。
 
 每个平台音频 API 是一个可插拔后端：元数据（BackendSpec）+ 可用性探测
-（probe）。数据面契约与 PwBridge 同形——open/read/write/close/active/
-last_error/set_far/read_far。
+（probe）。数据面契约与 PwBridge 同形——open/read/read_each/close/
+active/last_error/open_far/close_far/read_far_h/far_available。
 
 选择规则：平台匹配 → probe() 可用 → 能力覆盖计划需求，取优先级最高者。
 禁止在传输代码里散布 if IS_LINUX 平台分支；平台差异只存在于后端实现内部。

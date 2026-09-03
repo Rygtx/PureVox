@@ -53,7 +53,11 @@ def test_pwbridge_unconnected_safe():
     assert bridge.last_error()
     assert bridge.active() is False
     assert bridge.read(480) is None
-    assert bridge.read_far(480) is None
+    assert bridge.read_each(480) is None
+    assert bridge.read_far_h(0, 480) is None
+    assert bridge.far_available(0) == 0
+    assert bridge.open_far("nosuch", monitor=True) < 0
+    bridge.close_far(0)          # 无效句柄关闭必须无异常
     bridge.close()               # 未连接状态关闭必须无异常
     bridge.close()               # 幂等
     print("  PwBridge 未连接安全 + open 空列表拒绝  OK")

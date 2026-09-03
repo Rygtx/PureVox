@@ -32,11 +32,20 @@ from pvengine.plugins import get_spec, MEDIA_NODE_TYPES
 class SessionPlan:
     """一次可启动音频会话的完整描述。"""
 
-    inputs: Tuple[str, ...]              # 启用的采集设备（有序）
-    outputs: Tuple[str, ...]             # 启用的播放设备（有序；首为主输出）
+    inputs: Tuple[str, ...]              # 启用的采集设备（有序，含 AEC 行的 mic）
+    outputs: Tuple[str, ...]            # 启用的播放设备（有序；首为主输出）
     remote_url: Optional[str]            # 远程推流地址；None = 无网络输入
     viz: frozenset                       # 启用的可视化节点名子集
     fx_chain: Tuple[dict, ...]           # 启用的 fx 条目（引擎就绪格式）
+    aec_rows: Tuple[dict, ...] = ()      # 启用的 AEC 行（有序）：
+                                         # {mic, far_gain_db, far_kind, far_device}；
+                                         # mic 与 audio_input 走同一设备机制，
+                                         # 同列表、同去重、同 48k 门禁
+    aec_far_mics: Tuple[str, ...] = ()   # AEC far 选麦克风时的专用采集设备
+                                         # （独立采集直达 AEC，不进混音）
+    loopbacks: Tuple[str, ...] = ()      # 启用的回环输入（扬声器设备，有序）：
+                                         # 独立回采进混音；AEC 行 far=扬声器
+                                         # 与它继承同一套回环采集机制
     problems: Tuple[str, ...] = ()       # 阻断性问题（非空则不得建流）
     warnings: Tuple[str, ...] = ()       # 非阻断提示
 
@@ -53,6 +62,25 @@ class SessionPlan:
         fx: List[dict] = []
         problems: List[str] = []
         warnings: List[str] = []
+
+        # AEC 行的 mic 与 audio_input 继承同一设备机制：同解析、同列表；
+        # 同一设备被 AEC 行接管后，普通音频输入行的重复项跳过并告警
+        # （一行设备只进一次混音，可控无歧义）。预扫描先定接管集合，
+        # 与链序无关（audio_input 在前也不会漏告警）。
+        aec_mics: List[str] = []
+        for _item in (chain_cfg or []):
+            if str(_item.get("type", "")) == "echo_cancel" \
+                    and bool(_item.get("enabled", True)):
+                _p = _item.get("params") or {}
+                _dev = str(_p.get("device", "") or "").strip()
+                _far = str(_p.get("far_device", "") or "").strip()
+                # mic 与 far 双全才算接管（缺 far 的行主循环会跳过，
+                # 不能吞掉同设备普通输入行）
+                if _dev and _far and _dev not in aec_mics:
+                    aec_mics.append(_dev)
+        aec_rows: List[dict] = []
+        aec_far_mics: List[str] = []
+        loopbacks: List[str] = []
 
         for item in (chain_cfg or []):
             t = str(item.get("type", ""))
@@ -71,10 +99,44 @@ class SessionPlan:
                         remote_url = url
                     else:
                         warnings.append("多个远程推流节点，仅取第一个")
+                elif t == "echo_cancel":
+                    dev = str(params.get("device", "") or "").strip()
+                    if not dev:
+                        warnings.append("「回声消除」未选麦克风设备，该行已跳过")
+                        continue
+                    try:
+                        far_gain = float(params.get("far_gain_db", 0.0))
+                    except (TypeError, ValueError):
+                        far_gain = 0.0
+                    far_kind = str(params.get("far_kind", "") or "").strip()
+                    far_dev = str(params.get("far_device", "") or "").strip()
+                    if far_kind not in ("speaker", "mic"):
+                        # UI 恒写显式 far_kind；缺省按扬声器处理。
+                        far_kind = "speaker"
+                    if not far_dev:
+                        warnings.append("「回声消除」未选 far 参考设备，该行已跳过")
+                        continue
+                    if dev not in inputs:
+                        inputs.append(dev)
+                    aec_rows.append({"mic": dev, "far_gain_db": far_gain,
+                                     "far_kind": far_kind, "far_device": far_dev})
+                    if far_kind == "mic" and far_dev not in aec_far_mics:
+                        aec_far_mics.append(far_dev)
+                elif t == "loopback":
+                    dev = str(params.get("device", "") or "").strip()
+                    if dev:
+                        if dev not in loopbacks:
+                            loopbacks.append(dev)
+                    else:
+                        warnings.append("「桌面输入」未选扬声器设备，该行已跳过")
                 else:
                     dev = str(params.get("device", "") or "").strip()
                     if dev:
-                        inputs.append(dev)
+                        if dev in aec_mics:
+                            warnings.append(
+                                f"「音频输入」{dev} 已被回声消除行接管，该行已跳过")
+                        elif dev not in inputs:
+                            inputs.append(dev)
                     else:
                         warnings.append("「音频输入」未选设备，该行已跳过")
             elif spec.kind == "output":
@@ -92,16 +154,22 @@ class SessionPlan:
         if remote_url is not None and not remote_url:
             problems.append("远程推流节点已启用，但地址为空")
         # 媒体源（音效板/音乐播放器/桌面声音）本身即可作为输入：
-        # 无麦克风但有启用中的媒体节点 = 合法的纯媒体会话
+        # 无麦克风但有启用中的媒体节点 = 合法的纯媒体会话。
+        # AEC 行的 mic 直接进 inputs：只有 AEC 行（无普通输入/无媒体/
+        # 无推流）也是合法会话，不再报"未启用任何输入"。回环输入同理。
         has_media = any(e["type"] in MEDIA_NODE_TYPES for e in fx)
-        if remote_url is None and not inputs and not has_media:
-            problems.append("未启用任何「音频输入」节点（媒体输入节点亦可）")
-        elif remote_url is None and not inputs and has_media:
+        has_input = bool(inputs or loopbacks)
+        if remote_url is None and not has_input and not has_media:
+            problems.append("未启用任何「音频输入」节点"
+                            "（回声消除/桌面输入/媒体输入节点亦可）")
+        elif remote_url is None and not has_input and has_media:
             warnings.append("未选麦克风输入：本次仅媒体源发声")
         if not outputs and not has_media:
             problems.append("未启用任何「音频输出」节点")
 
         return cls(inputs=tuple(inputs), outputs=tuple(outputs),
-                   remote_url=remote_url, viz=frozenset(viz),
-                   fx_chain=tuple(fx),
-                   problems=tuple(problems), warnings=tuple(warnings))
+                    remote_url=remote_url, viz=frozenset(viz),
+                    fx_chain=tuple(fx), aec_rows=tuple(aec_rows),
+                    aec_far_mics=tuple(aec_far_mics),
+                    loopbacks=tuple(loopbacks),
+                    problems=tuple(problems), warnings=tuple(warnings))

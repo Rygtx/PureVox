@@ -181,6 +181,12 @@ class PaBridge:
 
     # ── 数据面 ──
 
+    def read_each(self, n: int) -> Optional[List[Optional[List[float]]]]:
+        """逐路读取输入环（单路后端恒返回一路；无数据返回 None）。
+        与 PwBridge.read_each 同形（AEC 行按路取本路 mic 用）。"""
+        got = self._in_ring.read(n)
+        return [got] if got is not None else None
+
     def read(self, n: int) -> Optional[List[float]]:
         """读取输入（单路，等权混合退化为直读；无数据返回 None）。"""
         return self._in_ring.read(n)

@@ -21,17 +21,24 @@
 对外暴露统一接口（与 audio_processor 的调用方契约一致）：
 
     SpeakerCapture
-        扬声器 loopback 采集（AEC far-end 数据源）。
+        扬声器 loopback 采集（AEC far=扬声器时的数据源）。
         接口：start() -> bool, stop(), read(n) -> Optional[list],
-              dev_sr(int), active(bool), flush()。
+              available() -> int, dev_sr(int), active(bool), flush()。
+
+    MicCapture
+        麦克风专用采集（AEC far=麦克风时的数据源，一行一路，
+        不进主混音，直达行内 FarSync）。接口同 SpeakerCapture。
 
     create_speaker_capture(on_device_changed=None, pw_bridge=None, far_sink="")
         工厂函数，按当前平台返回具体后端实例：
         - Windows: WASAPI loopback（COM）
-        - Linux:   原生 PipeWire capture.sink（复用已有 PwBridge，AEC far 流）
+        - Linux:   原生 PipeWire capture.sink（复用已有 PwBridge，far 专用流）
         - macOS:   预留
     pw_bridge / far_sink 仅 Linux 使用：pw_bridge 为已打开的 PwBridge；
     far_sink 为扬声器 sink 节点名（空则取物理扬声器兜底）。
+
+    create_mic_capture(dev, pw_bridge=None)
+        工厂函数：dev 为 Windows 设备索引（int）/ Linux 源节点名（str）。
 """
 
 from .. import IS_WINDOWS, IS_LINUX, IS_MACOS
@@ -52,4 +59,18 @@ def create_speaker_capture(on_device_changed=None, pw_bridge=None, far_sink=""):
     raise RuntimeError(f"不支持的平台: {__import__('sys').platform}")
 
 
-__all__ = ["create_speaker_capture"]
+def create_mic_capture(dev=None, pw_bridge=None):
+    """按平台创建 MicCapture 实例（dev：Windows 设备索引 / Linux 源节点名）。"""
+    if IS_WINDOWS:
+        from .mic_capture_win import MicCaptureWin
+        return MicCaptureWin(device_id=dev)
+    if IS_LINUX:
+        from .mic_capture_linux import MicCaptureLinux
+        return MicCaptureLinux(bridge=pw_bridge, source_name=dev or "")
+    if IS_MACOS:
+        from .speaker_capture_macos import SpeakerCaptureMacOS
+        return SpeakerCaptureMacOS()
+    raise RuntimeError(f"不支持的平台: {__import__('sys').platform}")
+
+
+__all__ = ["create_speaker_capture", "create_mic_capture"]

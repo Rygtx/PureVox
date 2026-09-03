@@ -92,11 +92,18 @@ class NodeSpec:
    样本块（1024/2048 等）。202609 模型三件套契约一致（波形 hop 进出、
    STFT 在模型图内、enh_hop 滞后 1 hop），未来多采样率仅换 SAMPLE_RATE。
 3. **混音**：N 路 input 等权平均；某路暂无数据则跳过该路；全部无数据 = 本帧无输入。
+   AEC 行的 mic 先经本行 AEC 处理再进混音（同设备普通输入行被接管跳过，
+   一行设备只进一次混音）；回环输入行经 FarTap 拉齐后进混音。
 4. **扇出**：M 路 output 各持一个 PlaybackSink，写入同一份降噪后音频（或
    各自链位置的线性抽头帧）；任一路积压/阻塞不得拖累其余路与处理循环。
-5. **顺序**：信号流 = inputs(混合) → [fx 按链序] → outputs ∥ viz。
+5. **顺序**：信号流 = inputs（含 AEC 行处理后 / 回环拉齐后）(混合)
+   → [fx 按链序] → outputs ∥ viz。AEC 与回环采集发生在混音之前，
+   far 参考永不进 fx 链。
 6. **旁路**：viz 只读 tap，永不反压、永不修改样本。
-7. **远端参考**：AEC far 是独立采集支路，仅当链中存在启用的 echo_cancel 时建立。
+7. **远端参考**：AEC far 是独立采集支路（扬声器回环 / 麦克风专用二选一），
+   仅当链中存在启用的 `echo_cancel` 输入行时按行建立；经 FarTap 按 mic
+   hop 主时钟拉齐后直达行内 AecRow，不经过任何 fx 处理。
+   回环输入行（`loopback`）与 AEC far=扬声器继承同一套回环采集机制。
 8. **设备时钟唯一主时钟（2026-09 播放重构）**：处理线程按自身节奏推进 hop，
    播放侧由设备回调经 PlaybackSink.pull 拉帧；一切跨时钟域消费（多输出设备、
    网络流、媒体从设备）的速率差由 PlaybackSink 变速消化（PI 伺服 ASRC ±3%、
@@ -110,11 +117,14 @@ L3 是**纯函数层**：输入链文档 + 注册表，输出可执行计划，�
 ```python
 @dataclass(frozen=True)
 class SessionPlan:
-    inputs: List[str]            # 启用的采集设备（node.name / Windows 设备名）
+    inputs: List[str]            # 启用的采集设备（node.name / Windows 设备名，含 AEC 行 mic）
     outputs: List[str]           # 启用的播放设备
     remote_url: Optional[str]    # 远程推流地址；None = 无网络输入
     viz: frozenset               # 启用的可视化节点名子集
     fx_chain: List[dict]         # 仅含启用的 fx 节点（引擎就绪格式）
+    aec_rows: List[dict]         # 启用的 AEC 行：{mic, far_gain_db, far_kind, far_device}
+    aec_far_mics: List[str]      # AEC far=mic 的专用采集设备（直达 AEC，不进混音）
+    loopbacks: List[str]         # 启用的回环输入（扬声器设备，拉齐后进混音）
     problems: Tuple[str, ...]    # 阻断性问题（中文，面向用户）；非空则不得建流
     warnings: Tuple[str, ...]    # 非阻断提示（未知名节点被忽略等）
 
@@ -124,9 +134,12 @@ class SessionPlan:
 ```
 
 校验规则：
-- 产生 `problems`（阻断）：无网络输入且无本地输入；outputs 为空；
-  remote_mic 已启用但 url 为空。
-- 产生 `warnings`（不阻断）：未知 type 被忽略；空 device 的 input/output 行被跳过。
+- 产生 `problems`（阻断）：无网络输入且无本地输入（AEC 行 mic /
+  回环输入行亦算本地输入）；outputs 为空；remote_mic 已启用但 url 为空。
+- 产生 `warnings`（不阻断）：未知 type 被忽略；空 device 的 input/output 行被跳过；
+  AEC 行缺 far 整行跳过；同设备普通输入行被 AEC 行接管时跳过。
+- `echo_cancel` / `loopback` 是 input 种节点：mic/device 与 audio_input 继承
+  同一设备机制（同解析、同列表、同 48k 门禁），增删启停走重启（端点绑定）。
 
 L4 在点击启动时调用 `from_chain`；`ok()` 为假则展示 problems 并中止，
 为真则把字段分发给 L2（AudioThread/PwBridge）与 L1（set_plugins）。
@@ -148,8 +161,11 @@ class BackendSpec:
 ```
 
 后端数据面为**哑传输**（2026-09 播放重构后）：
-`open(inputs, outputs, out_pull)` / `read(n)`（混音输入）/ `close()` /
-`active()` / `last_error()` / `set_far(sink, enabled)` / `read_far(n)`。
+`open(inputs, outputs, out_pull)` / `read(n)`（混音输入）/
+`read_each(n)`（逐路输入，与 open 时 inputs 顺序对齐，AEC 行按路取用）/
+`close()` / `active()` / `last_error()` /
+`open_far(dev, monitor)` / `close_far(h)` / `read_far_h(h, n)` /
+`far_available(h)`（AEC far / 回环输入专用采集流，多路，直达行内 FarTap）。
 
 - 后端不做任何缓冲策略与时钟逻辑；`out_pull[i]` 是输出 i 的帧供给函数
   （PlaybackSink.pull，由后端在设备回调线程按设备时钟调用）。
@@ -201,7 +217,7 @@ class BackendSpec:
 | 变更 | 生效方式 | 机制 |
 |---|---|---|
 | fx 参数滑杆 | 热更 | `update_plugin_param` 直达运行实例 |
-| fx 行启用/停用 | 热更 | `set_plugin_enabled` 只翻 Stage/Effect enabled；媒体源类（FADE_THROUGH）自行淡出/淡入。AEC 例外走重启路径（far 端采集生命周期绑定建流） |
+| fx 行启用/停用 | 热更 | `set_plugin_enabled` 只翻 Stage/Effect enabled；媒体源类（FADE_THROUGH）自行淡出/淡入 |
 | fx 行增删/排序 | 热更 | 整链 `set_plugins` 重建（模型经 stage_cache 复用，不断流） |
 | EQ 增益/预设 | 热更 | eq 插件参数 |
 | TSE 参考录音/加载 | 热更 | `set_tse_reference` |
@@ -209,10 +225,11 @@ class BackendSpec:
 | 输入/输出设备选择 | 重启（自动） | 流绑定于 open() 时的设备名 |
 | remote_mic 地址 | 重启（自动） | 服务器注入路径绑定 |
 | audio_input/output 行启停/增删/排序 | 重启（自动） | 端点集合变化 |
+| echo_cancel/loopback 行启停/增删/参数 | 重启（自动） | 行采集生命周期绑定建流（与输入行一致） |
 | 传输后端切换 | 重启（自动） | 后端在 open 时绑定 |
 
-判定规则（代码层）：`SessionPlan.from_chain` 的签名三元组
-`(inputs, outputs, remote_url)` 发生变化 ⇒ 结构类变更。
+判定规则（代码层）：`SessionPlan.from_chain` 的签名元组
+`(inputs, outputs, remote_url, aec_rows, loopbacks)` 发生变化 ⇒ 结构类变更。
 
 ## 8. 扩展指南
 
@@ -236,6 +253,7 @@ class BackendSpec:
 |---|---|---|
 | 多输入混音 | 支持 | 单输入（TODO） |
 | 多输出扇出 | 支持 | 支持（extras 回调） |
-| AEC far 参考 | monitor 源采集 | WASAPI loopback |
+| AEC far 参考 | monitor 源采集 / 麦克风真源采集（二选一） | WASAPI loopback / 麦克风输入流（二选一） |
+| 回环输入行 | monitor 源采集进混音 | WASAPI loopback 进混音 |
 | 远程推流输入 | 支持 | 支持 |
 | 虚拟麦克风 | module-remap-source 方案 | VB-CABLE 外部 |

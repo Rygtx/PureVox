@@ -572,9 +572,17 @@ class SpeakerCaptureWin:
             self._audio_client = None
         self._capture_client = None
 
+    def available(self) -> int:
+        """缓冲区当前可用采样数。"""
+        return self._buffer.available()
+
     def read(self, n_samples: int) -> Optional[list]:
         """从缓冲区读取 n_samples 个 FIFO 采样；数据不足时返回 None。"""
         return self._buffer.read(n_samples)
+
+    def read_latest(self, n_samples: int) -> Optional[list]:
+        """从缓冲区读取最新 n_samples 个采样，丢弃旧数据；数据不足时返回 None。"""
+        return self._buffer.read_latest(n_samples)
 
     def flush(self) -> None:
         """清空缓冲区。"""

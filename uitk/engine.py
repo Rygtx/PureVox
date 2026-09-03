@@ -75,11 +75,13 @@ class EngineController:
         self.thread = None
         self._media = None
         self.running = False
+        self._chain_cfg = []    # 最近一次 start 的链文档（行级实时参数路由用）
 
     def start(self, chain_cfg) -> Optional[str]:
         if self.running:
             return None
         self.stop()
+        self._chain_cfg = [dict(e) for e in (chain_cfg or [])]
         log = self.log
         try:
             from session_plan import SessionPlan
@@ -95,7 +97,8 @@ class EngineController:
                 required.add("multi_input")
             if len(plan.outputs) > 1:
                 required.add("multi_output")
-            if _chain_enabled(chain_cfg, "echo_cancel"):
+            if plan.loopbacks or \
+                    any(r["far_kind"] == "speaker" for r in plan.aec_rows):
                 required.add("loopback_far")
             backend = select_backend(frozenset(required))
             if backend is None:
@@ -134,6 +137,16 @@ class EngineController:
                 log.msg("[启动] 纯媒体会话（miniaudio 播放设备直出）")
                 return None
 
+            if plan.remote_url is not None and plan.aec_rows:
+                return "网络输入模式不支持回声消除行（AEC 需要本地麦克风）"
+            if not use_pw and plan.aec_rows:
+                # Windows 单输入后端：AEC 行的 mic 须是主输入（同一设备）
+                main_in = plan.inputs[0] if plan.inputs else ""
+                bad = [r["mic"] for r in plan.aec_rows if r["mic"] != main_in]
+                if bad:
+                    return "Windows 单输入后端：回声消除的麦克风须与音频输入为同一设备，" \
+                        f"请改选 {main_in or '主输入设备'}（{ '、'.join(bad)} 不符）"
+
             pw_ports = ([], [])
             inp = out = None
             extra_out = []
@@ -159,22 +172,17 @@ class EngineController:
             self.thread = start_audio_stream(
                 inp, out, proc, HOP_LENGTH,
                 api_type=default_api_type(), ready_msg=ready_msg,
-                extra_output_ids=extra_out, pw_ports=pw_ports)
+                extra_output_ids=extra_out, pw_ports=pw_ports,
+                aec_rows=list(plan.aec_rows), aec_inputs=list(plan.inputs),
+                loopbacks=list(plan.loopbacks))
             if self.thread and not self.thread.wait_ready(timeout=3.0):
                 err = getattr(self.thread, "_start_error", None) or "音频流创建超时"
                 self.stop()
                 return f"音频流创建失败: {err}"
 
-            # AEC far 端（链启用 echo_cancel 时）
-            if _chain_enabled(chain_cfg, "echo_cancel") and self.thread:
-                far = ""
-                for e in chain_cfg:
-                    if e.get("type") == "echo_cancel" and e.get("enabled", True):
-                        far = (e.get("params") or {}).get("far_device", "")
-                        break
-                self.thread.set_aec_far_sink(far)
-                self.thread.processor.set_aec_enabled(True)
-                self.thread.set_aec_enabled(True)
+            if plan.aec_rows:
+                log.msg(f"[AEC] 行级回声消除 x{len(plan.aec_rows)} "
+                        f"({'; '.join(r['mic'] + '<-' + r['far_device'] for r in plan.aec_rows)})")
 
             self.running = True
 
@@ -212,6 +220,10 @@ class EngineController:
         try:
             checks = [(True, n) for n in plan.inputs] + \
                      [(False, n) for n in plan.outputs]
+            # AEC far 选麦克风时是独立采集流，同样逐设备 48k 门禁；
+            # far 选扬声器走 loopback，按既定行为免检。
+            checks += [(True, n) for n in plan.aec_far_mics
+                       if n not in plan.inputs]
             for is_in, name in checks:
                 dev = get_device_id(name, is_in, api_type=api_type)
                 if dev is None:
@@ -235,10 +247,21 @@ class EngineController:
         return None
 
     def set_live_param(self, index, key, value):
-        """滑杆实时生效：直接更新运行中处理器的插件参数（不重建链）。"""
+        """滑杆实时生效：直接更新运行中处理器的插件参数（不重建链）。
+
+        AEC 行的参考音量直达运行中的行（AudioThread.set_aec_far_gain），
+        处理器内 AEC 行只是占位，推给它没有效果。
+        """
         if not (self.processor and self.running):
             return
         try:
+            entry = self._chain_cfg[index] if 0 <= index < len(self._chain_cfg) \
+                else {}
+            if entry.get("type") == "echo_cancel" and key == "far_gain_db" \
+                    and self.thread is not None:
+                mic = str((entry.get("params") or {}).get("device", ""))
+                if self.thread.set_aec_far_gain(mic, float(value)):
+                    return
             self.processor.update_plugin_param(index, key, value)
         except Exception as e:
             self.log.warn(f"[参数] 实时更新失败 ({key}): {e}")
@@ -248,10 +271,23 @@ class EngineController:
 
         DESIGN §7 热更矩阵——复选框开/关由运行中处理器原地生效；
         媒体源类插件（FADE_THROUGH）自行淡出/淡入，衔接无缝。
+        TSE 例外：运行中启用时即时加载已存参考（参考只在 start 载入，
+        不补这一步就是"勾选了也没效果，只能重启"，见 _hot_toggle 修复）。
         """
         if self.processor and self.running:
             try:
                 self.processor.set_plugin_enabled(index, enabled)
+                if enabled:
+                    entry = self._chain_cfg[index] \
+                        if 0 <= index < len(self._chain_cfg) else {}
+                    if entry.get("type") == "tse" and \
+                            not self.processor.is_tse_reference_loaded():
+                        from audio_processor import load_tse_reference, \
+                            CFG_REF_WAV_PATH
+                        wav = (self.config.get(CFG_REF_WAV_PATH, "")
+                               if self.config else "")
+                        if wav and load_tse_reference(self.processor, wav):
+                            self.log.msg("[TSE] 运行中启用，已载入参考音频")
             except Exception as e:
                 self.log.warn(f"[节点] 启停热更失败: {e}")
 

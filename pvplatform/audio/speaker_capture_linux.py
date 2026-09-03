@@ -50,6 +50,7 @@ class SpeakerCaptureLinux:
         self._own_bridge = bridge is None   # 未给桥 = 自建（随 stop 释放）
         self._sink_name = sink_name or ""
         self._dev_sr = self.AEC_FAR_SR
+        self._far_handle = -1               # 桥上 far 专用流句柄
         self._on_device_changed = on_device_changed
 
     @property
@@ -77,7 +78,8 @@ class SpeakerCaptureLinux:
         if not sink:
             _module_log("[AEC] Linux: 无物理扬声器 sink，AEC 降级")
             return False
-        if not self._bridge.set_far(sink, True):
+        self._far_handle = self._bridge.open_far(sink, monitor=True)
+        if self._far_handle < 0:
             _module_log(f"[AEC] Linux 打开 far 采集流失败: {sink}")
             return False
         self._active = True
@@ -88,21 +90,22 @@ class SpeakerCaptureLinux:
     def stop(self) -> None:
         self._active = False
         if self._bridge is not None:
-            try:
-                self._bridge.set_far("", False)
-            except Exception:
-                pass
+            if self._far_handle >= 0:
+                self._bridge.close_far(self._far_handle)
+                self._far_handle = -1
             if self._own_bridge:
-                try:
-                    self._bridge.close()
-                except Exception:
-                    pass
+                self._bridge.close()
                 self._bridge = None
 
+    def available(self) -> int:
+        if not self._active or self._bridge is None or self._far_handle < 0:
+            return 0
+        return self._bridge.far_available(self._far_handle)
+
     def read(self, n_samples: int) -> Optional[list]:
-        if not self._active or self._bridge is None:
+        if not self._active or self._bridge is None or self._far_handle < 0:
             return None
-        data = self._bridge.read_far(n_samples)
+        data = self._bridge.read_far_h(self._far_handle, n_samples)
         return list(data) if data else None
 
     def flush(self) -> None:

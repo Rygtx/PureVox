@@ -65,7 +65,7 @@ class AudioProcessor:
     顺序即信号流顺序；AI 插件模型引擎跨重建共享（不重复加载）。"""
 
     def __init__(self, pre_gain_db: float = 0.0):
-        self._stage_cache = {}      # AI Stage 缓存（denoise/aec/tse）
+        self._stage_cache = {}      # AI Stage 缓存（denoise/tse；AEC 行级共享另走）
         self._viz_in = BufferTapStage()
         self._viz_out = BufferTapStage()
         self._viz_taps = []   # 位置抽头（链内 viz 节点），见 set_plugins
@@ -281,18 +281,14 @@ class AudioProcessor:
                 return getattr(st, "eff", st)
         return None
 
-    def needs_far_end(self) -> bool:
-        """链中是否存在启用的回声消除（线程需据此建立扬声器采集）。"""
-        return any(t == "echo_cancel" and st.enabled for t, st in self._typed)
-
     def tse_needs_reference(self) -> bool:
         return any(t == "tse" and st.enabled and
                    not getattr(getattr(st, "eff", st), "has_reference", True)
                    for t, st in self._typed)
 
     # ── 主处理 ──
-    def _run_chain(self, mic: np.ndarray, far=None) -> np.ndarray:
-        ctx = FrameContext(far=far, far_sample_rate=self._far_sr)
+    def _run_chain(self, mic: np.ndarray) -> np.ndarray:
+        ctx = FrameContext()
         return self.pipeline.process(mic, ctx)
 
     def process(self, mic):
@@ -301,18 +297,10 @@ class AudioProcessor:
         out = self._run_chain(np.asarray(mic, dtype=np.float32))
         return out.tolist()
 
-    def process_with_far(self, mic, far_end):
-        if len(mic) != HOP_LENGTH:
-            raise RuntimeError(f"Input audio chunk length must be equal to hop length ({HOP_LENGTH})")
-        far = np.asarray(far_end, dtype=np.float32) if far_end is not None else None
-        out = self._run_chain(np.asarray(mic, dtype=np.float32), far)
-        return out.tolist()
-
     # ── 流式 pipeline（网络模式）──
-    def process_pipeline(self, raw_input, far_end=None):
+    def process_pipeline(self, raw_input):
         if not len(raw_input):
             return []
-        far = np.asarray(far_end, dtype=np.float32) if far_end is not None else None
         acc = np.asarray(raw_input, dtype=np.float32).reshape(-1)
         out_acc: list[float] = []
         self._viz_in.enabled = True
@@ -320,12 +308,12 @@ class AudioProcessor:
         try:
             while len(acc) >= HOP_LENGTH:
                 chunk, acc = acc[:HOP_LENGTH], acc[HOP_LENGTH:]
-                out_acc.extend(self._run_chain(chunk, far).tolist())
+                out_acc.extend(self._run_chain(chunk).tolist())
             if len(acc) >= HOP_LENGTH * 3 // 4:
                 orig = len(acc)
                 chunk = np.zeros(HOP_LENGTH, dtype=np.float32)
                 chunk[:orig] = acc
-                out_acc.extend(self._run_chain(chunk, far).tolist())
+                out_acc.extend(self._run_chain(chunk).tolist())
         finally:
             self._viz_in.enabled = False
             self._viz_out.enabled = False
@@ -360,18 +348,6 @@ class AudioProcessor:
                 self._eq_preview.mirror(st)
                 x = self._eq_preview.process(x, FrameContext()).astype(np.float32)
         return x.tolist()
-
-    # ── AEC ──
-    def set_aec_enabled(self, enabled: bool):
-        a = self._find("echo_cancel")
-        if a is not None:
-            a.stage.enabled = bool(enabled)
-
-    def set_aec_far_sample_rate(self, sr: int):
-        self._far_sr = int(sr) if sr and sr > 0 else SAMPLE_RATE
-        a = self._find("echo_cancel")
-        if a is not None and hasattr(a, "set_far_sample_rate"):
-            a.set_far_sample_rate(self._far_sr)
 
     # ── TSE ──
     def set_tse_reference(self, ref, ref_key=None):
