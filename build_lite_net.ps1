@@ -48,7 +48,8 @@ Set-Content _build_version.py "BUILD_DATE = `"$ver`"" -Encoding UTF8
     --icon assets\icons\lite_tray.ico `
     --collect-all onnxruntime `
     --collect-all numpy `
-    --collect-all PIL `
+    --collect-submodules PIL `
+    --collect-data PIL `
     --collect-all av `
     --hidden-import=pyaudio `
     --hidden-import=websockets `

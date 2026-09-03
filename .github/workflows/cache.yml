@@ -9,6 +9,9 @@ on:
       - 'requirements-linux.txt'
       - 'bootstrap_python312.sh'
       - 'android/opus-src/**'
+  schedule:
+    # 每周一 UTC 03:00 定期重建——防止 tag 删除/作用域漂移导致 cache 彻底丢失
+    - cron: '0 3 * * 1'
   workflow_dispatch:
 
 jobs:

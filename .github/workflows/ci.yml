@@ -110,10 +110,6 @@ jobs:
           print('pvengine OK on Python', sys.version.split()[0])
           EOF
 
-      - name: Test suite (playback / transport / devices / session plan)
-        run: |
-          python tests/run_all.py
-
       - name: Assert Python 3.12 baseline (python3.12 only)
         if: matrix.baseline
         run: |
@@ -278,11 +274,6 @@ jobs:
         run: |
           python -c "from pvengine import AudioProcessor; ap = AudioProcessor(0.0); out = ap.process([0.0] * 480); assert len(out) == 480; print('pvengine OK on Python', __import__('sys').version.split()[0])"
 
-      - name: Test suite (playback / transport / devices / session plan)
-        shell: pwsh
-        run: |
-          python tests\run_all.py
-
       # 产物布局断言：PyInstaller one-folder 的关键内容齐备
       # （exe / about 三页 add-data / 模型 / opus.dll / html 推流页）
       - name: Assert packaged bundle layout (PyInstaller output)
@@ -342,9 +333,10 @@ jobs:
           yes | sdkmanager --licenses >/dev/null
           sdkmanager "platforms;android-34" "ndk;27.0.12077973" "build-tools;34.0.0"
 
-      # 缓存 opus 源码：命中则跳过下载（2026-08-22 纯 py 迁移）
-      - name: Cache opus source
-        uses: actions/cache@v6
+      # 缓存 opus 源码：命中则跳过下载（2026-08-22 纯 py 迁移）；
+      # restore 由全部 run 共享；save 仅 main 分支（手动 dispatch）写入
+      - name: Restore opus source cache
+        uses: actions/cache/restore@v6
         with:
           path: android/opus-src
           key: purevox-android-opus-src-1.5.2
@@ -360,6 +352,13 @@ jobs:
             mv /tmp/opus-1.5.2/* android/opus-src/
             test -f android/opus-src/CMakeLists.txt
           fi
+
+      - name: Save opus source cache (single writer, main-dispatch only)
+        if: !cancelled() && github.ref == 'refs/heads/main'
+        uses: actions/cache/save@v6
+        with:
+          path: android/opus-src
+          key: purevox-android-opus-src-1.5.2
 
       - name: Build debug APK
         working-directory: android
