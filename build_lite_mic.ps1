@@ -3,15 +3,10 @@
 # Usage: powershell -ExecutionPolicy Bypass -File build_lite_mic.ps1
 $ErrorActionPreference = "Stop"
 
-# --- Version stamp: tag lite-v<yyyy.MM.dd.HHmm> -> ver; fallback to local time ---
-$ref = $env:GITHUB_REF_NAME
-if ($ref -and $ref.StartsWith("lite-v")) { $ver = $ref.Substring(6) }
-elseif ($ref -and $ref.StartsWith("lite")) { $ver = ($ref.Substring(4) -replace "^[-_]*","") }
-elseif ($ref -and $ref.StartsWith("v")) { $ver = $ref.Substring(1) }
-else {
-    $ver = (Get-Date -Format 'yyyy-MM-dd-HHmm') -replace '-', '.'
-}
-if (-not $ver) { $ver = (Get-Date -Format 'yyyy-MM-dd-HHmm') -replace '-', '.' }
+# --- Version stamp: single source tools/automation/version.ps1 -Lite
+# (tag lite-v<yyyy.MM.dd.HHmm> -> ver; fallback to local UTC time) ---
+. (Join-Path (Split-Path -Parent $MyInvocation.MyCommand.Path) "tools\ci\version.ps1") -Lite
+$ver = $VERSION
 Write-Host "Lite version: $ver"
 
 # --- Python resolution: embedded python312w > python on PATH ---

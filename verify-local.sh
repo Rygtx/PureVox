@@ -2,11 +2,11 @@
 # PureVox - 本地 CI 镜像（WSL / 原生 Linux 均可）
 # 与 .github/workflows/ci.yml 的 linux job 同一套步骤，保证本地全流程可复现。
 # 用法（在仓库根）:
-#   ./ci_local.sh smoke            引擎冒烟（导入 + 加载模型跑一帧）
-#   ./ci_local.sh deb              打 deb（自动引导内嵌 python312）
-#   ./ci_local.sh appimage         打 AppImage
-#   ./ci_local.sh rpm              打 rpm（仅 rpm 系发行版）
-#   ./ci_local.sh all              依次执行本发行版支持的全部阶段
+#   ./verify-local.sh smoke            引擎冒烟（导入 + 加载模型跑一帧）
+#   ./verify-local.sh deb              打 deb（自动引导内嵌 python312）
+#   ./verify-local.sh appimage         打 AppImage
+#   ./verify-local.sh rpm              打 rpm（仅 rpm 系发行版）
+#   ./verify-local.sh all              依次执行本发行版支持的全部阶段
 set -euo pipefail
 cd "$(dirname "$0")"
 
@@ -76,7 +76,7 @@ relocate_if_vboxsf() {
     fi
     cd "$BUILD_ROOT"
     # 显式 bash 调用：vboxsf 挂载带 noexec，直接执行共享目录里的脚本会被拒
-    PUREVOX_RELOCATED=1 bash "$ORIG_DIR/ci_local.sh" "$1"
+    PUREVOX_RELOCATED=1 bash "$ORIG_DIR/verify-local.sh" "$1"
     rc=$?
     mkdir -p "$ORIG_DIR/dist"
     cp -f "$BUILD_ROOT"/dist/PureVox-* "$ORIG_DIR/dist/" 2>/dev/null || true
@@ -91,17 +91,8 @@ install_pydeps() {
 }
 
 smoke() {
-    echo "==> 引擎冒烟：导入 pvengine 并跑一帧降噪"
-    py - <<'EOF'
-import sys
-import numpy as np
-from pvengine import AudioProcessor
-ap = AudioProcessor(0.0)
-x = (np.sin(np.arange(480) * 0.05) * 0.3).astype('float32')
-out = ap.process(x.tolist())
-assert len(out) == 480
-print('pvengine OK on Python', sys.version.split()[0])
-EOF
+    echo "==> 引擎冒烟（tools/automation/smoke.py）：导入 pvengine 并跑一帧降噪"
+    py tools/automation/smoke.py
 }
 
 relocate_if_vboxsf "$stage"
@@ -145,4 +136,4 @@ case "$stage" in
         exit 2
         ;;
 esac
-echo "==> ci_local[$stage] 完成"
+echo "==> verify-local[$stage] 完成"

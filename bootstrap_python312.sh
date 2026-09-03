@@ -14,8 +14,10 @@ PREFIX="$APP_DIR/packages/python312"
 PY_MAJOR=3.12
 PY_BIN="$PREFIX/bin/python$PY_MAJOR"
 
-PY_VER=3.12.14
-PBS_TAG=20260814
+# 版本唯一来源：tools/automation/versions.env（CI 缓存 key 由同一值推导）
+# shellcheck disable=SC1091
+. "$(dirname "$0")/tools/automation/versions.env"
+PY_VER="$PBS_CPYTHON_VER"
 TARBALL_NAME="cpython-${PY_VER}+${PBS_TAG}-x86_64-unknown-linux-gnu-install_only.tar.gz"
 TARBALL_URL="https://github.com/astral-sh/python-build-standalone/releases/download/${PBS_TAG}/${TARBALL_NAME}"
 CACHE_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/purevox"
@@ -29,9 +31,9 @@ if [ ! -f "$TARBALL" ]; then
     echo "==> 下载 CPython ${PY_VER} 预编译包（python-build-standalone ${PBS_TAG}）..."
     mkdir -p "$(dirname "$TARBALL")"
     if command -v curl >/dev/null 2>&1; then
-        curl -fL -o "$TARBALL.part" "$TARBALL_URL"
+        curl -fL --retry 3 --retry-delay 10 -o "$TARBALL.part" "$TARBALL_URL"
     else
-        wget -O "$TARBALL.part" "$TARBALL_URL"
+        wget --tries=3 -O "$TARBALL.part" "$TARBALL_URL"
     fi
     mv "$TARBALL.part" "$TARBALL"
 fi

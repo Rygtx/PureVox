@@ -343,9 +343,9 @@
   存在产物行为漂移风险。现与 Windows job 一致，从 requirements.txt 安装
   （pillow 仍单独安装，仅打包脚本需要）。
 - **新增本地全流程脚本**（无需推 tag 即可复现整条 CI）：
-  `ci_local.sh`（Linux 内跑 Linux job 全套——系统依赖、依赖安装、引擎冒烟、
+  `verify-local.sh`（Linux 内跑 Linux job 全套——系统依赖、依赖安装、引擎冒烟、
   deb/AppImage/rpm 打包；在 vboxsf/9p 共享目录上运行时自动切到原生文件系统
-  构建，规避其不支持软链的限制）；`ci_local.ps1`（Windows 入口，一条命令依次
+  构建，规避其不支持软链的限制）；`verify-local.ps1`（Windows 入口，一条命令依次
   经 WSL(Ubuntu-24.04) 跑 Linux 段、本机跑 PyInstaller 打包与 Android APK）。
 
 ## 2026-08-25 — 修复设置菜单与 VB 驱动卡片点击无效，「启动时自动运行」落地
@@ -843,7 +843,7 @@
   `pack_appimage.sh` 与 APK 改名）；
   各 job 并发跑不再各自 `date`，杜绝产物文件名/版本号互相漂移不一致。本地/手动跑
   （无 `GITHUB_REF_NAME` tag）才回退到构建时刻。
-- **push tag 自动发 release**：`ci.yml` 新增 `release` job——推送 tag
+- **push tag 自动发 release**：`release.yml` 新增 `release` job——推送 tag
   `v<yyyy.MM.dd.HHmm>`（如 `v2026.08.10.1517`）时，三个构建 job 针对该 ref 重跑，
   随后自动 `gh release create` 并把全部产物 attach 到 Release（Linux deb/rpm/AppImage、
   Windows 目录重打成 zip、Android APK）。tag 命名与包内版本号对齐，二者来自同一来源。
@@ -865,7 +865,7 @@
   捆绑 ORT import lib；`.so`/`.dll` 用固定名定位（不再用 `sysconfig.EXT_SUFFIX`）
 - 打包：`build_win.ps1`（PyInstaller one-folder → 产物目录 `dist/PureVox/`）、
   `pack_deb.sh`、`pack_rpm.sh`、`pack_appimage.sh`
-- **CI 精简为单一 `.github/workflows/ci.yml`**：linux（ubuntu → deb + AppImage
+- **CI 精简为单一 `.github/workflows/release.yml`**：linux（ubuntu → deb + AppImage
   best-effort / fedora → rpm / python3.8 最低运行时冒烟）、windows（mingw 编
   `aimic.dll` + 打包上传）、android（debug APK，JDK17+SDK34+NDK27）；actions 全部
   升级 node24

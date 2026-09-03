@@ -89,7 +89,7 @@ powershell -ExecutionPolicy Bypass -File build_win.ps1   # 打包产物目录 di
 
 ### Linux
 
-依赖因发行版而异（参考 `.github/workflows/ci.yml` 与 README）。AOSC 示例：
+依赖因发行版而异（参考 `.github/workflows/release.yml` 与 README）。AOSC 示例：
 
 ```bash
 sudo oma install -y python3 pipewire
@@ -120,16 +120,16 @@ cd android
 要求：JDK 17、SDK platform 34、NDK 27、CMake 3.22.1。首次编译需 Opus 源码放到
 `android/opus-src/`（gitignore，JNI CMake 引用该路径）。
 
-### CI（`.github/workflows/ci.yml`，精简为通用包 deb/rpm/appimage + 产物目录 + apk）
+### CI（`.github/workflows/release.yml`，精简为通用包 deb/rpm/appimage + 产物目录 + apk）
 
 - **触发方式：push tag 触发 CI 构建 + 自动发 release 两件事**，分支 push 不触发构建（保持日常快速提交零成本）；需验证分支时可 `workflow_dispatch` 手动跑（仅触发三构建 job，不触发 release）。
-- **测试工作流独立（`.github/workflows/test.yml`）**：**每次分支 push / 手动
+- **测试工作流独立（`.github/workflows/tests.yml`）**：**每次分支 push / 手动
   触发**，零打包、分钟级——compileall + 引擎冒烟 + `tests/run_all.py` 全套
   （`test_session_plan.py` 会话计划纯函数 / `test_playback_sink.py` 播放
   正确性合成测试 / `test_transport.py` 传输层优雅降级 / `test_devices.py`
   设备面[枚举/虚拟麦克风/配置键]）。运行时 = 内嵌 python312（与发行产物
-  同款）；cache **只读复用**共享桶（restore 的 key 与 ci.yml 一致，**无
-  save 步骤**——落盘仍由 ci.yml 单写者负责，勿在此加缓存写入）。构建
+  同款）；cache **只读复用**共享桶（restore 的 key 与 release.yml 一致，**无
+  save 步骤**——落盘仍由 release.yml 单写者负责，勿在此加缓存写入）。构建
   job 里保留同款轻量测试步（守打包环境），另有产物级冒烟（见下）。
 - **产物级冒烟（打包流程自检，tag 时运行）**：deb/rpm 解包后用**包内嵌
   python312** 跑引擎冒烟 + `tests/`（依赖缺装/内嵌解释器问题在此暴露；
@@ -169,7 +169,7 @@ cd android
   缓存统一「显式 restore 共享 + save 仅在 main 分支（手动 dispatch）落盘」：
   Linux `~/.cache/purevox` 与 Windows pip 轮子桶（`purevox-windows-pip-v1-`
   前缀 + requirements hash 键）均如此；Lite 工作流纯 restore-only。依赖变更
-  后需在 main 上手动 dispatch 一次 ci.yml 暖桶，之后的 tag 全命中
+  后需在 main 上手动 dispatch 一次 release.yml 暖桶，之后的 tag 全命中
 - **Linux 的 opus**：opuslib 经 `ctypes.util.find_library('opus')` 加载**系统**
   libopus——deb Depends 带 `libopus0`、rpm Requires 带 `opus`；AppImage 从构建机
   拷贝 `libopus.so*` 进包并经 AppRun 注入 `LD_LIBRARY_PATH`。缺库时

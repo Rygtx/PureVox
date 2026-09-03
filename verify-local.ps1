@@ -2,17 +2,17 @@
 # Mirrors every .github/workflows/ci.yml job so the whole CI can be verified
 # locally without pushing a tag:
 #   - windows job : runs natively in PowerShell (PyInstaller bundle)
-#   - linux job   : runs inside WSL (Ubuntu-24.04) via ci_local.sh
+#   - linux job   : runs inside WSL (Ubuntu-24.04) via verify-local.sh
 #                   (smoke + deb/appimage); repo visible at /mnt/d/...,
 #                   artifacts copied back into the repo dist/.
 #   - android job : runs natively with the Windows SDK/NDK (gradlew.bat)
 # Usage:
-#   powershell -ExecutionPolicy Bypass -File ci_local.ps1              # all stages
-#   powershell -ExecutionPolicy Bypass -File ci_local.ps1 windows
-#   powershell -ExecutionPolicy Bypass -File ci_local.ps1 linux        # WSL required
-#   powershell -ExecutionPolicy Bypass -File ci_local.ps1 android
+#   powershell -ExecutionPolicy Bypass -File verify-local.ps1              # all stages
+#   powershell -ExecutionPolicy Bypass -File verify-local.ps1 windows
+#   powershell -ExecutionPolicy Bypass -File verify-local.ps1 linux        # WSL required
+#   powershell -ExecutionPolicy Bypass -File verify-local.ps1 android
 # Linux stage requirements (one-time setup):
-#           wsl -d Ubuntu-24.04 bash ./ci_local.sh sysdeps
+#           wsl -d Ubuntu-24.04 bash ./verify-local.sh sysdeps
 param(
     [Parameter(Position = 0)]
     [ValidateSet("all", "linux", "windows", "android")]
@@ -36,8 +36,8 @@ function Invoke-Windows {
     pwsh -NoProfile -ExecutionPolicy Bypass -File build_win.ps1
     if ($LASTEXITCODE -ne 0) { throw "build_win.ps1 failed" }
 
-    Write-Host "==> [windows] engine smoke test"
-    python -c "from pvengine import AudioProcessor; ap = AudioProcessor(0.0); out = ap.process([0.0] * 480); assert len(out) == 480; print('pvengine OK')"
+    Write-Host "==> [windows] engine smoke test (tools/automation/smoke.py)"
+    python tools/automation/smoke.py
     if ($LASTEXITCODE -ne 0) { throw "engine smoke failed" }
 
     Write-Host "==> [windows] done: dist/PureVox/"
@@ -47,11 +47,11 @@ $WslDistro = "Ubuntu-24.04"
 $SshArgs = @("-p", "2222", "-o", "BatchMode=yes", "-o", "ConnectTimeout=4", "dev@127.0.0.1")
 function Invoke-Linux {
     # Full Linux pipeline inside the local WSL distro (same Ubuntu family as the
-    # CI ubuntu container). ci_local.sh auto-relocates the build off /mnt/* (9p)
+    # CI ubuntu container). verify-local.sh auto-relocates the build off /mnt/* (9p)
     # into a native ext4 dir because drvfs cannot store symlinks.
-    Write-Host "==> [linux] run ci_local.sh all in WSL ($WslDistro)"
-    wsl.exe -d $WslDistro -e bash -lc "cd /mnt/d/code/projects/purevox && bash ./ci_local.sh all"
-    if ($LASTEXITCODE -ne 0) { throw "WSL ci_local.sh failed" }
+    Write-Host "==> [linux] run verify-local.sh all in WSL ($WslDistro)"
+    wsl.exe -d $WslDistro -e bash -lc "cd /mnt/d/code/projects/purevox && bash ./verify-local.sh all"
+    if ($LASTEXITCODE -ne 0) { throw "WSL verify-local.sh failed" }
     Write-Host "==> [linux] done: dist/ artifacts copied back into the repo"
 }
 
@@ -96,4 +96,4 @@ switch ($Stage) {
         Invoke-Android
     }
 }
-Write-Host "==> ci_local[$Stage] ALL DONE"
+Write-Host "==> verify-local[$Stage] ALL DONE"
