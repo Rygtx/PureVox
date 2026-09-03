@@ -94,7 +94,7 @@ jobs:
         uses: actions/cache/restore@v6
         with:
           path: ~/.cache/purevox
-          key: purevox-linux-cache-v1-cpython-3.12.14-appimagetool-x64
+          key: purevox-linux-cache-v2-cpython-3.12.14-appimagetool-x64
 
       - name: Import smoke test (pure-Python engine loads a model and denoises one frame)
         run: |
@@ -216,7 +216,7 @@ jobs:
         uses: actions/cache/save@v6
         with:
           path: ~/.cache/purevox
-          key: purevox-linux-cache-v1-cpython-3.12.14-appimagetool-x64
+          key: purevox-linux-cache-v2-cpython-3.12.14-appimagetool-x64
 
   windows:
     name: Windows (pure-Python bundle directory)

@@ -25,7 +25,7 @@ jobs:
         uses: actions/cache/restore@v6
         with:
           path: ~/.cache/purevox
-          key: purevox-linux-cache-v1-cpython-3.12.14-appimagetool-x64
+          key: purevox-linux-cache-v2-cpython-3.12.14-appimagetool-x64
 
       # 内嵌解释器 = 发行产物同款运行时（tarball 命中缓存则免下载，无编译）
       - name: Bootstrap embedded Python + pinned deps
