@@ -41,16 +41,12 @@ Set-Content _build_version.py "BUILD_DATE = `"$ver`"" -Encoding UTF8
 
 # --- PyInstaller onedir ---
 # onedir: no per-launch extraction to %TEMP%\_MEI* (onefile = +121MB temp disk & slow start)
-# Explicit collection is mandatory; excludes cut unused codec bulk (PIL._avif alone ~7.5MB).
 & $PY -m PyInstaller --noconfirm --name PureVoxLite `
     --windowed `
     --icon assets\icons\lite_tray.ico `
     --collect-all onnxruntime `
     --collect-all numpy `
-    --collect-submodules pillow `
-    --collect-data pillow `
     --hidden-import=pyaudio `
-    --exclude-module PIL._avif `
     --exclude-module torch `
     --exclude-module torchvision `
     --exclude-module torchaudio `

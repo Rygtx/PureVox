@@ -501,9 +501,8 @@ class LiteUI:
             pass
         self.root.title("PureVox Net Lite")
         self.root.configure(bg=BG)
-        # 窗口图标 = 仓库资产 assets/icons/lite_tray.png（与托盘/打包同源）
+        # 窗口图标 = 仓库资产 assets/icons/lite_tray.png（Tk 8.6+ 原生 PNG）
         try:
-            from PIL import Image, ImageTk
             _meipass = getattr(sys, "_MEIPASS", None)
             _cands = []
             if _meipass:
@@ -512,7 +511,7 @@ class LiteUI:
                 os.path.dirname(__file__), "..", "assets", "icons", "lite_tray.png")))
             _png = next((c for c in _cands if os.path.isfile(c)), None)
             if _png:
-                _photo = ImageTk.PhotoImage(Image.open(_png).convert("RGBA"))
+                _photo = tk.PhotoImage(file=_png)
                 self.root.iconphoto(False, _photo)
                 self._icon_photo = _photo
         except Exception:
@@ -726,27 +725,33 @@ class LiteUI:
         """二维码显示当前选中网络的推流页地址；点击图片可手动刷新。
         尺寸策略：目标高≈前后增益两行，向下取整到「模块数×整数倍」——
         整数倍 NEAREST 放大保证像素对齐（无模糊变形），严格正方形（无裁切），
-        且随缩放挡位（sizes 表）联动。"""
+        且随缩放挡位（sizes 表）联动。
+        渲染方式：qrcode.modules 矩阵 → PPM 内存图 → Tk PhotoImage，零 PIL 依赖。"""
         try:
             import qrcode
-            from PIL import Image, ImageTk
             if not getattr(self, "_networks", None):
                 raise ValueError("no network")
             ip = self._net_ip or self._networks[0][0]
             qr = qrcode.QRCode(border=1)
             qr.add_data(self._net_url(ip))
             qr.make(fit=True)
-            natural = qr.modules_count + 2  # border=1 两侧各 1 模块
+            natural = len(qr.modules)  # 含 border
             # 目标边长：两行控件高 + 行距（row3 外距 + 行间距），至少 64px 保证可扫
             target = max(64, int(self.sizes["ctl_h"] * 2
                                  + self.sizes["pad_md"] * 2 + self.sizes["pad_sm"] * 2))
-            # 四舍五入到最接近的整数倍：既贴近目标高度不显小，
-            # 又保持整数倍 NEAREST 放大（像素对齐、无变形）
             scale = max(2, int(round(target / natural)))
-            px = natural * scale
-            img = qr.make_image().convert("RGB").resize((px, px), Image.NEAREST)
-            self._qr_photo = ImageTk.PhotoImage(img)
-            self.lbl_qr.configure(image=self._qr_photo, text="", width=px, height=px)
+            # modules → PPM P6（RGB 像素，Tk 8.6+ 原生支持）
+            matrix = qr.modules
+            w = h = natural * scale
+            header = f"P6\n{w} {h}\n255\n".encode()
+            black = b"\x00\x00\x00"
+            white = b"\xff\xff\xff"
+            pixels = b"".join(
+                black if matrix[ry // scale][rx // scale] else white
+                for ry in range(h) for rx in range(w)
+            )
+            self._qr_photo = tk.PhotoImage(data=header + pixels)
+            self.lbl_qr.configure(image=self._qr_photo, text="", width=w, height=h)
         except Exception:
             self.lbl_qr.configure(image="", text="二维码\n不可用")
 

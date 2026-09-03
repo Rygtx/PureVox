@@ -499,9 +499,8 @@ class LiteUI:
             pass
         self.root.title("PureVox Lite")
         self.root.configure(bg=BG)
-        # 窗口图标 = 仓库资产 assets/icons/lite_tray.png（与托盘/打包同源）
+        # 窗口图标 = 仓库资产 assets/icons/lite_tray.png（Tk 8.6+ 原生 PNG）
         try:
-            from PIL import Image, ImageTk
             _meipass = getattr(sys, "_MEIPASS", None)
             _cands = []
             if _meipass:
@@ -510,7 +509,7 @@ class LiteUI:
                 os.path.dirname(__file__), "..", "assets", "icons", "lite_tray.png")))
             _png = next((c for c in _cands if os.path.isfile(c)), None)
             if _png:
-                _photo = ImageTk.PhotoImage(Image.open(_png).convert("RGBA"))
+                _photo = tk.PhotoImage(file=_png)
                 self.root.iconphoto(False, _photo)
                 self._icon_photo = _photo
         except Exception:
