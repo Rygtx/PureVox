@@ -23,7 +23,7 @@ jobs:
 
       - name: Load cache key (tools/automation/versions.env is canonical)
         run: |
-          source tools/automation/versions.env
+          . tools/automation/versions.env
           echo "LINUX_CACHE_KEY=purevox-linux-cache-${LINUX_CACHE_GEN}-cpython-${PBS_CPYTHON_VER}-appimagetool-x64" >> "$GITHUB_ENV"
 
       - name: Restore ~/.cache/purevox (read-only reuse of shared cache)

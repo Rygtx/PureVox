@@ -54,7 +54,7 @@ jobs:
       - uses: actions/checkout@v7
       - name: Load cache key (tools/automation/versions.env is canonical)
         run: |
-          source tools/automation/versions.env
+          . tools/automation/versions.env
           echo "LINUX_CACHE_KEY=purevox-linux-cache-${LINUX_CACHE_GEN}-cpython-${PBS_CPYTHON_VER}-appimagetool-x64" >> "$GITHUB_ENV"
       - name: Bootstrap embedded Python + deps
         run: ./bootstrap_python312.sh
@@ -71,7 +71,7 @@ jobs:
       - uses: actions/checkout@v7
       - name: Load cache key (tools/automation/versions.env is canonical)
         run: |
-          source tools/automation/versions.env
+          . tools/automation/versions.env
           echo "OPUS_CACHE_KEY=purevox-android-opus-src-${OPUS_VER}" >> "$GITHUB_ENV"
       - name: Download Opus source (tools/automation/ensure_opus_src.sh is canonical)
         run: bash tools/automation/ensure_opus_src.sh

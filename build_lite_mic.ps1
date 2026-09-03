@@ -5,7 +5,7 @@ $ErrorActionPreference = "Stop"
 
 # --- Version stamp: single source tools/automation/version.ps1 -Lite
 # (tag lite-v<yyyy.MM.dd.HHmm> -> ver; fallback to local UTC time) ---
-. (Join-Path (Split-Path -Parent $MyInvocation.MyCommand.Path) "tools\ci\version.ps1") -Lite
+. (Join-Path (Split-Path -Parent $MyInvocation.MyCommand.Path) "tools\automation\version.ps1") -Lite
 $ver = $VERSION
 Write-Host "Lite version: $ver"
 
