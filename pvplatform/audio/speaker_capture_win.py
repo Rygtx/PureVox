@@ -18,9 +18,14 @@
 """
 Windows 平台扬声器 loopback 采集（AEC far-end 数据源）。
 
-通过 Windows Core Audio WASAPI loopback 捕获系统播放音频。
+通过 Windows Core Audio WASAPI loopback 捕获指定渲染端点的播放音频
+（AEC far=扬声器时选定端点；不传 device_name 时回退系统默认渲染端点）。
 不走 PyAudio/PortAudio（其对 loopback 支持有限），直接用 IAudioClient
-以 AUDCLNT_STREAMFLAGS_LOOPBACK 模式打开默认渲染设备。
+以 AUDCLNT_STREAMFLAGS_LOOPBACK 模式打开端点。
+
+端点选择（device_name）与主设备选择一致：按名字相似度模糊匹配
+（device_api.best_name_match），匹配不到才回退默认端点——这样 AEC
+far=扬声器采集到的是行里所选扬声器（真实回声源），而非恒为系统默认。
 
 接口契约（与 Linux 后端一致）：
     start() -> bool / stop() / read(n) / flush()
@@ -34,10 +39,11 @@ from ctypes import wintypes, POINTER, byref, cast, c_void_p
 from typing import List, Optional, Callable
 
 from .common import RingBuffer, HOP_LENGTH, _module_log
+from .device_api import best_name_match
 
 
 class SpeakerCaptureWin:
-    """半双工扬声器采集 — WASAPI loopback（Windows 专用）。"""
+    """半双工扬声器采集 — WASAPI loopback（Windows 专用，可按名选端点）。"""
 
     # COM 接口 GUID
     _CLSID_MMDeviceEnumerator = "{BCDE0395-E52F-467C-8E3D-C4579291692E}"
@@ -50,13 +56,17 @@ class SpeakerCaptureWin:
     AUDCLNT_STREAMFLAGS_LOOPBACK = 0x00020000
     CLSCTX_ALL = 0x17
     COINIT_MULTITHREADED = 0x0
+    # 枚举掩码：DEVICE_STATE_ACTIVE
+    DEVICE_STATE_ACTIVE = 0x1
 
     # 设备检查间隔（秒）
     DEVICE_CHECK_INTERVAL = 2.0
 
     AEC_FAR_SR = 48000  # AEC model requires far-end (speaker loopback) at 48kHz
 
-    def __init__(self, on_device_changed: Optional[Callable[[int], None]] = None):
+    def __init__(self, on_device_changed: Optional[Callable[[int], None]] = None,
+                 device_name: str = ""):
+        self._wanted_name = device_name or ""
         self._buffer = RingBuffer(HOP_LENGTH * 16)  # ~160ms 缓冲，吸收 loopback 延迟抖动
         self._active = False
         self._lock = threading.Lock()
@@ -69,6 +79,7 @@ class SpeakerCaptureWin:
         self._dev_sr: int = 48000  # 强制 48kHz
         self._dev_name: str = "Unknown"
         self._current_device_name: Optional[str] = None
+        self._endpoint_id: Optional[str] = None
         # Callback when device switches: called with new dev_sr
         self._on_device_changed = on_device_changed
 
@@ -81,253 +92,342 @@ class SpeakerCaptureWin:
         """设备实际采样率（来自 WASAPI MixFormat）。"""
         return self._dev_sr
 
-    def start(self) -> bool:
-        """打开默认渲染设备的 WASAPI loopback。Returns True on success."""
+    @property
+    def device_name(self) -> str:
+        """当前实际采集端点名（诊断用）。"""
+        return self._current_device_name or self._dev_name or ""
+
+    # ── COM 小工具 ────────────────────────────────────────────────
+
+    @staticmethod
+    def _make_guid(s: str):
+        ole32 = ctypes.windll.ole32
+        buf = (ctypes.c_ubyte * 16)()
+        ole32.CLSIDFromString(s, buf)
+        return buf
+
+    @staticmethod
+    def _release_com(p: Optional[c_void_p]) -> None:
+        """调用 COM 对象 vtable[2] Release。"""
+        if p and p.value:
+            try:
+                vtbl = cast(p, POINTER(POINTER(c_void_p))).contents
+                cast(vtbl[2], ctypes.WINFUNCTYPE(ctypes.c_ulong, c_void_p))(p)
+            except Exception:
+                pass
+
+    def _friendly_name_of(self, ole32, p_device) -> str:
+        """读端点友好名（IPropertyStore PKEY_Device_FriendlyName）。"""
         try:
-            ole32 = ctypes.windll.ole32
-
-            def _make_guid(s):
-                buf = (ctypes.c_ubyte * 16)()
-                ole32.CLSIDFromString(s, buf)
-                return buf
-
-            CLSID_MMDE = _make_guid(self._CLSID_MMDeviceEnumerator)
-            IID_IMMDE = _make_guid(self._IID_IMMDeviceEnumerator)
-            IID_IMMD  = _make_guid(self._IID_IMMDevice)
-            IID_IAC   = _make_guid(self._IID_IAudioClient)
-            IID_IACC  = _make_guid(self._IID_IAudioCaptureClient)
-
-            ole32.CoInitializeEx(None, self.COINIT_MULTITHREADED)
-
-            # 1. 创建 IMMDeviceEnumerator
-            pEnum = c_void_p()
-            hr = ole32.CoCreateInstance(
-                byref(CLSID_MMDE), None, self.CLSCTX_ALL,
-                byref(IID_IMMDE), byref(pEnum))
-            if hr < 0 or not pEnum:
-                _module_log("[AEC] 无法创建 MMDeviceEnumerator")
-                return False
-
-            vtbl_enum = cast(pEnum, POINTER(POINTER(c_void_p))).contents
-
-            # 2. GetDefaultAudioEndpoint(eRender, eConsole)
-            fn_GetDefault = cast(vtbl_enum[4], ctypes.WINFUNCTYPE(
-                ctypes.c_long, c_void_p, wintypes.DWORD, wintypes.DWORD, POINTER(c_void_p)))
-            pDevice = c_void_p()
-            hr = fn_GetDefault(pEnum, 0, 0, byref(pDevice))  # eRender=0, eConsole=0
-            if hr < 0 or not pDevice:
-                _module_log("[AEC] 无法获取默认渲染设备")
-                return False
-
-            # 3. 获取设备名
-            # OpenPropertyStore → GetValue(PKEY_Device_FriendlyName)
-            vtbl_dev = cast(pDevice, POINTER(POINTER(c_void_p))).contents
+            vtbl_dev = cast(p_device, POINTER(POINTER(c_void_p))).contents
             fn_OpenPS = cast(vtbl_dev[4], ctypes.WINFUNCTYPE(
                 ctypes.c_long, c_void_p, wintypes.DWORD, POINTER(c_void_p)))
-            pStore = c_void_p()
-            dev_name = "Unknown"
-            if fn_OpenPS(pDevice, 0, byref(pStore)) == 0 and pStore:
-                # PKEY_Device_FriendlyName: {a45c254e-df1c-4efd-8020-67d146a850e0}, 14
-                pkey_fmtid = _make_guid("{a45c254e-df1c-4efd-8020-67d146a850e0}")
+            p_store = c_void_p()
+            if fn_OpenPS(p_device, 0, byref(p_store)) != 0 or not p_store:
+                return "Unknown"
+            try:
+                pkey_fmtid = self._make_guid("{a45c254e-df1c-4efd-8020-67d146a850e0}")
+
                 class PK(ctypes.Structure):
-                    _fields_ = [("fmtid", ctypes.c_ubyte*16), ("pid", wintypes.DWORD)]
+                    _fields_ = [("fmtid", ctypes.c_ubyte * 16),
+                                ("pid", wintypes.DWORD)]
                 pk = PK()
                 ctypes.memmove(pk.fmtid, pkey_fmtid, 16)
-                pk.pid = 14
-                vtbl_store = cast(pStore, POINTER(POINTER(c_void_p))).contents
+                pk.pid = 14  # PKEY_Device_FriendlyName
+                vtbl_store = cast(p_store, POINTER(POINTER(c_void_p))).contents
                 fn_GetValue = cast(vtbl_store[5], ctypes.WINFUNCTYPE(
                     ctypes.c_long, c_void_p, ctypes.c_void_p, ctypes.c_void_p))
                 pv = (ctypes.c_ubyte * 24)()
-                if fn_GetValue(pStore, byref(pk), pv) == 0:
-                    vt = ctypes.c_ushort.from_buffer(pv, 0).value
-                    if vt == 31:  # VT_LPWSTR
+                if fn_GetValue(p_store, byref(pk), pv) == 0:
+                    if ctypes.c_ushort.from_buffer(pv, 0).value == 31:  # VT_LPWSTR
                         ptr = c_void_p.from_buffer(pv, 8).value
                         if ptr:
-                            dev_name = ctypes.wstring_at(ptr)
-                # Release store
-                cast(vtbl_store[2], ctypes.WINFUNCTYPE(ctypes.c_ulong, c_void_p))(pStore)
+                            return ctypes.wstring_at(ptr)
+            finally:
+                self._release_com(p_store)
+        except Exception as e:
+            _module_log(f"[AEC] 读端点名失败: {e}")
+        return "Unknown"
 
-            # 4. Activate IAudioClient
-            fn_Activate = cast(vtbl_dev[3], ctypes.WINFUNCTYPE(
-                ctypes.c_long, c_void_p, ctypes.c_void_p, wintypes.DWORD,
-                c_void_p, POINTER(c_void_p)))
-            pAudioClient = c_void_p()
-            hr = fn_Activate(pDevice, byref(IID_IAC), self.CLSCTX_ALL,
-                             None, byref(pAudioClient))
-            if hr < 0 or not pAudioClient:
-                _module_log("[AEC] 无法激活 IAudioClient")
-                return False
+    def _endpoint_id_of(self, ole32, p_device) -> str:
+        """读端点设备 ID（IMMDevice::GetId，用于比对设备是否变更）。"""
+        try:
+            vtbl_dev = cast(p_device, POINTER(POINTER(c_void_p))).contents
+            fn_GetId = cast(vtbl_dev[5], ctypes.WINFUNCTYPE(
+                ctypes.c_long, c_void_p, POINTER(c_void_p)))
+            p_id = c_void_p()
+            if fn_GetId(p_device, byref(p_id)) == 0 and p_id.value:
+                s = ctypes.wstring_at(p_id.value)
+                ole32.CoTaskMemFree(p_id)
+                return s
+        except Exception:
+            pass
+        return ""
 
-            # 5. GetMixFormat → 获取设备原生格式
-            vtbl_ac = cast(pAudioClient, POINTER(POINTER(c_void_p))).contents
-
-            class WAVEFORMATEX(ctypes.Structure):
-                _fields_ = [
-                    ("wFormatTag",      wintypes.WORD),
-                    ("nChannels",       wintypes.WORD),
-                    ("nSamplesPerSec",  wintypes.DWORD),
-                    ("nAvgBytesPerSec", wintypes.DWORD),
-                    ("nBlockAlign",     wintypes.WORD),
-                    ("wBitsPerSample",  wintypes.WORD),
-                    ("cbSize",          wintypes.WORD),
-                ]
-            fn_GetMixFormat = cast(vtbl_ac[8], ctypes.WINFUNCTYPE(
-                ctypes.c_long, c_void_p, POINTER(ctypes.c_void_p)))
-            pWfx = ctypes.c_void_p()
-            hr = fn_GetMixFormat(pAudioClient, byref(pWfx))
-            if hr < 0 or not pWfx:
-                return False
-            wfx = cast(pWfx, POINTER(WAVEFORMATEX)).contents
-            self._dev_sr = int(wfx.nSamplesPerSec)
-            self._dev_name = dev_name
-            _module_log(f"[AEC] 扬声器采集: {dev_name} ({self._dev_sr}Hz, ch={wfx.nChannels})")
-            self._buffer = RingBuffer(HOP_LENGTH * 16)
-
-            # 6. Initialize with AUDCLNT_STREAMFLAGS_LOOPBACK
-            REFERENCE_TIME = 100000  # 10ms buffer
-            fn_Initialize = cast(vtbl_ac[3], ctypes.WINFUNCTYPE(
+    def _enumerate_render(self, ole32):
+        """枚举活动渲染端点，返回 [(friendly_name, IMMDevice*), ...]（须调用方释放）。"""
+        p_enum = c_void_p()
+        hr = ole32.CoCreateInstance(
+            byref(self._make_guid(self._CLSID_MMDeviceEnumerator)),
+            None, self.CLSCTX_ALL,
+            byref(self._make_guid(self._IID_IMMDeviceEnumerator)),
+            byref(p_enum))
+        if hr < 0 or not p_enum:
+            return []
+        try:
+            vtbl = cast(p_enum, POINTER(POINTER(c_void_p))).contents
+            fn_Enum = cast(vtbl[3], ctypes.WINFUNCTYPE(
                 ctypes.c_long, c_void_p, wintypes.DWORD, wintypes.DWORD,
-                ctypes.c_longlong, ctypes.c_longlong, ctypes.c_void_p, ctypes.c_void_p))
-            hr = fn_Initialize(
-                pAudioClient,
-                self.AUDCLNT_SHAREMODE_SHARED,
-                self.AUDCLNT_STREAMFLAGS_LOOPBACK,
-                REFERENCE_TIME, 0,
-                pWfx, None)
-            ole32.CoTaskMemFree(pWfx)
-            if hr < 0:
-                _module_log(f"[AEC] IAudioClient::Initialize failed: 0x{hr:08X}")
+                POINTER(c_void_p)))
+            p_coll = c_void_p()
+            hr = fn_Enum(p_enum, 0, self.DEVICE_STATE_ACTIVE, byref(p_coll))  # eRender
+            if hr < 0 or not p_coll:
+                return []
+            try:
+                vtbl_c = cast(p_coll, POINTER(POINTER(c_void_p))).contents
+                fn_Count = cast(vtbl_c[3], ctypes.WINFUNCTYPE(
+                    ctypes.c_long, c_void_p, POINTER(wintypes.DWORD)))
+                fn_Item = cast(vtbl_c[4], ctypes.WINFUNCTYPE(
+                    ctypes.c_long, c_void_p, wintypes.DWORD, POINTER(c_void_p)))
+                n = wintypes.DWORD()
+                if fn_Count(p_coll, byref(n)) < 0:
+                    return []
+                out = []
+                for i in range(n.value):
+                    p_dev = c_void_p()
+                    if fn_Item(p_coll, i, byref(p_dev)) < 0 or not p_dev:
+                        continue
+                    name = self._friendly_name_of(ole32, p_dev)
+                    if name and name != "Unknown":
+                        out.append((name, p_dev))
+                    else:
+                        self._release_com(p_dev)
+                return out
+            finally:
+                self._release_com(p_coll)
+        finally:
+            self._release_com(p_enum)
+
+    def _resolve_endpoint(self, ole32) -> c_void_p:
+        """按 device_name 模糊匹配活动渲染端点；未命中回退默认渲染端点。
+
+        返回持有引用的 IMMDevice*（调用方负责 Release），失败返回空指针。
+        """
+        if self._wanted_name:
+            try:
+                ends = self._enumerate_render(ole32)
+            except Exception as e:
+                _module_log(f"[AEC] 端点枚举失败: {e}")
+                ends = []
+            if ends:
+                names = [n for n, _ in ends]
+                chosen = best_name_match(self._wanted_name, names)
+                if chosen is not None:
+                    for n, p_dev in ends:
+                        if n == chosen:
+                            _module_log(f"[AEC] 回环端点（按名匹配）: {chosen}")
+                            return p_dev
+                        self._release_com(p_dev)
+                    # 理论不可达（chosen 来自 names）；继续回退默认
+                else:
+                    _module_log(f"[AEC] 端点 {self._wanted_name!r} 未匹配到活动端点，"
+                                f"回退默认渲染设备")
+                    for _, p_dev in ends:
+                        self._release_com(p_dev)
+        # 默认端点
+        p_enum = c_void_p()
+        hr = ole32.CoCreateInstance(
+            byref(self._make_guid(self._CLSID_MMDeviceEnumerator)),
+            None, self.CLSCTX_ALL,
+            byref(self._make_guid(self._IID_IMMDeviceEnumerator)),
+            byref(p_enum))
+        if hr < 0 or not p_enum:
+            return c_void_p()
+        try:
+            vtbl = cast(p_enum, POINTER(POINTER(c_void_p))).contents
+            fn_GetDefault = cast(vtbl[4], ctypes.WINFUNCTYPE(
+                ctypes.c_long, c_void_p, wintypes.DWORD, wintypes.DWORD,
+                POINTER(c_void_p)))
+            p_dev = c_void_p()
+            hr = fn_GetDefault(p_enum, 0, 0, byref(p_dev))  # eRender, eConsole
+            if hr < 0 or not p_dev:
+                _module_log("[AEC] 无法获取默认渲染设备")
+                return c_void_p()
+            return p_dev
+        finally:
+            self._release_com(p_enum)
+
+    # ── 打开/重启 ────────────────────────────────────────────────
+
+    def _open_impl(self) -> bool:
+        """打开目标渲染端点的 WASAPI loopback 并开始采集（不启动线程）。
+
+        start() 与 _restart_capture()（设备变更重连）共用此实现，避免
+        start/restart 两套端点解析漂移。
+        """
+        try:
+            ole32 = ctypes.windll.ole32
+            ole32.CoInitializeEx(None, self.COINIT_MULTITHREADED)
+
+            p_device = self._resolve_endpoint(ole32)
+            if not p_device or not p_device.value:
+                _module_log("[AEC] 无法解析回环端点")
                 return False
+            try:
+                dev_name = self._friendly_name_of(ole32, p_device)
+                dev_id = self._endpoint_id_of(ole32, p_device)
 
-            # 7. GetService -> IAudioCaptureClient
-            fn_GetService = cast(vtbl_ac[14], ctypes.WINFUNCTYPE(
-                ctypes.c_long, c_void_p, ctypes.c_void_p, POINTER(c_void_p)))
-            pCaptureClient = c_void_p()
-            hr = fn_GetService(pAudioClient, byref(IID_IACC), byref(pCaptureClient))
-            if hr < 0 or not pCaptureClient:
-                _module_log("[AEC] failed to get IAudioCaptureClient")
-                return False
+                vtbl_dev = cast(p_device, POINTER(POINTER(c_void_p))).contents
 
-            # 8. Start
-            fn_Start = cast(vtbl_ac[10], ctypes.WINFUNCTYPE(
-                ctypes.c_long, c_void_p))
-            hr = fn_Start(pAudioClient)
-            if hr < 0:
-                _module_log("[AEC] IAudioClient::Start failed")
-                return False
+                # Activate IAudioClient
+                fn_Activate = cast(vtbl_dev[3], ctypes.WINFUNCTYPE(
+                    ctypes.c_long, c_void_p, c_void_p, wintypes.DWORD,
+                    c_void_p, POINTER(c_void_p)))
+                p_ac = c_void_p()
+                hr = fn_Activate(p_device, byref(self._make_guid(self._IID_IAudioClient)),
+                                 self.CLSCTX_ALL, None, byref(p_ac))
+                if hr < 0 or not p_ac:
+                    _module_log("[AEC] 无法激活 IAudioClient")
+                    return False
 
-            self._audio_client = pAudioClient
-            self._capture_client = pCaptureClient
-            self._dev_name = dev_name
+                # GetMixFormat → 设备原生格式（采样率 + 声道数）
+                vtbl_ac = cast(p_ac, POINTER(POINTER(c_void_p))).contents
 
-            # Release COM objects no longer needed
-            cast(vtbl_dev[2], ctypes.WINFUNCTYPE(ctypes.c_ulong, c_void_p))(pDevice)
-            cast(vtbl_enum[2], ctypes.WINFUNCTYPE(ctypes.c_ulong, c_void_p))(pEnum)
+                class WAVEFORMATEX(ctypes.Structure):
+                    _fields_ = [
+                        ("wFormatTag",      wintypes.WORD),
+                        ("nChannels",       wintypes.WORD),
+                        ("nSamplesPerSec",  wintypes.DWORD),
+                        ("nAvgBytesPerSec", wintypes.DWORD),
+                        ("nBlockAlign",     wintypes.WORD),
+                        ("wBitsPerSample",  wintypes.WORD),
+                        ("cbSize",          wintypes.WORD),
+                    ]
+                fn_GetMixFormat = cast(vtbl_ac[8], ctypes.WINFUNCTYPE(
+                    ctypes.c_long, c_void_p, POINTER(ctypes.c_void_p)))
+                p_wfx = ctypes.c_void_p()
+                hr = fn_GetMixFormat(p_ac, byref(p_wfx))
+                if hr < 0 or not p_wfx:
+                    self._release_com(p_ac)
+                    return False
+                wfx = cast(p_wfx, POINTER(WAVEFORMATEX)).contents
+                self._dev_sr = int(wfx.nSamplesPerSec)
+                self._dev_ch = max(1, int(wfx.nChannels))
+                _module_log(f"[AEC] 扬声器采集: {dev_name} ({self._dev_sr}Hz, "
+                            f"ch={self._dev_ch})")
+                self._buffer = RingBuffer(HOP_LENGTH * 16)
 
-            self._active = True
-            self._current_device_name = dev_name
+                # Initialize with AUDCLNT_STREAMFLAGS_LOOPBACK
+                REFERENCE_TIME = 100000  # 10ms buffer
+                fn_Initialize = cast(vtbl_ac[3], ctypes.WINFUNCTYPE(
+                    ctypes.c_long, c_void_p, wintypes.DWORD, wintypes.DWORD,
+                    ctypes.c_longlong, ctypes.c_longlong, c_void_p, c_void_p))
+                hr = fn_Initialize(
+                    p_ac, self.AUDCLNT_SHAREMODE_SHARED,
+                    self.AUDCLNT_STREAMFLAGS_LOOPBACK,
+                    REFERENCE_TIME, 0, p_wfx, None)
+                ole32.CoTaskMemFree(p_wfx)
+                if hr < 0:
+                    _module_log(f"[AEC] IAudioClient::Initialize failed: 0x{hr:08X}")
+                    self._release_com(p_ac)
+                    return False
 
-            # 9. Start capture thread
-            self._capture_thread = threading.Thread(target=self._capture_loop, daemon=True)
-            self._capture_thread.start()
+                # GetService → IAudioCaptureClient
+                fn_GetService = cast(vtbl_ac[14], ctypes.WINFUNCTYPE(
+                    ctypes.c_long, c_void_p, c_void_p, POINTER(c_void_p)))
+                p_cc = c_void_p()
+                hr = fn_GetService(p_ac, byref(self._make_guid(self._IID_IAudioCaptureClient)),
+                                   byref(p_cc))
+                if hr < 0 or not p_cc:
+                    _module_log("[AEC] failed to get IAudioCaptureClient")
+                    self._release_com(p_ac)
+                    return False
 
-            # 10. Start device monitor thread
-            self._device_check_thread = threading.Thread(target=self._device_check_loop, daemon=True)
-            self._device_check_thread.start()
+                fn_Start = cast(vtbl_ac[10], ctypes.WINFUNCTYPE(
+                    ctypes.c_long, c_void_p))
+                if fn_Start(p_ac) < 0:
+                    _module_log("[AEC] IAudioClient::Start failed")
+                    self._release_com(p_cc)
+                    self._release_com(p_ac)
+                    return False
 
-            return True
-
+                self._audio_client = p_ac
+                self._capture_client = p_cc
+                self._dev_name = dev_name
+                self._current_device_name = dev_name
+                self._endpoint_id = dev_id
+                return True
+            finally:
+                self._release_com(p_device)
         except Exception as e:
             import traceback
             _module_log(f"[AEC] speaker capture failed: {e}")
             _module_log(traceback.format_exc())
-            self._active = False
             return False
 
-    def _get_default_device_name(self) -> Optional[str]:
-        """获取当前默认渲染设备名称"""
+    def start(self) -> bool:
+        """打开选定渲染设备 loopback（device_name 未传/未命中时用默认）。
+        Returns True on success."""
+        if self._active:
+            return True
+        if not self._open_impl():
+            self._active = False
+            return False
+        self._active = True
+
+        # 采集线程 + 设备监听线程（端点变更自动重连）
+        self._capture_thread = threading.Thread(target=self._capture_loop, daemon=True)
+        self._capture_thread.start()
+        self._device_check_thread = threading.Thread(target=self._device_check_loop, daemon=True)
+        self._device_check_thread.start()
+        return True
+
+    def _restart_capture(self) -> bool:
+        """重新初始化采集（不启动新的监听线程，供设备变更重连调用）。"""
+        try:
+            with self._lock:
+                self._stop_capture_internal()
+            return self._open_impl()
+        except Exception as e:
+            _module_log(f"[AEC] restart capture failed: {e}")
+            return False
+
+    # ── 设备变更监听 ─────────────────────────────────────────────
+
+    def _expected_endpoint_name(self) -> Optional[str]:
+        """当前应采集的端点名（按 device_name 重新解析；无则读默认端点）。
+
+        仅用于比对设备是否变更（device_name 语义下 = 目标名仍解析到
+        同一端点；默认语义下 = 系统默认端点是否切换）。
+        """
         try:
             ole32 = ctypes.windll.ole32
             ole32.CoInitializeEx(None, self.COINIT_MULTITHREADED)
-
-            def _make_guid(s):
-                buf = (ctypes.c_ubyte * 16)()
-                ole32.CLSIDFromString(s, buf)
-                return buf
-
-            CLSID_MMDE = _make_guid(self._CLSID_MMDeviceEnumerator)
-            IID_IMMDE = _make_guid(self._IID_IMMDeviceEnumerator)
-
-            pEnum = c_void_p()
-            hr = ole32.CoCreateInstance(
-                byref(CLSID_MMDE), None, self.CLSCTX_ALL,
-                byref(IID_IMMDE), byref(pEnum))
-            if hr < 0 or not pEnum:
+            p_dev = self._resolve_endpoint(ole32)
+            if not p_dev or not p_dev.value:
                 return None
-
-            vtbl_enum = cast(pEnum, POINTER(POINTER(c_void_p))).contents
-
-            fn_GetDefault = cast(vtbl_enum[4], ctypes.WINFUNCTYPE(
-                ctypes.c_long, c_void_p, wintypes.DWORD, wintypes.DWORD, POINTER(c_void_p)))
-            pDevice = c_void_p()
-            hr = fn_GetDefault(pEnum, 0, 0, byref(pDevice))
-            if hr < 0 or not pDevice:
-                cast(vtbl_enum[2], ctypes.WINFUNCTYPE(ctypes.c_ulong, c_void_p))(pEnum)
-                return None
-
-            vtbl_dev = cast(pDevice, POINTER(POINTER(c_void_p))).contents
-            fn_OpenPS = cast(vtbl_dev[4], ctypes.WINFUNCTYPE(
-                ctypes.c_long, c_void_p, wintypes.DWORD, POINTER(c_void_p)))
-            pStore = c_void_p()
-            dev_name = None
-
-            if fn_OpenPS(pDevice, 0, byref(pStore)) == 0 and pStore:
-                pkey_fmtid = _make_guid("{a45c254e-df1c-4efd-8020-67d146a850e0}")
-                class PK(ctypes.Structure):
-                    _fields_ = [("fmtid", ctypes.c_ubyte*16), ("pid", wintypes.DWORD)]
-                pk = PK()
-                ctypes.memmove(pk.fmtid, pkey_fmtid, 16)
-                pk.pid = 14
-                vtbl_store = cast(pStore, POINTER(POINTER(c_void_p))).contents
-                fn_GetValue = cast(vtbl_store[5], ctypes.WINFUNCTYPE(
-                    ctypes.c_long, c_void_p, ctypes.c_void_p, ctypes.c_void_p))
-                pv = (ctypes.c_ubyte * 24)()
-                if fn_GetValue(pStore, byref(pk), pv) == 0:
-                    vt = ctypes.c_ushort.from_buffer(pv, 0).value
-                    if vt == 31:  # VT_LPWSTR
-                        ptr = c_void_p.from_buffer(pv, 8).value
-                        if ptr:
-                            dev_name = ctypes.wstring_at(ptr)
-                cast(vtbl_store[2], ctypes.WINFUNCTYPE(ctypes.c_ulong, c_void_p))(pStore)
-
-            cast(vtbl_dev[2], ctypes.WINFUNCTYPE(ctypes.c_ulong, c_void_p))(pDevice)
-            cast(vtbl_enum[2], ctypes.WINFUNCTYPE(ctypes.c_ulong, c_void_p))(pEnum)
-
-            return dev_name
+            try:
+                return self._friendly_name_of(ole32, p_dev)
+            finally:
+                self._release_com(p_dev)
         except Exception:
             return None
 
     def _device_check_loop(self) -> None:
-        """后台线程：定期检查默认设备是否变化，如果变化则自动重新连接"""
+        """后台线程：定期检查目标端点是否变化，变化则自动重新连接。"""
         while self._active:
             try:
                 time.sleep(self.DEVICE_CHECK_INTERVAL)
-
                 if not self._active:
                     break
 
-                new_device_name = self._get_default_device_name()
+                new_device_name = self._expected_endpoint_name()
                 if new_device_name and new_device_name != self._current_device_name:
-                    _module_log(f"[AEC] device changed: {self._current_device_name} -> {new_device_name}")
-
-                    # Stop old capture (but keep monitor thread)
-                    with self._lock:
-                        self._stop_capture_internal()
-
-                    # Reinitialize capture (don't start new monitor thread)
+                    _module_log(f"[AEC] device changed: {self._current_device_name} "
+                                f"-> {new_device_name}")
                     if self._restart_capture():
-                        _module_log(f"[AEC] device switched: {self._dev_name} (sr={self._dev_sr}Hz)")
-                        # Notify parent to update far-end sample rate
+                        _module_log(f"[AEC] device switched: {self._dev_name} "
+                                    f"(sr={self._dev_sr}Hz)")
                         if self._on_device_changed:
                             try:
                                 self._on_device_changed(self._dev_sr)
@@ -335,202 +435,78 @@ class SpeakerCaptureWin:
                                 pass
                     else:
                         _module_log(f"[AEC] device switch failed")
-
             except Exception as e:
                 _module_log(f"[AEC] device check error: {e}")
                 time.sleep(1.0)
 
-    def _restart_capture(self) -> bool:
-        """重新初始化采集（不启动新的监听线程）"""
-        try:
-            ole32 = ctypes.windll.ole32
-            ole32.CoInitializeEx(None, self.COINIT_MULTITHREADED)
-
-            def _make_guid(s):
-                buf = (ctypes.c_ubyte * 16)()
-                ole32.CLSIDFromString(s, buf)
-                return buf
-
-            CLSID_MMDE = _make_guid(self._CLSID_MMDeviceEnumerator)
-            IID_IMMDE = _make_guid(self._IID_IMMDeviceEnumerator)
-            IID_IMMD  = _make_guid(self._IID_IMMDevice)
-            IID_IAC   = _make_guid(self._IID_IAudioClient)
-            IID_IACC  = _make_guid(self._IID_IAudioCaptureClient)
-
-            pEnum = c_void_p()
-            hr = ole32.CoCreateInstance(
-                byref(CLSID_MMDE), None, self.CLSCTX_ALL,
-                byref(IID_IMMDE), byref(pEnum))
-            if hr < 0 or not pEnum:
-                return False
-
-            vtbl_enum = cast(pEnum, POINTER(POINTER(c_void_p))).contents
-
-            fn_GetDefault = cast(vtbl_enum[4], ctypes.WINFUNCTYPE(
-                ctypes.c_long, c_void_p, wintypes.DWORD, wintypes.DWORD, POINTER(c_void_p)))
-            pDevice = c_void_p()
-            hr = fn_GetDefault(pEnum, 0, 0, byref(pDevice))
-            if hr < 0 or not pDevice:
-                cast(vtbl_enum[2], ctypes.WINFUNCTYPE(ctypes.c_ulong, c_void_p))(pEnum)
-                return False
-
-            vtbl_dev = cast(pDevice, POINTER(POINTER(c_void_p))).contents
-            fn_OpenPS = cast(vtbl_dev[4], ctypes.WINFUNCTYPE(
-                ctypes.c_long, c_void_p, wintypes.DWORD, POINTER(c_void_p)))
-            pStore = c_void_p()
-            dev_name = "Unknown"
-
-            if fn_OpenPS(pDevice, 0, byref(pStore)) == 0 and pStore:
-                pkey_fmtid = _make_guid("{a45c254e-df1c-4efd-8020-67d146a850e0}")
-                class PK(ctypes.Structure):
-                    _fields_ = [("fmtid", ctypes.c_ubyte*16), ("pid", wintypes.DWORD)]
-                pk = PK()
-                ctypes.memmove(pk.fmtid, pkey_fmtid, 16)
-                pk.pid = 14
-                vtbl_store = cast(pStore, POINTER(POINTER(c_void_p))).contents
-                fn_GetValue = cast(vtbl_store[5], ctypes.WINFUNCTYPE(
-                    ctypes.c_long, c_void_p, ctypes.c_void_p, ctypes.c_void_p))
-                pv = (ctypes.c_ubyte * 24)()
-                if fn_GetValue(pStore, byref(pk), pv) == 0:
-                    vt = ctypes.c_ushort.from_buffer(pv, 0).value
-                    if vt == 31:
-                        ptr = c_void_p.from_buffer(pv, 8).value
-                        if ptr:
-                            dev_name = ctypes.wstring_at(ptr)
-                cast(vtbl_store[2], ctypes.WINFUNCTYPE(ctypes.c_ulong, c_void_p))(pStore)
-
-            fn_Activate = cast(vtbl_dev[3], ctypes.WINFUNCTYPE(
-                ctypes.c_long, c_void_p, ctypes.c_void_p, wintypes.DWORD,
-                c_void_p, POINTER(c_void_p)))
-            pAudioClient = c_void_p()
-            hr = fn_Activate(pDevice, byref(IID_IAC), self.CLSCTX_ALL,
-                             None, byref(pAudioClient))
-            if hr < 0 or not pAudioClient:
-                cast(vtbl_dev[2], ctypes.WINFUNCTYPE(ctypes.c_ulong, c_void_p))(pDevice)
-                cast(vtbl_enum[2], ctypes.WINFUNCTYPE(ctypes.c_ulong, c_void_p))(pEnum)
-                return False
-
-            vtbl_ac = cast(pAudioClient, POINTER(POINTER(c_void_p))).contents
-
-            # 获取 MixFormat
-            class WAVEFORMATEX(ctypes.Structure):
-                _fields_ = [
-                    ("wFormatTag",      wintypes.WORD),
-                    ("nChannels",       wintypes.WORD),
-                    ("nSamplesPerSec",  wintypes.DWORD),
-                    ("nAvgBytesPerSec", wintypes.DWORD),
-                    ("nBlockAlign",     wintypes.WORD),
-                    ("wBitsPerSample",  wintypes.WORD),
-                    ("cbSize",          wintypes.WORD),
-                ]
-            fn_GetMixFormat = cast(vtbl_ac[8], ctypes.WINFUNCTYPE(
-                ctypes.c_long, c_void_p, POINTER(ctypes.c_void_p)))
-            pWfx = ctypes.c_void_p()
-            hr = fn_GetMixFormat(pAudioClient, byref(pWfx))
-            if hr < 0 or not pWfx:
-                cast(vtbl_dev[2], ctypes.WINFUNCTYPE(ctypes.c_ulong, c_void_p))(pDevice)
-                cast(vtbl_enum[2], ctypes.WINFUNCTYPE(ctypes.c_ulong, c_void_p))(pEnum)
-                return False
-            wfx = cast(pWfx, POINTER(WAVEFORMATEX)).contents
-            self._dev_sr = int(wfx.nSamplesPerSec)
-            self._dev_name = dev_name
-            self._current_device_name = dev_name
-
-            REFERENCE_TIME = 100000  # 10ms buffer
-            fn_Initialize = cast(vtbl_ac[3], ctypes.WINFUNCTYPE(
-                ctypes.c_long, c_void_p, wintypes.DWORD, wintypes.DWORD,
-                ctypes.c_longlong, ctypes.c_longlong, ctypes.c_void_p, ctypes.c_void_p))
-            hr = fn_Initialize(
-                pAudioClient,
-                self.AUDCLNT_SHAREMODE_SHARED,
-                self.AUDCLNT_STREAMFLAGS_LOOPBACK,
-                REFERENCE_TIME, 0,
-                pWfx, None)
-            ole32.CoTaskMemFree(pWfx)
-
-            fn_GetService = cast(vtbl_ac[14], ctypes.WINFUNCTYPE(
-                ctypes.c_long, c_void_p, ctypes.c_void_p, POINTER(c_void_p)))
-            pCaptureClient = c_void_p()
-            hr = fn_GetService(pAudioClient, byref(IID_IACC), byref(pCaptureClient))
-            if hr < 0 or not pCaptureClient:
-                cast(vtbl_dev[2], ctypes.WINFUNCTYPE(ctypes.c_ulong, c_void_p))(pDevice)
-                cast(vtbl_enum[2], ctypes.WINFUNCTYPE(ctypes.c_ulong, c_void_p))(pEnum)
-                return False
-
-            fn_Start = cast(vtbl_ac[10], ctypes.WINFUNCTYPE(
-                ctypes.c_long, c_void_p))
-            hr = fn_Start(pAudioClient)
-            if hr < 0:
-                cast(vtbl_dev[2], ctypes.WINFUNCTYPE(ctypes.c_ulong, c_void_p))(pDevice)
-                cast(vtbl_enum[2], ctypes.WINFUNCTYPE(ctypes.c_ulong, c_void_p))(pEnum)
-                return False
-
-            self._audio_client = pAudioClient
-            self._capture_client = pCaptureClient
-
-            cast(vtbl_dev[2], ctypes.WINFUNCTYPE(ctypes.c_ulong, c_void_p))(pDevice)
-            cast(vtbl_enum[2], ctypes.WINFUNCTYPE(ctypes.c_ulong, c_void_p))(pEnum)
-
-            return True
-
-        except Exception as e:
-            _module_log(f"[AEC] restart capture failed: {e}")
-            return False
+    # ── 数据面 ───────────────────────────────────────────────────
 
     def _stop_capture_internal(self) -> None:
         """内部方法：停止采集（不停监听线程）"""
         if self._audio_client:
             try:
-                vtbl_ac = ctypes.cast(self._audio_client, ctypes.POINTER(ctypes.POINTER(ctypes.c_void_p))).contents
-                fn_Stop = ctypes.cast(vtbl_ac[11], ctypes.WINFUNCTYPE(ctypes.c_long, ctypes.c_void_p))
+                vtbl_ac = ctypes.cast(self._audio_client,
+                                      ctypes.POINTER(ctypes.POINTER(ctypes.c_void_p))).contents
+                fn_Stop = ctypes.cast(vtbl_ac[11], ctypes.WINFUNCTYPE(
+                    ctypes.c_long, ctypes.c_void_p))
                 fn_Stop(self._audio_client)
-                fn_Rel = ctypes.cast(vtbl_ac[2], ctypes.WINFUNCTYPE(ctypes.c_ulong, ctypes.c_void_p))
-                fn_Rel(self._audio_client)
+                self._release_com(self._audio_client)
             except Exception:
                 pass
             self._audio_client = None
         self._capture_client = None
 
     def _capture_loop(self) -> None:
-        """后台线程：持续从 IAudioCaptureClient 读取并写入 RingBuffer。"""
+        """后台线程：持续从 IAudioCaptureClient 读取并写入 RingBuffer。
+
+        每次循环从 self._capture_client 取当前采集客户端——设备变更重连
+        （_restart_capture 换新 client）后自动跟随新指针，不在旧已释放
+        对象上继续调用。
+        """
         import struct
 
-        vtbl_cc = cast(self._capture_client, POINTER(POINTER(c_void_p))).contents
-        fn_GetBuffer = cast(vtbl_cc[3], ctypes.WINFUNCTYPE(
-            ctypes.c_long, c_void_p,
-            POINTER(ctypes.POINTER(ctypes.c_ubyte)),     # BYTE **ppData
-            POINTER(wintypes.DWORD),                      # UINT32 *pNumFramesToRead
-            POINTER(wintypes.DWORD),                      # DWORD *pdwFlags
-            POINTER(ctypes.c_uint64),                     # UINT64 *pu64DevicePosition
-            POINTER(ctypes.c_uint64)))                    # UINT64 *pu64QPCPosition
-        fn_ReleaseBuffer = cast(vtbl_cc[4], ctypes.WINFUNCTYPE(
-            ctypes.c_long, c_void_p, wintypes.DWORD))
+        last_cc = None
+        fn_GetBuffer = fn_ReleaseBuffer = None
+
+        def _bind(cc):
+            vtbl_cc = cast(cc, POINTER(POINTER(c_void_p))).contents
+            gb = cast(vtbl_cc[3], ctypes.WINFUNCTYPE(
+                ctypes.c_long, c_void_p,
+                POINTER(ctypes.POINTER(ctypes.c_ubyte)),     # BYTE **ppData
+                POINTER(wintypes.DWORD),                      # UINT32 *pNumFramesToRead
+                POINTER(wintypes.DWORD),                      # DWORD *pdwFlags
+                POINTER(ctypes.c_uint64),                     # UINT64 *pu64DevicePosition
+                POINTER(ctypes.c_uint64)))                    # UINT64 *pu64QPCPosition
+            rb = cast(vtbl_cc[4], ctypes.WINFUNCTYPE(
+                ctypes.c_long, c_void_p, wintypes.DWORD))
+            return gb, rb
 
         while self._active:
             try:
-                pData = ctypes.POINTER(ctypes.c_ubyte)()
-                numFrames = wintypes.DWORD()
+                cc = self._capture_client
+                if cc is None or not cc.value:
+                    time.sleep(0.005)
+                    continue
+                if cc is not last_cc:
+                    last_cc = cc
+                    fn_GetBuffer, fn_ReleaseBuffer = _bind(cc)
+                p_data = ctypes.POINTER(ctypes.c_ubyte)()
+                num_frames = wintypes.DWORD()
                 flags = wintypes.DWORD()
-                devPos = ctypes.c_uint64()
-                qpcPos = ctypes.c_uint64()
-                hr = fn_GetBuffer(self._capture_client, byref(pData),
-                                  byref(numFrames), byref(flags),
-                                  byref(devPos), byref(qpcPos))
-                if hr < 0 or numFrames.value == 0:
-                    if hr != 0x88890008:  # AUDCLNT_S_BUFFER_EMPTY, normal
-                        pass
+                hr = fn_GetBuffer(cc, byref(p_data),
+                                  byref(num_frames), byref(flags),
+                                  byref(ctypes.c_uint64()), byref(ctypes.c_uint64()))
+                if hr < 0 or num_frames.value == 0:
                     time.sleep(0.001)
                     continue
 
-                # Read audio data: float32 interleaved format
-                frame_count = numFrames.value
+                frame_count = num_frames.value
                 ch = self._dev_ch
-                fmt = f'{frame_count * ch}f'
-                raw = list(struct.unpack(fmt, bytes(pData[:frame_count * ch * 4])))
+                n_floats = frame_count * ch
+                raw = list(struct.unpack(f"{n_floats}f",
+                                         bytes(p_data[:n_floats * 4])))
+                fn_ReleaseBuffer(cc, num_frames)
 
-                fn_ReleaseBuffer(self._capture_client, numFrames)
-
-                # Downmix to mono
                 if ch > 1:
                     mono = [0.0] * frame_count
                     for i in range(frame_count):
@@ -549,28 +525,15 @@ class SpeakerCaptureWin:
         """停止 loopback 采集。"""
         self._active = False
 
-        # Stop device monitor thread
         if self._device_check_thread:
             self._device_check_thread.join(timeout=1.0)
             self._device_check_thread = None
-
-        # Stop capture thread
         if self._capture_thread:
             self._capture_thread.join(timeout=1.0)
             self._capture_thread = None
 
-        # Release audio client
-        if self._audio_client:
-            try:
-                vtbl_ac = ctypes.cast(self._audio_client, ctypes.POINTER(ctypes.POINTER(ctypes.c_void_p))).contents
-                fn_Stop = ctypes.cast(vtbl_ac[11], ctypes.WINFUNCTYPE(ctypes.c_long, ctypes.c_void_p))
-                fn_Stop(self._audio_client)
-                fn_Rel = ctypes.cast(vtbl_ac[2], ctypes.WINFUNCTYPE(ctypes.c_ulong, ctypes.c_void_p))
-                fn_Rel(self._audio_client)
-            except Exception:
-                pass
-            self._audio_client = None
-        self._capture_client = None
+        with self._lock:
+            self._stop_capture_internal()
 
     def available(self) -> int:
         """缓冲区当前可用采样数。"""

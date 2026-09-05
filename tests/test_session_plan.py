@@ -146,8 +146,9 @@ def test_aec_row_is_input():
     ])
     assert plan.ok(), plan.problems
     assert plan.inputs == ("Mic",)
-    assert plan.aec_rows == ({"mic": "Mic", "far_gain_db": 0.0,
-                              "far_kind": "speaker", "far_device": "Spk"},)
+    assert plan.aec_rows == ({"mic": "Mic", "far_gain_db": -20.0,
+                              "far_kind": "speaker", "far_device": "Spk",
+                              "far_delay_ms": 0.0},)
     assert plan.aec_far_mics == ()
     print("  AEC 行计入输入、行配置抽取正确  OK")
 

@@ -99,7 +99,7 @@ def test_aec_row_far_direct():
             return np.asarray(far, dtype=np.float32), cache
 
     aec_row_mod.get_shared_engine = lambda p: _EchoFar()
-    row = AecRow("dummy.onnx", far_sample_rate=48000)
+    row = AecRow("dummy.onnx", far_sample_rate=48000, far_gain_db=0.0)
     for _ in range(12):
         row.push_far([0.3] * HOP)
     out = row.process_mic([0.0] * HOP)

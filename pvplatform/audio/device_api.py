@@ -59,6 +59,74 @@ API_NETWORK = 99
 API_PIPEWIRE = 98
 
 
+# 名字相似度模糊匹配的最低命中分数（best_name_match 兜底段）
+FUZZY_NAME_MIN_SIM = 0.6
+
+
+def normalize_device_name(name: str) -> str:
+    """设备名归一化（用于比较）：转小写 + 字母数字 token 化 + 空白规整。
+
+    PortAudio / WASAPI / PipeWire 同设备的显示名常有大小写、括号、
+    厂商前缀差异（如 "Speakers (Realtek(R) Audio)" 与 "扬声器
+    (Realtek(R) Audio)"）；归一化后比较只关心实质词，便于跨来源匹配。
+    """
+    import re
+    if not name:
+        return ""
+    # 丢弃单字符 token（(R)/“(A)” 等注册标记噪音），避免干扰词序相似度
+    toks = [t for t in re.findall(r"\w+", name.lower()) if len(t) >= 2]
+    return " ".join(toks)
+
+
+def name_similarity(a: str, b: str) -> float:
+    """两个设备名的相似度（0~1）。综合 difflib 序列比 + token 重叠 + 前缀包含。"""
+    na = normalize_device_name(a)
+    nb = normalize_device_name(b)
+    if not na or not nb:
+        return 0.0
+    if na == nb:
+        return 1.0
+    import difflib
+    ratio = difflib.SequenceMatcher(None, na, nb).ratio()
+    ta, tb = set(na.split()), set(nb.split())
+    if ta or tb:
+        overlap = 2.0 * len(ta & tb) / (len(ta) + len(tb))
+    else:
+        overlap = 0.0
+    prefix = 0.9 if (na.startswith(nb) or nb.startswith(na)) else 0.0
+    return max(ratio, overlap * 0.85, prefix)
+
+
+def best_name_match(name: str, candidates) -> str:
+    """在候选设备名里按名字相似度选最佳匹配（主设备选择与 AEC 校准共用）。
+
+    顺序：归一化精确 → 前缀包含 → 相似度 ≥ FUZZY_NAME_MIN_SIM 的最高分。
+    全部不命中返回 None（调用方自定回退策略，如首个设备 / 默认端点）。
+    """
+    if not name or not candidates:
+        return None
+    cands = [c for c in candidates if c]
+    if not cands:
+        return None
+    na = normalize_device_name(name)
+    if not na:
+        return cands[0]
+    for c in cands:
+        if normalize_device_name(c) == na:
+            return c
+    for c in cands:
+        nc = normalize_device_name(c)
+        if nc.startswith(na):
+            return c
+    best = None
+    best_s = FUZZY_NAME_MIN_SIM
+    for c in cands:
+        s = name_similarity(name, c)
+        if s > best_s:
+            best, best_s = c, s
+    return best
+
+
 def fix_device_name(name: str) -> str:
     """修复 PortAudio 在中文 Windows 上返回的乱码设备名。
 

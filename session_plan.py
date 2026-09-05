@@ -104,10 +104,7 @@ class SessionPlan:
                     if not dev:
                         warnings.append("「回声消除」未选麦克风设备，该行已跳过")
                         continue
-                    try:
-                        far_gain = float(params.get("far_gain_db", 0.0))
-                    except (TypeError, ValueError):
-                        far_gain = 0.0
+                    far_gain = -20.0
                     far_kind = str(params.get("far_kind", "") or "").strip()
                     far_dev = str(params.get("far_device", "") or "").strip()
                     if far_kind not in ("speaker", "mic"):
@@ -118,8 +115,10 @@ class SessionPlan:
                         continue
                     if dev not in inputs:
                         inputs.append(dev)
+                    far_delay = float(params.get("far_delay_ms", 0.0))
                     aec_rows.append({"mic": dev, "far_gain_db": far_gain,
-                                     "far_kind": far_kind, "far_device": far_dev})
+                                     "far_kind": far_kind, "far_device": far_dev,
+                                     "far_delay_ms": far_delay})
                     if far_kind == "mic" and far_dev not in aec_far_mics:
                         aec_far_mics.append(far_dev)
                 elif t == "loopback":

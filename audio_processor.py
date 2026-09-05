@@ -35,6 +35,8 @@ import time
 import wave
 from typing import Any, List, Optional, Callable, Tuple
 
+import numpy as np
+
 # PyAudio（PortAudio）仅 Windows/macOS 后端使用；Linux 走原生 PipeWire，
 # 允许无 PyAudio 环境运行。引用点都在非 Linux 执行路径内。
 try:
@@ -240,6 +242,7 @@ class AudioThread(threading.Thread):
         self._aec_cfg: list = []
         self._aec_inputs: list = []   # 建桥时的输入顺序（与 read_each 对齐）
         self._aec_live: list = []
+        self._aec_vu: dict = {}   # {mic_name: {"mic": float, "far": float, "out": float}}
         # ── 回环输入（一行 loopback 输入对应一路回采，进混音）──
         # cfg: SessionPlan.loopbacks（扬声器设备名）；live: [{capture, tap}]。
         # 与 AEC 行 far=扬声器继承同一套回环采集机制。
@@ -296,9 +299,11 @@ class AudioThread(threading.Thread):
         if IS_LINUX and self._use_pw:
             cap = SpeakerCapture(pw_bridge=self._bridge, far_sink=dev)
         else:
-            cap = SpeakerCapture()
+            # Windows/macOS：SpeakerCapture 按目标端点名开 loopback（与主设备
+            # 选择同一模糊匹配；Windows 未匹配回退默认渲染端点）。
+            cap = SpeakerCapture(device_name=dev)
         if not cap.start():
-            raise OSError(f"回环采集启动失败: {dev or '(默认)'}")
+            raise OSError(f"回环采集启动失败: {dev}")
         return cap
 
     def _open_mic_capture(self, dev: str):
@@ -327,6 +332,7 @@ class AudioThread(threading.Thread):
         import model_config
         from pvengine.aec_row import AecRow, find_model_file
         model_path = find_model_file(model_config.AEC_MODEL)
+        self._aec_vu = {}
         for cfg in self._aec_cfg:
             mic = cfg["mic"]
             mic_index = self._aec_inputs.index(mic) \
@@ -340,13 +346,18 @@ class AudioThread(threading.Thread):
             else:
                 cap = self._open_loopback_capture(far_device)
             row = AecRow(model_path, far_sample_rate=cap.dev_sr,
-                         far_gain_db=cfg.get("far_gain_db", 0.0))
+                         far_gain_db=cfg.get("far_gain_db", -20.0))
+            far_delay = cfg.get("far_delay_ms", 0.0)
+            if far_delay:
+                row.set_delay_ms(far_delay)
             self._aec_live.append({"mic_index": mic_index, "capture": cap,
-                                   "row": row, "mic": mic,
-                                   "far_kind": far_kind,
-                                   "far_device": far_device})
+                                     "row": row, "mic": mic,
+                                     "far_kind": far_kind,
+                                     "far_device": far_device})
+            self._aec_vu[mic] = {"mic": 0.0, "far": 0.0, "out": 0.0}
             _module_log(f"[AEC] 行装配: mic={mic} far({far_kind})={far_device} "
-                        f"sr={cap.dev_sr}Hz far_gain={cfg.get('far_gain_db', 0.0)}dB")
+                        f"sr={cap.dev_sr}Hz gain={cfg.get('far_gain_db', -20.0)}dB "
+                        f"delay={far_delay:.0f}ms")
 
     def _stop_aec_rows(self) -> None:
         """释放全部 AEC 行采集（流关闭时调用）。"""
@@ -356,6 +367,7 @@ class AudioThread(threading.Thread):
             except Exception as e:
                 _module_log(f"[AEC] 行采集关闭异常: {e}")
         self._aec_live = []
+        self._aec_vu = {}
 
     def _build_loopback_rows(self) -> None:
         """按 _loopback_cfg 逐行装配回环输入（回环采集 + FarTap），建流后调用。"""
@@ -389,6 +401,200 @@ class AudioThread(threading.Thread):
                 live["row"].set_far_gain_db(db)
                 return True
         return False
+
+    def get_aec_vu(self) -> dict:
+        """返回各 AEC 行的最新 mic/far/out 峰值（UI 线程调用）。"""
+        return dict(self._aec_vu)
+
+    def set_aec_delay_ms(self, mic: str, ms: float) -> bool:
+        """运行时设置某 AEC 行 far 延迟（毫秒）。"""
+        for live in self._aec_live:
+            if live["mic"] == mic:
+                live["row"].set_delay_ms(ms)
+                return True
+        return False
+
+    @staticmethod
+    def calibrate_aec_delay(mic_dev: str, far_dev: str,
+                            far_kind: str = "speaker") -> Optional[float]:
+        """离线校准 AEC far 延迟（须在音频处理停止时调用）。
+
+        测量回路与运行时 far 采集同一点：播放 chirp 到目标端点，同时采集
+        far 参考（far=扬声器＝所选端点 loopback；far=麦克风＝far mic 输入）
+        与目标麦克风；两路录音同起点后直接互相关 far↔mic 求相对延迟 =
+        运行时需补偿的 far_delay。不再对「写播放 → mic」做绝对链路计时，
+        前导静音/预卷/播放缓冲的系统偏差在互相关里抵消（见 aec_calib）。
+
+        设备解析复用主设备选择（名字相似度模糊匹配）。失败返回 None
+        （UI 保持原 far_delay 不变），成功返回延迟毫秒数。
+        """
+        if pyaudio is None or IS_LINUX:
+            _module_log("[AEC] 校准当前仅支持 Windows 本地 WASAPI")
+            return None
+        import threading as _threading
+        import time as _time
+        from pvplatform import IS_WINDOWS as _IS_WINDOWS
+        if not _IS_WINDOWS:
+            _module_log("[AEC] 校准当前仅支持 Windows 本地 WASAPI")
+            return None
+        from pvengine.aec_calib import make_probe as _make_probe, \
+            estimate_far_delay_ms as _estimate_delay
+
+        # ── 1. 设备解析（与主设备选择同一模糊匹配）──
+        api = default_api_type()
+        mic_id = get_device_id(mic_dev, True, api)
+        if mic_id is None:
+            _module_log(f"[AEC] 校准失败：麦克风设备无法解析: {mic_dev!r}")
+            return None
+        if far_kind == "mic":
+            far_id = get_device_id(far_dev, True, api)
+            if far_id is None:
+                _module_log(f"[AEC] 校准失败：far 麦克风设备无法解析: {far_dev!r}")
+                return None
+        else:
+            far_kind = "speaker"
+        # chirp 播到目标端点：far=扬声器用所选端点（loopback 同源）；
+        # far=麦克风时端点未知，退回系统默认渲染设备。
+        out_idx = get_device_id(far_dev, False, api) \
+            if far_kind == "speaker" else None
+
+        probe = _make_probe(SAMPLE_RATE)
+        probe_sec = len(probe) / float(SAMPLE_RATE)
+        rec_samples = int(SAMPLE_RATE * (probe_sec + 1.8))   # 前后各留余量
+        mic_np = np.zeros(rec_samples, dtype=np.float32)
+        mic_pos = [0]
+
+        def _mic_cb(in_data, frame_count, time_info, status):
+            n = min(frame_count, rec_samples - mic_pos[0])
+            if n > 0:
+                mic_np[mic_pos[0]:mic_pos[0] + n] = \
+                    np.frombuffer(in_data, dtype=np.float32)[:n]
+                mic_pos[0] += n
+            return (in_data, pyaudio.paContinue)
+
+        pa = pyaudio.PyAudio()
+        mic_stream = None
+        out_stream = None
+        far_cap = None
+        pump_thread = None
+        try:
+            # ── 2. far 采集（与运行时同一点）──
+            if far_kind == "mic":
+                from pvplatform.audio import create_mic_capture
+                far_cap = create_mic_capture(far_id)
+            else:
+                far_cap = SpeakerCapture(device_name=far_dev)
+            if far_cap is None or not far_cap.start():
+                _module_log(f"[AEC] 校准失败：far 采集启动失败 ({far_dev!r})")
+                return None
+
+            # ── 3. 开输出/输入流（mic 先不启动）──
+            mic_stream = pa.open(
+                format=pyaudio.paFloat32, channels=1, rate=SAMPLE_RATE,
+                input=True, input_device_index=mic_id,
+                frames_per_buffer=512, stream_callback=_mic_cb)
+            if out_idx is not None:
+                try:
+                    out_stream = pa.open(
+                        format=pyaudio.paFloat32, channels=1,
+                        rate=SAMPLE_RATE, output=True,
+                        output_device_index=out_idx,
+                        frames_per_buffer=1024)
+                except Exception as e:
+                    _module_log(f"[AEC] 校准输出流打开失败，改用默认输出: {e}")
+                    out_stream = None
+            if out_stream is None:
+                out_stream = pa.open(
+                    format=pyaudio.paFloat32, channels=1, rate=SAMPLE_RATE,
+                    output=True, frames_per_buffer=1024)
+
+            # ── 4. 同步起点：flush far 环 → 立刻启动 mic 录音 → pump far ──
+            _time.sleep(0.3)                 # far 采集先稳定运行
+            far_cap.flush()
+            mic_pos[0] = 0
+            mic_np[:] = 0.0
+            mic_stream.start_stream()
+            far_list: list = []
+            _stop_pump = _threading.Event()
+
+            def _pump():
+                while not _stop_pump.is_set():
+                    try:
+                        n = far_cap.available()
+                        if n > 0:
+                            got = far_cap.read(n)
+                            if got:
+                                far_list.extend(got)
+                    except Exception:
+                        pass
+                    _time.sleep(0.005)
+            pump_thread = _threading.Thread(target=_pump, daemon=True)
+            pump_thread.start()
+
+            _time.sleep(0.2)                 # 起点静音预卷
+            out_stream.start_stream()
+            step = 1024
+            for i in range(0, len(probe), step):
+                out_stream.write(probe[i:i + step].tobytes())
+            # 等回声尾巴进 mic + pump 收完
+            deadline = _time.time() + probe_sec + 1.6
+            while mic_pos[0] < rec_samples and _time.time() < deadline:
+                _time.sleep(0.01)
+        except Exception as e:
+            import traceback as _tb
+            _module_log(f"[AEC] 校准采集失败: {e}")
+            _module_log(_tb.format_exc())
+            return None
+        finally:
+            _stop_pump.set()
+            if pump_thread is not None:
+                pump_thread.join(timeout=1.0)
+            try:
+                if mic_stream is not None:
+                    mic_stream.stop_stream()
+                    mic_stream.close()
+            except Exception:
+                pass
+            try:
+                if out_stream is not None:
+                    out_stream.stop_stream()
+                    out_stream.close()
+            except Exception:
+                pass
+            pa.terminate()
+            if far_cap is not None:
+                try:
+                    far_cap.stop()
+                except Exception:
+                    pass
+
+        # ── 5. far↔mic 互相关求相对延迟 ──
+        mic_arr = np.asarray(mic_np[:mic_pos[0]], dtype=np.float32)
+        far_arr = np.asarray(far_list, dtype=np.float32)
+        if len(mic_arr) < SAMPLE_RATE * 0.2 or len(far_arr) < SAMPLE_RATE * 0.1:
+            _module_log("[AEC] 校准失败：录音数据不足 "
+                        f"(mic={len(mic_arr)} far={len(far_arr)})")
+            return None
+        if far_cap is not None and far_cap.dev_sr != SAMPLE_RATE:
+            from pvengine import Resampler as _Resampler
+            ratio = SAMPLE_RATE / float(far_cap.dev_sr)
+            rs = _Resampler()
+            rs.process(np.zeros(480, dtype=np.float32), ratio)
+            far48 = rs.process(list(far_arr), ratio)
+            far_arr = np.asarray(far48, dtype=np.float32)
+        _module_log(f"[AEC] 校准录音: mic={len(mic_arr)} far={len(far_arr)} "
+                    f"far_sr={far_cap.dev_sr if far_cap else '?'}Hz")
+
+        res = _estimate_delay(far_arr.tolist(), mic_arr.tolist(),
+                              fs=SAMPLE_RATE)
+        if res is None:
+            _module_log("[AEC] 校准失败：未检测到可靠回声峰（音量过低/设备错误？）")
+            return None
+        delay_ms, diag = res
+        _module_log(f"[AEC] 校准完成: delay={delay_ms:.1f}ms "
+                    f"corr={diag['corr']:.2f} snr={diag['snr']:.1f} "
+                    f"n_peaks={diag['n_peaks']}")
+        return round(delay_ms, 1)
 
     def _validate_and_fix_device(self, device_id: int, want_input: bool) -> int:
         """验证设备 ID 是否仍然存在；如已拔出则自动查找备选设备。
@@ -621,7 +827,17 @@ class AudioThread(threading.Thread):
                 if got:
                     live["row"].push_far(got)
             live["far_buf"] = navail
-            hops[idx] = live["row"].process_mic(hop).tolist()
+            out_hop = live["row"].process_mic(hop)
+            hops[idx] = out_hop.tolist()
+            # AEC VU：每 hop 计算 mic/far/out 峰值（UI 线程直接读 float，无需加锁）
+            mic_pk = max(abs(x) for x in hop) if hop else 0.0
+            far_pk = max(abs(x) for x in live["row"].last_far)
+            out_pk = max(abs(x) for x in out_hop)
+            vu = self._aec_vu.get(live["mic"])
+            if vu is not None:
+                vu["mic"] = mic_pk
+                vu["far"] = far_pk
+                vu["out"] = out_pk
         for lb in self._loopback_live:
             cap = lb["capture"]
             navail = cap.available()
@@ -1183,10 +1399,11 @@ def get_device_names(api_type: int = None) -> Tuple[List[str], List[str]]:
 
 
 def get_device_id(device_name: str, is_input: bool, api_type: int = None) -> Optional[int]:
-    """按设备名获取设备索引（支持前缀模糊匹配）。
+    """按设备名获取设备索引（与主设备选择同一名字模糊匹配实现）。
 
-    对 PortAudio 设备（Windows/macOS），会验证设备方向（输入/输出）匹配，
-    避免返回同名输出端点。
+    名字匹配与 AEC 校准共用 `device_api.best_name_match`（归一化精确 →
+    前缀 → 相似度模糊），方向过滤避免返回同名输出端点；配置存的旧名/
+    跨来源名（PortAudio vs WASAPI）找不到时回退第一个可用设备。
     Linux 走原生 PipeWire（node.name 直接使用，不需要 PortAudio 索引），
     返回 None。
     """
@@ -1201,13 +1418,12 @@ def get_device_id(device_name: str, is_input: bool, api_type: int = None) -> Opt
         input_names, output_names = [], []
     target_names = input_names if is_input else output_names
 
-    matched_names = [name for name in target_names if name.startswith(device_name)]
-    if not matched_names:
+    matched_name = _device_api.best_name_match(device_name, target_names)
+    if matched_name is None and target_names:
         # 兼容：配置里存的设备名被过滤/已不存在时，回退到第一个可用设备
-        if target_names:
-            matched_names = [target_names[0]]
-        else:
-            raise ValueError(f"Device not found")
+        matched_name = target_names[0]
+    if not matched_name:
+        raise ValueError(f"Device not found")
 
     p = pyaudio.PyAudio()
     try:
@@ -1219,13 +1435,13 @@ def get_device_id(device_name: str, is_input: bool, api_type: int = None) -> Opt
                 continue
             if dev['hostApi'] not in host_api_indices:
                 continue
-            if _device_api.fix_device_name(dev['name']).strip() == matched_names[0]:
+            if _device_api.fix_device_name(dev['name']).strip() == matched_name:
                 if is_input and dev.get('maxInputChannels', 0) <= 0:
                     continue
                 if not is_input and dev.get('maxOutputChannels', 0) <= 0:
                     continue
                 return i
 
-        raise ValueError(f"Device '{matched_names[0]}' ID not found")
+        raise ValueError(f"Device '{matched_name}' ID not found")
     finally:
         p.terminate()

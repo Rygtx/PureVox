@@ -67,10 +67,12 @@ def find_model_file(name: str) -> str:
 
 
 class AecRow:
-    """一行 AEC 的全部行级状态：FarTap + AEC cache。"""
+    """一行 AEC 的全部行级状态：FarTap + AEC cache + far 延迟缓冲。"""
+
+    MAX_DELAY_SAMPLES = 24000  # 500ms @ 48kHz
 
     def __init__(self, model_path: str, far_sample_rate: int = SAMPLE_RATE,
-                 far_gain_db: float = 0.0):
+                 far_gain_db: float = -20.0):
         self.engine = get_shared_engine(model_path)
         self.cache = self.engine.new_state()
         self.far_sample_rate = int(far_sample_rate or SAMPLE_RATE)
@@ -79,21 +81,51 @@ class AecRow:
         # 参考音量：只缩放进模型的 far 帧（调试用，默认 0dB 直达）
         self._far_gain = 10.0 ** (float(far_gain_db) / 20.0)
         self.last_far = np.zeros(HOP_LENGTH, dtype=np.float32)
+        # far 手动延迟缓冲（样本级，0–500ms）
+        self._delay_samples = 0
+        self._delay_buf = np.zeros(self.MAX_DELAY_SAMPLES, dtype=np.float32)
+        self._delay_write_pos = 0
 
     def set_far_gain_db(self, db: float) -> None:
         self._far_gain = 10.0 ** (float(db) / 20.0)
+
+    def set_delay_ms(self, ms: float) -> None:
+        """设置 far 信号延迟（毫秒），立即生效。"""
+        self._delay_samples = max(0, min(self.MAX_DELAY_SAMPLES,
+                                         int(round(ms * SAMPLE_RATE / 1000.0))))
+
+    def get_delay_ms(self) -> float:
+        return self._delay_samples * 1000.0 / SAMPLE_RATE
 
     def push_far(self, samples) -> None:
         """far 设备域新到样本推入对齐器（引擎线程每 hop 先搬后取）。"""
         self.tap.push(samples)
 
+    def _delay_apply(self, far_ref: np.ndarray) -> np.ndarray:
+        """对 far_ref 施加样本级延迟（环形缓冲，零填充启动阶段）。"""
+        n = len(far_ref)
+        d = self._delay_samples
+        if d == 0:
+            return far_ref
+        out = np.empty(n, dtype=np.float32)
+        buf = self._delay_buf
+        wp = self._delay_write_pos
+        for i in range(n):
+            buf[wp] = far_ref[i]
+            rp = (wp - d) % self.MAX_DELAY_SAMPLES
+            out[i] = buf[rp]
+            wp = (wp + 1) % self.MAX_DELAY_SAMPLES
+        self._delay_write_pos = wp
+        return out
+
     def process_mic(self, mic_hop) -> np.ndarray:
         """本路 mic 一 hop → AEC → 输出一 hop（恒满帧）。
 
-        far 经 FarTap 拉齐（永不断档）后直达模型，不经过任何 fx。
+        far 经 FarTap 拉齐 + 手动延迟后直达模型，不经过任何 fx。
         """
         mic = np.asarray(mic_hop, dtype=np.float32).reshape(-1)
         far_ref = self.tap.pull()
+        far_ref = self._delay_apply(far_ref)
         if self._far_gain != 1.0:
             far_ref = far_ref * np.float32(self._far_gain)
         self.last_far = far_ref

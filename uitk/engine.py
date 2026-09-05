@@ -321,6 +321,12 @@ class EngineController:
                 pass
         return {"playing": False, "pos": 0.0, "dur": 0.0}
 
+    def calibrate_aec_delay(self, mic_dev: str, far_dev: str,
+                            far_kind: str = "speaker") -> Optional[float]:
+        """离线校准 AEC far 延迟（须在音频停止时调用）。失败返回 None。"""
+        from audio_processor import AudioThread
+        return AudioThread.calibrate_aec_delay(mic_dev, far_dev, far_kind)
+
     def stop(self):
         if self._media is not None:
             try:

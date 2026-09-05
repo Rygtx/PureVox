@@ -10,7 +10,7 @@ PureVox 的源代码采用 **GNU General Public License v3.0 or later (GPL-3.0)*
 **现行版本：**
 
 - `purevox_denoise_202609_ep0106.onnx`（降噪模型）
-- `purevox_aec_202609_cpx_ep0167.onnx`（AEC 回声消除模型）
+- `purevox_aec_202609_cpx_ep0316.onnx`（AEC 回声消除模型）
 - `purevox_tse_202609c_ep0034.onnx`（TSE 目标说话人提取模型）
 - `purevox_tse_202609c_ref_encoder.onnx`（TSE 参考音频编码器）
 

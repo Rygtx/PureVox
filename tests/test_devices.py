@@ -149,6 +149,28 @@ def test_devices_present():
     print(f"  枚举一致性: {len(src)} 输入 / {len(dst)} 输出  OK")
 
 
+def test_name_fuzzy_match():
+    """设备名模糊匹配纯函数（跨平台恒跑）：精确/前缀/大小写与标点差异/
+    相似度命中；无关名返回 None。AEC far 端点选择与 get_device_id 共用。"""
+    from pvplatform.audio.device_api import (
+        best_name_match, name_similarity, normalize_device_name)
+    cands = ["Speakers (Realtek(R) Audio)", "麦克风 (Realtek(R) Audio)",
+             "CABLE Input (VB-Audio Virtual Cable)"]
+    # 归一化精确（大小写/括号差异）
+    assert best_name_match("speakers (realtek audio)", cands) == \
+        "Speakers (Realtek(R) Audio)"
+    # 词序不同但同实质（模糊相似）
+    assert best_name_match("Realtek Speakers", cands) == \
+        "Speakers (Realtek(R) Audio)"
+    # 前缀
+    assert best_name_match("Speakers", cands) == "Speakers (Realtek(R) Audio)"
+    # 无关 → None（不误配到 CABLE）
+    assert best_name_match("__不存在的扬声器__", cands) is None
+    assert name_similarity("Speakers", "Speakers (Realtek)") >= 0.6
+    assert normalize_device_name("  Mic  (A)  ") == "mic"
+    print("  名字模糊匹配: 精确/相似/前缀/无关  OK")
+
+
 def test_windows_device_matching():
     """Windows PortAudio 设备匹配：精确名命中；未知名按既定兼容策略回退
     第一个可用设备（配置存留旧名时的行为，见 get_device_id 文档）。"""
@@ -214,6 +236,7 @@ if __name__ == "__main__":
     test_enum_graceful()
     test_defaults_coherent()
     test_config_keys_complete()
+    test_name_fuzzy_match()
     test_speaker_capture_lifecycle()
     test_devices_present()
     test_windows_device_matching()

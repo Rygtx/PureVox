@@ -29,9 +29,10 @@
         麦克风专用采集（AEC far=麦克风时的数据源，一行一路，
         不进主混音，直达行内 FarSync）。接口同 SpeakerCapture。
 
-    create_speaker_capture(on_device_changed=None, pw_bridge=None, far_sink="")
+    create_speaker_capture(on_device_changed=None, pw_bridge=None, far_sink="", device_name="")
         工厂函数，按当前平台返回具体后端实例：
-        - Windows: WASAPI loopback（COM）
+        - Windows: WASAPI loopback（COM）。device_name 传目标端点名（与主设备
+          选择同一模糊匹配）；不传/未命中回退默认渲染端点。
         - Linux:   原生 PipeWire capture.sink（复用已有 PwBridge，far 专用流）
         - macOS:   预留
     pw_bridge / far_sink 仅 Linux 使用：pw_bridge 为已打开的 PwBridge；
@@ -44,11 +45,13 @@
 from .. import IS_WINDOWS, IS_LINUX, IS_MACOS
 
 
-def create_speaker_capture(on_device_changed=None, pw_bridge=None, far_sink=""):
+def create_speaker_capture(on_device_changed=None, pw_bridge=None, far_sink="",
+                           device_name=""):
     """按平台创建 SpeakerCapture 实例。"""
     if IS_WINDOWS:
         from .speaker_capture_win import SpeakerCaptureWin
-        return SpeakerCaptureWin(on_device_changed=on_device_changed)
+        return SpeakerCaptureWin(on_device_changed=on_device_changed,
+                                 device_name=device_name)
     if IS_LINUX:
         from .speaker_capture_linux import SpeakerCaptureLinux
         return SpeakerCaptureLinux(on_device_changed=on_device_changed,

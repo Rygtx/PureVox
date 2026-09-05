@@ -113,8 +113,7 @@ EXPAND_TITLES = {
 _SYSTEM_SPECS = [
     NodeSpec("audio_input", "音频输入", "input"),
     NodeSpec("loopback", "桌面输入", "input"),
-    NodeSpec("echo_cancel", "回声消除 AEC", "input", tier="inline",
-             params={"far_gain_db": ("参考 dB", -30.0, 12.0, 0.0, 1.0)}),
+    NodeSpec("echo_cancel", "回声消除 AEC", "input"),
     NodeSpec("remote_mic", "远程推流输入", "input"),
     NodeSpec("audio_output", "音频输出", "output"),
     NodeSpec("virtual_output", "虚拟输出设备", "output"),
