@@ -110,3 +110,13 @@ class SpeakerCaptureLinux:
 
     def flush(self) -> None:
         pass
+
+    def read_ts(self, n_samples: int):
+        """读取 n 样本 → (首样本主时钟秒, samples)；不足返回 None。
+
+        时间戳取读取瞬间的 perf（Linux 暂以采集/读取边界近似，后续接 libpulse
+        流时间精化；与 Windows 同一外部钟量纲）。"""
+        data = self.read(n_samples)
+        if not data:
+            return None
+        return (__import__('time').perf_counter(), data)

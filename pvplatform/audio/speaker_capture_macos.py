@@ -59,3 +59,6 @@ class SpeakerCaptureMacOS:
 
     def flush(self) -> None:
         self._buffer = RingBuffer(HOP_LENGTH * 2)
+
+    def read_ts(self, n_samples: int):
+        return None

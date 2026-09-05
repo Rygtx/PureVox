@@ -70,6 +70,20 @@ def main():
             ok &= check(f"延迟 {d_ms:.0f}ms 相关度可信", res[1]["corr"] > 0.1,
                         f"corr={res[1]['corr']:.2f} snr={res[1]['snr']:.1f}")
 
+    # 带外污染鲁棒性：强 50Hz 工频 + 宽带热噪声叠加，估计仍准确
+    far = probe.astype(float)
+    t = np.arange(len(far)) / SR
+    hum = 0.3 * np.sin(2 * np.pi * 50 * t)
+    mic = synthetic_mic(far, 90.0, echo_gain=0.05, noise=0.004, seed=5) + hum
+    res = estimate_far_delay_ms(far.tolist(), mic.tolist(), fs=SR)
+    good = res is not None and abs(res[0] - 90.0) <= 2.0
+    ok &= check("带外工频/热噪下 90ms 仍准确", good, f"got={None if res is None else res[0]:.1f}")
+
+    # 纯带外信号（无探测音）→ None（带通后近乎静音，不误报）
+    hum_only = hum + np.random.default_rng(9).normal(0, 0.01, len(far))
+    res = estimate_far_delay_ms(far.tolist(), hum_only.tolist(), fs=SR)
+    ok &= check("纯带外噪声 → None", res is None)
+
     # 纯噪声（无回声）→ None
     rng = np.random.default_rng(3)
     noise_mic = rng.normal(0.0, 1.0, len(far))

@@ -31,7 +31,7 @@ import struct
 import threading
 from typing import Callable, List, Optional
 
-from pvplatform.audio.common import RingBuffer, _module_log
+from pvplatform.audio.common import TimedFifo, LinearClock, _module_log
 
 SAMPLE_RATE = 48000
 HOP_LENGTH = SAMPLE_RATE // 100       # 10ms @48kHz = 480
@@ -50,7 +50,8 @@ class PaBridge:
         self._p = None                 # PyAudio 实例（open 传入则不拥有）
         self._owns_p = False
         self._in_stream = None
-        self._in_ring = RingBuffer(_RING_CAP)
+        self._in_ring = TimedFifo(SAMPLE_RATE, _RING_CAP)
+        self._in_clock = LinearClock()
         self._out_streams: List = []
         self._out_pull: List[Callable] = []
         self._error: str = ""
@@ -181,15 +182,23 @@ class PaBridge:
 
     # ── 数据面 ──
 
-    def read_each(self, n: int) -> Optional[List[Optional[List[float]]]]:
-        """逐路读取输入环（单路后端恒返回一路；无数据返回 None）。
-        与 PwBridge.read_each 同形（AEC 行按路取本路 mic 用）。"""
-        got = self._in_ring.read(n)
+    def read_each_ts(self, n: int):
+        """逐路读取输入环并带回采时间戳（单路恒一路；无数据返回 None）。
+
+        返回 [ (首样本主时钟秒, samples) | None ]，与 PwBridge 同形；
+        AEC 行按时间戳与 far 配对。"""
+        got = self._in_ring.read_ts(n)
         return [got] if got is not None else None
+
+    def read_each(self, n: int) -> Optional[List[Optional[List[float]]]]:
+        """逐路读取输入环（单路后端恒返回一路；无数据返回 None）。"""
+        got = self._in_ring.read_ts(n)
+        return [got[1]] if got is not None else None
 
     def read(self, n: int) -> Optional[List[float]]:
         """读取输入（单路，等权混合退化为直读；无数据返回 None）。"""
-        return self._in_ring.read(n)
+        got = self._in_ring.read_ts(n)
+        return got[1] if got is not None else None
 
     # ── 回调（PortAudio 设备线程）──
 
@@ -198,7 +207,14 @@ class PaBridge:
             return (None, pyaudio_paComplete())
         try:
             samples = list(struct.unpack(f'{frame_count}f', in_data))
-            self._in_ring.write(samples)
+            adc = time_info.get('input_buffer_adc_time')
+            now = __import__('time').perf_counter()
+            if adc is not None:
+                self._in_clock.add(adc, now)
+                ts0 = self._in_clock.map(adc)
+            else:
+                ts0 = now
+            self._in_ring.write_ts(ts0, samples)
         except Exception as e:
             _module_log(f"[PaBridge] 输入回调异常: {e}")
         return (None, pyaudio_paContinue())

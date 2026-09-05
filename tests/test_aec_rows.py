@@ -18,10 +18,11 @@
 """行级 AEC 合成测试（无硬件；模型会话用桩代替，不加载 onnx）：
 python tests/test_aec_rows.py
 
-验证：
-1. FarTap：48k 直通连续、非 48k 重采样后恒 480 帧；
-2. AecRow：mic 直通恒满帧、far 经 FarTap 直达桩会话
-   （桩回显 far 即看到 far 信号）。
+验证（外部时钟时间戳配对，无隐藏缓冲/无 HopQueue）：
+1. GridHistory：按 ts 入历史、可按网格取/头部 pop、空洞重锚、封顶丢旧；
+2. AecRow：far 按 mic 时间戳  - far_delay 切片取回声源（桩回显 far）；
+   far 历史不足 → 直通 mic（不丢人声、不进模型）；
+3. far 手动延迟方向与参考音量缩放。
 """
 
 import math
@@ -34,13 +35,14 @@ import numpy as np
 
 import pvengine.aec_row as aec_row_mod
 from pvengine.aec_row import AecRow
-from pvengine.dsp.far_sync import FarTap
+from pvengine.dsp.hop_queue import GridHistory, grid_from_ts
 
 HOP = 480
+SR = 48000
 
 
 class _FakeEngine:
-    """桩会话：输出 = mic（验证增益与通路），cache 原样返回。"""
+    """桩会话：输出 = mic（验证通路），cache 原样返回。"""
 
     def new_state(self):
         return np.zeros((1, 8), dtype=np.float32)
@@ -51,88 +53,135 @@ class _FakeEngine:
             cache, dtype=np.float32)
 
 
-def _sine(n, phase=0.0, freq=220.0, sr=48000.0):
-    return [math.sin(phase + i * 2 * math.pi * freq / sr) for i in range(n)]
+class _EchoFar:
+    """桩会话：输出 = far（验证 far 直达 / 切片延迟 / 增益）。"""
+
+    def new_state(self):
+        return np.zeros((1, 8), dtype=np.float32)
+
+    def process_frame(self, mic, far, cache):
+        return np.asarray(far, dtype=np.float32), cache
 
 
-def test_far_tap_passthrough():
-    tap = FarTap(48000)
-    for _ in range(12):
-        tap.push(_sine(HOP))
-    out = tap.pull()
-    assert len(out) == HOP
-    d = tap.diag()
-    assert d["conceals"] == 0 and d["drops"] == 0
-    print("  FarTap 48k 直通恒帧、无 conceal/drop  OK")
+def ts_of(h: int) -> float:
+    return h * HOP / SR
 
 
-def test_far_tap_resample():
-    tap = FarTap(44100)
-    for _ in range(14):
-        tap.push(_sine(441, sr=44100.0))
-    out = tap.pull()
-    assert len(out) == HOP
-    print("  FarTap 44.1k 重采样恒 480 帧  OK")
+def _push_hops(row, n, value, start_h=0):
+    for h in range(start_h, start_h + n):
+        row.push_far_ts(ts_of(h), [value] * HOP)
+
+
+def test_grid_history():
+    gh = GridHistory(HOP * 50)
+    gh.push_ts(ts_of(0), [0.1] * HOP)
+    gh.push_ts(ts_of(1), [0.2] * HOP)
+    assert gh.start_grid() == 0 and gh.end_grid() == HOP * 2
+    w = gh.window(0, HOP)
+    assert w is not None and abs(w[240] - 0.1) < 1e-9
+    p = gh.pop_hop(HOP)
+    assert p is not None and len(p) == HOP
+    assert gh.start_grid() == HOP
+    # 空洞重锚
+    gh.push_ts(ts_of(10), [0.5] * HOP)
+    assert gh.start_grid() == HOP * 10
+    # 不足 pop → None
+    assert gh.pop_hop(HOP * 5) is None
+    print("  GridHistory 时间戳入历史/取窗/头部 pop/空洞重锚  OK")
 
 
 def test_aec_row_passthrough():
-    """mic 直通：桩回显 mic，输出恒满帧且与输入一致。"""
+    """mic 直通：桩回显 mic，输出恒满帧。far 同步足够（far_delay=0）。"""
     aec_row_mod.get_shared_engine = lambda p: _FakeEngine()
-    row = AecRow("dummy.onnx", far_sample_rate=48000)
-    for _ in range(12):
-        row.push_far([0.5] * HOP)
+    row = AecRow("dummy.onnx", far_sample_rate=SR)
+    _push_hops(row, 20, 0.5)
     mic = [0.1] * HOP
-    out = row.process_mic(mic)
-    assert len(out) == HOP
+    out = row.process_mic(mic, ts_of(10))
+    assert out is not None and len(out) == HOP
     assert abs(float(out[240]) - 0.1) < 1e-6, out[240]
     assert len(row.last_far) == HOP
     print("  AecRow mic 直通、恒满帧  OK")
 
 
-def test_aec_row_far_direct():
-    """far 直达：桩会话改回显 far，切 far 信号即在输出看到。"""
-    class _EchoFar:
-        def new_state(self):
-            return np.zeros((1, 8), dtype=np.float32)
+def test_aec_row_far_hist_slice():
+    """far 按外部时钟切片：mic 时间戳对应 far_delay 前的 far（回声源）。
 
-        def process_frame(self, mic, far, cache):
-            return np.asarray(far, dtype=np.float32), cache
-
+    far[0]=0.1, far[1]=0.2, ...；设 far_delay=20ms(960 样本)。mic 时间戳落在
+    far[2] 处 → 切片取 far[2]−960 = far[0]，桩回显 far 应看到 0.1。
+    """
     aec_row_mod.get_shared_engine = lambda p: _EchoFar()
-    row = AecRow("dummy.onnx", far_sample_rate=48000, far_gain_db=0.0)
-    for _ in range(12):
-        row.push_far([0.3] * HOP)
-    out = row.process_mic([0.0] * HOP)
-    assert abs(float(out[240]) - 0.3) < 1e-3, out[240]
-    print("  AecRow far 直达  OK")
+    row = AecRow("dummy.onnx", far_sample_rate=SR, far_gain_db=0.0)
+    row.set_delay_ms(20.0)
+    for h in range(20):
+        row.far_hist.push_ts(ts_of(h), [h * 0.1] * HOP)
+    # mic 时刻 t=2 hop（960 样本），far_ref = t − 960 → far[0] = 0.0
+    out = row.process_mic([0.0] * HOP, ts_of(2))
+    assert out is not None and abs(float(out[240]) - 0.0) < 1e-6, out[240]
+    print("  AecRow far 按时间戳  - far_delay 切片  OK")
+
+
+def test_aec_row_far_delay():
+    """far_delay 方向：把 far 参考整体后挪 d 样本（取更早历史）。"""
+    aec_row_mod.get_shared_engine = lambda p: _EchoFar()
+    row = AecRow("dummy.onnx", far_sample_rate=SR, far_gain_db=0.0)
+    row.set_delay_ms(10.0)  # 480 样本
+    for h in range(30):
+        row.far_hist.push_ts(ts_of(h), [0.1 * h] * HOP)
+    # mic 在 t=10 hop：far_delay=1 hop → 取 far[9]，值 0.9
+    out = row.process_mic([0.0] * HOP, ts_of(10))
+    assert out is not None and abs(float(out[240]) - 0.9) < 1e-3, out[240]
+    print("  AecRow far_delay 生效：参考取更早一 hop 的 far  OK")
+
+
+def test_aec_row_far_missing_passthrough():
+    """far 完全无历史 → 直通 mic；far 有历史但理想窗口未就绪 → 喂最近一段。"""
+    aec_row_mod.get_shared_engine = lambda p: _EchoFar()
+    row = AecRow("dummy.onnx", far_sample_rate=SR, far_gain_db=0.0)
+    # far 无任何历史 → 直通 mic（不丢人声、不进模型）
+    out = row.process_mic([0.11] * HOP, ts_of(10))
+    assert out is not None and len(out) == HOP
+    assert abs(float(out[240]) - 0.11) < 1e-6, out[240]
+    # far 只有 2 hop，且 mic 更远（far_delay=0 需要未来 far）→ 喂最近一段 far[1]
+    _push_hops(row, 2, 0.3)
+    out = row.process_mic([0.12] * HOP, ts_of(20))
+    assert out is not None and abs(float(out[240]) - 0.3) < 1e-3, out[240]
+    print("  AecRow far 无历史直通 mic；有历史则最近一段兜底  OK")
+
+
+def test_aec_row_far_fallback_recent():
+    """理想窗口未就绪但有 far 历史 → 喂最近一段（AEC 先跑，不全程直通）。"""
+    aec_row_mod.get_shared_engine = lambda p: _EchoFar()
+    row = AecRow("dummy.onnx", far_sample_rate=SR, far_gain_db=0.0)
+    _push_hops(row, 3, 0.7)          # far[0..2]
+    # mic 在 far 之后很远（far_delay=0 需要未来 far）→ 走最近一段兜底（far[2]=0.7）
+    out = row.process_mic([0.0] * HOP, ts_of(20))
+    assert out is not None and abs(float(out[240]) - 0.7) < 1e-3, out[240]
+    assert row.diag()["fallback"] >= 1
+    print("  AecRow far 理想窗口未就绪 → 喂最近一段兜底  OK")
 
 
 def test_aec_row_far_gain():
     """参考音量：只缩放进模型的 far 帧（桩回显 far 即看到缩放）。"""
-    class _EchoFar:
-        def new_state(self):
-            return np.zeros((1, 8), dtype=np.float32)
-
-        def process_frame(self, mic, far, cache):
-            return np.asarray(far, dtype=np.float32), cache
-
     aec_row_mod.get_shared_engine = lambda p: _EchoFar()
-    row = AecRow("dummy.onnx", far_sample_rate=48000, far_gain_db=-6.0)
-    for _ in range(12):
-        row.push_far([0.4] * HOP)
-    out = row.process_mic([0.0] * HOP)
+    row = AecRow("dummy.onnx", far_sample_rate=SR, far_gain_db=-6.0)
+    for h in range(30):
+        row.far_hist.push_ts(ts_of(h), [0.4] * HOP)
+    out = row.process_mic([0.0] * HOP, ts_of(10))
+    assert out is not None
     assert abs(float(out[240]) - 0.4 * 0.5011872) < 1e-3, out[240]
     row.set_far_gain_db(0.0)
-    out = row.process_mic([0.0] * HOP)
-    assert abs(float(out[240]) - 0.4) < 1e-3, out[240]
+    out = row.process_mic([0.0] * HOP, ts_of(12))
+    assert out is not None and abs(float(out[240]) - 0.4) < 1e-3, out[240]
     print("  AecRow 参考音量只缩放 far  OK")
 
 
 if __name__ == "__main__":
     print("行级 AEC 合成测试:")
-    test_far_tap_passthrough()
-    test_far_tap_resample()
+    test_grid_history()
     test_aec_row_passthrough()
-    test_aec_row_far_direct()
+    test_aec_row_far_hist_slice()
+    test_aec_row_far_delay()
+    test_aec_row_far_missing_passthrough()
+    test_aec_row_far_fallback_recent()
     test_aec_row_far_gain()
     print("全部通过")

@@ -27,7 +27,7 @@
 
     MicCapture
         麦克风专用采集（AEC far=麦克风时的数据源，一行一路，
-        不进主混音，直达行内 FarSync）。接口同 SpeakerCapture。
+        不进主混音，直达行内 AecRow）。接口同 SpeakerCapture。
 
     create_speaker_capture(on_device_changed=None, pw_bridge=None, far_sink="", device_name="")
         工厂函数，按当前平台返回具体后端实例：

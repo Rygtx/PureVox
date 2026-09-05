@@ -62,11 +62,34 @@ def make_probe(fs: int = SAMPLE_RATE, n_repeat: int = 1,
     return np.concatenate(parts).astype(np.float32)
 
 
-def _prepare(x: List[float]) -> Optional[np.ndarray]:
-    """转 float64、去 DC、单位 RMS（方便相关峰高度解读与阈值）。"""
+def _bandpass_zero_phase(x: np.ndarray, fs: int, band) -> Optional[np.ndarray]:
+    """零相位带通（Butterworth sos + sosfiltfilt）。
+
+    far/mic 两路用同一滤波器、零相位 ⇒ 不引入任何群延迟/相对位移，只把带外
+    环境噪声与麦克风热噪声剔除，测到的延迟不受滤波影响。
+    """
+    if not band or len(x) < fs * 0.05:
+        return x
+    from scipy.signal import butter, sosfiltfilt
+    try:
+        low, high = float(band[0]), float(band[1])
+        nyq = float(fs) / 2.0
+        low = max(1.0, min(low, nyq * 0.99))
+        high = min(max(low + 1.0, high), nyq * 0.99)
+        sos = butter(4, [low, high], btype="bandpass", output="sos", fs=fs)
+        return sosfiltfilt(sos, x)
+    except Exception:
+        return x
+
+
+def _prepare(x: List[float], fs: int = SAMPLE_RATE,
+             bandpass_hz=None) -> Optional[np.ndarray]:
+    """转 float64、可选带通去噪、去 DC、单位 RMS（方便相关峰解读与阈值）。"""
     if not x or len(x) < 64:
         return None
     a = np.asarray(x, dtype=np.float64)
+    if bandpass_hz:
+        a = _bandpass_zero_phase(a, fs, bandpass_hz)
     a = a - a.mean()
     rms = float(np.sqrt(np.mean(a * a)))
     if rms < 1e-9:
@@ -78,12 +101,17 @@ def estimate_far_delay_ms(far: List[float], mic: List[float],
                           fs: int = SAMPLE_RATE,
                           min_delay_ms: float = 0.5,
                           max_delay_ms: float = 450.0,
-                          max_peaks: int = 6
+                          max_peaks: int = 6,
+                          bandpass_hz=(300.0, 5500.0)
                           ) -> Optional[Tuple[float, dict]]:
     """估计 far 参考相对麦克风的回声延迟（far 先到、mic 滞后为正）。
 
     far/mic 为同一起点采集的样本序列（数组可不等长）。返回
     (delay_ms, diag) 或 None（数据不足 / 未检测到可靠回声峰）。
+
+    bandpass_hz：互相关前对两路做**同一零相位带通**（默认 300~5500Hz，
+    与探测 chirp 频带一致），剔除环境噪声与麦克风热噪声等带外污染；零相位
+    不引入延迟，不影响估计结果。传 None 关闭。
 
     diag 含 corr（相关峰高度，近似归一化系数）、snr（峰/噪声底比）、
     lag、n_peaks，供上层打日志判断测量可信度。
@@ -91,8 +119,8 @@ def estimate_far_delay_ms(far: List[float], mic: List[float],
     from scipy.signal import find_peaks, fftconvolve
 
     fs = int(fs)
-    far_n = _prepare(far)
-    mic_n = _prepare(mic)
+    far_n = _prepare(far, fs, bandpass_hz)
+    mic_n = _prepare(mic, fs, bandpass_hz)
     if far_n is None or mic_n is None:
         return None
     if len(mic_n) < fs * 0.05:      # 至少 50ms 录音

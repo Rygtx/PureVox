@@ -93,7 +93,7 @@ class NodeSpec:
    STFT 在模型图内、enh_hop 滞后 1 hop），未来多采样率仅换 SAMPLE_RATE。
 3. **混音**：N 路 input 等权平均；某路暂无数据则跳过该路；全部无数据 = 本帧无输入。
    AEC 行的 mic 先经本行 AEC 处理再进混音（同设备普通输入行被接管跳过，
-   一行设备只进一次混音）；回环输入行经 FarTap 拉齐后进混音。
+   一行设备只进一次混音）；回环输入行样本带采集时间戳入 GridHistory，逐 hop 出队后进混音（时间由外部时钟保证）。
 4. **扇出**：M 路 output 各持一个 PlaybackSink，写入同一份降噪后音频（或
    各自链位置的线性抽头帧）；任一路积压/阻塞不得拖累其余路与处理循环。
 5. **顺序**：信号流 = inputs（含 AEC 行处理后 / 回环拉齐后）(混合)
@@ -101,8 +101,10 @@ class NodeSpec:
    far 参考永不进 fx 链。
 6. **旁路**：viz 只读 tap，永不反压、永不修改样本。
 7. **远端参考**：AEC far 是独立采集支路（扬声器回环 / 麦克风专用二选一），
-   仅当链中存在启用的 `echo_cancel` 输入行时按行建立；经 FarTap 按 mic
-   hop 主时钟拉齐后直达行内 AecRow，不经过任何 fx 处理。
+   仅当链中存在启用的 `echo_cancel` 输入行时按行建立；far 带采集时间戳入
+   行内 `GridHistory`（48k 时间戳网格），模型 far 输入取「mic 时刻 −
+   far_delay」的历史段直达行内 AecRow（时间原点由外部时钟 QPC/perf 保证，
+   无隐藏缓冲），不经过任何 fx 处理。
    回环输入行（`loopback`）与 AEC far=扬声器继承同一套回环采集机制。
 8. **设备时钟唯一主时钟（2026-09 播放重构）**：处理线程按自身节奏推进 hop，
    播放侧由设备回调经 PlaybackSink.pull 拉帧；一切跨时钟域消费（多输出设备、
@@ -165,7 +167,7 @@ class BackendSpec:
 `read_each(n)`（逐路输入，与 open 时 inputs 顺序对齐，AEC 行按路取用）/
 `close()` / `active()` / `last_error()` /
 `open_far(dev, monitor)` / `close_far(h)` / `read_far_h(h, n)` /
-`far_available(h)`（AEC far / 回环输入专用采集流，多路，直达行内 FarTap）。
+`far_available(h)`（AEC far / 回环输入专用采集流，多路，直达行内 GridHistory 时间戳入历史）。
 
 - 后端不做任何缓冲策略与时钟逻辑；`out_pull[i]` 是输出 i 的帧供给函数
   （PlaybackSink.pull，由后端在设备回调线程按设备时钟调用）。

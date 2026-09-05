@@ -23,7 +23,7 @@
 """
 
 import threading
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 SAMPLE_RATE = 48000
 HOP_LENGTH = SAMPLE_RATE // 100   # 10ms @48kHz = 480（202609 模型契约，与 pvengine.context 一致）
@@ -41,6 +41,111 @@ def set_module_log(func):
         audio_processor._module_log = func
     except Exception:
         pass
+
+
+class LinearClock:
+    """把某采集栈的内部时钟（如 PortAudio paTime）映射到主时钟（perf/QPC 秒）。
+
+    Windows 上 PortAudio 的 input_buffer_adc_time 与 QPC 速率≈1、只差常量
+    （实测 1s 内误差 0.000s），用增量最小二乘拟合 y=slope·x+offset 后即可把
+    mic 采集时刻统一到主时钟，长期速率漂移由 slope 吸收。
+    """
+
+    def __init__(self):
+        self._n = 0
+        self._sx = self._sy = self._sxx = self._sxy = 0.0
+        self._slope = 1.0
+        self._offset = 0.0
+
+    def add(self, x: float, y: float) -> None:
+        self._n += 1
+        self._sx += x
+        self._sy += y
+        self._sxx += x * x
+        self._sxy += x * y
+        if self._n >= 2:
+            denom = self._n * self._sxx - self._sx * self._sx
+            if abs(denom) > 1e-12:
+                s = (self._n * self._sxy - self._sx * self._sy) / denom
+                if 0.5 < s < 2.0:
+                    self._slope = s
+            self._offset = (self._sy - self._slope * self._sx) / self._n
+
+    def map(self, x: float) -> float:
+        return self._slope * x + self._offset
+
+
+class TimedFifo:
+    """带采集时间戳的 FIFO：存 (首样本主时钟秒, samples) 块。
+
+    push 任意长块（块内采样率 = dev_sr，第 k 样本时刻 = ts0 + k/dev_sr）；
+    read_ts(n) 跨块取 n 个样本，返回 (首样本时刻, samples)；不足返回 None。
+    满额自动丢最旧（drop 计数供诊断）。
+    """
+
+    def __init__(self, dev_sr: int, capacity_samples: int):
+        from collections import deque
+        self._dev_sr = max(1, int(dev_sr or 48000))
+        self._cap = max(480, int(capacity_samples))
+        self._blocks: deque = deque()   # (ts0, list[float])
+        self._lock = threading.Lock()
+        self._drops = 0
+
+    def _drop_old(self) -> None:
+        have = sum(len(b) for _, b in self._blocks)
+        while have > self._cap and self._blocks:
+            ts0, b = self._blocks[0]
+            need = have - self._cap
+            if len(b) <= need:
+                self._blocks.popleft()
+                have -= len(b)
+                self._drops += len(b)
+            else:
+                self._blocks[0] = (ts0 + need / self._dev_sr, b[need:])
+                have -= need
+                self._drops += need
+
+    def write_ts(self, ts0: float, data) -> None:
+        """写入以 ts0（主时钟秒）为首样本的一整块。data 可列表/ndarray。"""
+        if not data:
+            return
+        samples = [float(s) for s in data]
+        with self._lock:
+            self._blocks.append((float(ts0), samples))
+            self._drop_old()
+
+    def available(self) -> int:
+        with self._lock:
+            return sum(len(b) for _, b in self._blocks)
+
+    def read_ts(self, n: int) -> Optional[Tuple[float, List[float]]]:
+        """取 n 个 FIFO 样本 → (首样本主时钟秒, samples)；不足返回 None。"""
+        with self._lock:
+            if sum(len(b) for _, b in self._blocks) < n:
+                return None
+            out = []
+            first_ts = None
+            while n > 0 and self._blocks:
+                ts0, b = self._blocks[0]
+                take = min(n, len(b))
+                if first_ts is None:
+                    first_ts = ts0
+                out.extend(b[:take])
+                n -= take
+                if take == len(b):
+                    self._blocks.popleft()
+                else:
+                    self._blocks[0] = (ts0 + take / self._dev_sr, b[take:])
+            return first_ts, out
+
+    def flush(self) -> None:
+        with self._lock:
+            self._blocks.clear()
+
+    def diag(self) -> dict:
+        with self._lock:
+            return {"q": sum(len(b) for _, b in self._blocks),
+                    "drops": self._drops}
 
 
 class RingBuffer:

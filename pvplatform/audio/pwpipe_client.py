@@ -386,6 +386,25 @@ class PwBridge:
             return None
         return hops
 
+    def read_each_ts(self, n: int):
+        """同 read_each，但每路带回采时间戳 [(ts0, hop)|None]。
+
+        时间戳取读取瞬间的 perf（Linux 暂以采集/读取边界近似，后续用
+        libpulse 流时间精化；与 Windows 同一外部钟量纲）。AEC 行按时间戳
+        与 far 网格配对。"""
+        if self._link is None:
+            return None
+        with self._lock:
+            rings = list(self._in_rings)
+        now = __import__('time').perf_counter()
+        out = []
+        for ring in rings:
+            h = ring.read(n)
+            out.append((now, h) if h is not None else None)
+        if not any(o is not None for o in out):
+            return None
+        return out
+
     def read(self, n: int) -> Optional[List[float]]:
         """读取并混合全部输入路（等权平均；无数据返回 None）。"""
         hops = self.read_each(n)

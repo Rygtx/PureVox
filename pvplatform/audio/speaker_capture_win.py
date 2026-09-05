@@ -36,9 +36,9 @@ import ctypes
 import threading
 import time
 from ctypes import wintypes, POINTER, byref, cast, c_void_p
-from typing import List, Optional, Callable
+from typing import List, Optional, Callable, Tuple
 
-from .common import RingBuffer, HOP_LENGTH, _module_log
+from .common import TimedFifo, HOP_LENGTH, _module_log
 from .device_api import best_name_match
 
 
@@ -67,7 +67,7 @@ class SpeakerCaptureWin:
     def __init__(self, on_device_changed: Optional[Callable[[int], None]] = None,
                  device_name: str = ""):
         self._wanted_name = device_name or ""
-        self._buffer = RingBuffer(HOP_LENGTH * 16)  # ~160ms 缓冲，吸收 loopback 延迟抖动
+        self._buffer = TimedFifo(48000, HOP_LENGTH * 32)  # ~320ms，吸收回环抖动
         self._active = False
         self._lock = threading.Lock()
         self._capture_thread: Optional[threading.Thread] = None
@@ -225,13 +225,10 @@ class SpeakerCaptureWin:
                 if chosen is not None:
                     for n, p_dev in ends:
                         if n == chosen:
-                            _module_log(f"[AEC] 回环端点（按名匹配）: {chosen}")
                             return p_dev
                         self._release_com(p_dev)
                     # 理论不可达（chosen 来自 names）；继续回退默认
                 else:
-                    _module_log(f"[AEC] 端点 {self._wanted_name!r} 未匹配到活动端点，"
-                                f"回退默认渲染设备")
                     for _, p_dev in ends:
                         self._release_com(p_dev)
         # 默认端点
@@ -315,7 +312,7 @@ class SpeakerCaptureWin:
                 self._dev_ch = max(1, int(wfx.nChannels))
                 _module_log(f"[AEC] 扬声器采集: {dev_name} ({self._dev_sr}Hz, "
                             f"ch={self._dev_ch})")
-                self._buffer = RingBuffer(HOP_LENGTH * 16)
+                self._buffer = TimedFifo(self._dev_sr, HOP_LENGTH * 32)
 
                 # Initialize with AUDCLNT_STREAMFLAGS_LOOPBACK
                 REFERENCE_TIME = 100000  # 10ms buffer
@@ -457,7 +454,7 @@ class SpeakerCaptureWin:
         self._capture_client = None
 
     def _capture_loop(self) -> None:
-        """后台线程：持续从 IAudioCaptureClient 读取并写入 RingBuffer。
+        """后台线程：持续从 IAudioCaptureClient 读取并写入 TimedFifo（带 QPC 时间戳）。
 
         每次循环从 self._capture_client 取当前采集客户端——设备变更重连
         （_restart_capture 换新 client）后自动跟随新指针，不在旧已释放
@@ -481,6 +478,13 @@ class SpeakerCaptureWin:
                 ctypes.c_long, c_void_p, wintypes.DWORD))
             return gb, rb
 
+        qpf = ctypes.c_uint64()
+        try:
+            ctypes.windll.kernel32.QueryPerformanceFrequency(ctypes.byref(qpf))
+        except Exception:
+            qpf.value = 0
+        qpf_s = float(qpf.value) or 1.0
+
         while self._active:
             try:
                 cc = self._capture_client
@@ -493,9 +497,11 @@ class SpeakerCaptureWin:
                 p_data = ctypes.POINTER(ctypes.c_ubyte)()
                 num_frames = wintypes.DWORD()
                 flags = wintypes.DWORD()
+                dev_pos = ctypes.c_uint64()
+                qpc_pos = ctypes.c_uint64()
                 hr = fn_GetBuffer(cc, byref(p_data),
                                   byref(num_frames), byref(flags),
-                                  byref(ctypes.c_uint64()), byref(ctypes.c_uint64()))
+                                  byref(dev_pos), byref(qpc_pos))
                 if hr < 0 or num_frames.value == 0:
                     time.sleep(0.001)
                     continue
@@ -516,7 +522,12 @@ class SpeakerCaptureWin:
                         mono[i] = s / ch
                 else:
                     mono = raw
-                self._buffer.write(mono)
+                # 外部时钟（QPC 秒）：包内首帧的 QPC 位置；缺失则退回当前墙钟
+                if qpc_pos.value:
+                    ts0 = qpc_pos.value / qpf_s
+                else:
+                    ts0 = time.perf_counter()
+                self._buffer.write_ts(ts0, mono)
 
             except Exception:
                 time.sleep(0.005)
@@ -539,14 +550,26 @@ class SpeakerCaptureWin:
         """缓冲区当前可用采样数。"""
         return self._buffer.available()
 
+    def read_ts(self, n_samples: int) -> Optional[Tuple[float, list]]:
+        """读取 n 个 FIFO 采样 → (首样本主时钟秒, samples)；不足返回 None。"""
+        return self._buffer.read_ts(n_samples)
+
     def read(self, n_samples: int) -> Optional[list]:
         """从缓冲区读取 n_samples 个 FIFO 采样；数据不足时返回 None。"""
-        return self._buffer.read(n_samples)
+        got = self._buffer.read_ts(n_samples)
+        return got[1] if got is not None else None
 
     def read_latest(self, n_samples: int) -> Optional[list]:
-        """从缓冲区读取最新 n_samples 个采样，丢弃旧数据；数据不足时返回 None。"""
-        return self._buffer.read_latest(n_samples)
+        """从缓冲区读取最新 n_samples 个采样，丢弃旧数据；数据不足返回 None。"""
+        n = int(n_samples)
+        avail = self._buffer.available()
+        if avail < n:
+            return None
+        if avail > n:
+            self._buffer.read_ts(avail - n)
+        got = self._buffer.read_ts(n)
+        return got[1] if got is not None else None
 
     def flush(self) -> None:
         """清空缓冲区。"""
-        self._buffer = RingBuffer(HOP_LENGTH * 16)
+        self._buffer.flush()

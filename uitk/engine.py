@@ -323,7 +323,11 @@ class EngineController:
 
     def calibrate_aec_delay(self, mic_dev: str, far_dev: str,
                             far_kind: str = "speaker") -> Optional[float]:
-        """离线校准 AEC far 延迟（须在音频停止时调用）。失败返回 None。"""
+        """离线校准 AEC far 延迟（须在音频停止时安静测一次，硬件不变则恒定）。
+
+        返回「扬声器端点 → 麦克风回声」唯一延迟路径值（无隐含叠加），
+        即滑杆要用的值；失败返回 None（UI 保留原值）。
+        """
         from audio_processor import AudioThread
         return AudioThread.calibrate_aec_delay(mic_dev, far_dev, far_kind)
 

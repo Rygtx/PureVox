@@ -238,13 +238,13 @@ class AudioThread(threading.Thread):
         # ── AEC（行级：一行 echo_cancel 输入对应一路 AEC）──
         # cfg: SessionPlan.aec_rows（{mic, far_gain_db, far_kind, far_device}）；
         # live: 建流后装配的 [{mic_index, capture, row}]，随流共存亡。
-        # far 样本直达行内 FarTap → AecRow，不经过任何 fx 处理。
+        # far 经行内 GridHistory 按外部时钟配对直达 AecRow，不经过任何 fx。
         self._aec_cfg: list = []
         self._aec_inputs: list = []   # 建桥时的输入顺序（与 read_each 对齐）
         self._aec_live: list = []
         self._aec_vu: dict = {}   # {mic_name: {"mic": float, "far": float, "out": float}}
         # ── 回环输入（一行 loopback 输入对应一路回采，进混音）──
-        # cfg: SessionPlan.loopbacks（扬声器设备名）；live: [{capture, tap}]。
+        # cfg: SessionPlan.loopbacks（扬声器设备名）；live: [{capture, hist, rs, ratio}]。
         # 与 AEC 行 far=扬声器继承同一套回环采集机制。
         self._loopback_cfg: list = []
         self._loopback_live: list = []
@@ -324,7 +324,8 @@ class AudioThread(threading.Thread):
         """按 _aec_cfg 逐行装配 AEC（far 采集 + 行级 AecRow），建流后调用。
 
         far=扬声器继承回环采集机制（_open_loopback_capture），far=麦克风
-        走麦克风专用采集；far 样本直达行内 FarTap，不经过任何 fx。
+        走麦克风专用采集；far 样本经行内 GridHistory 按外部时钟配对直达 AecRow，
+        不经过任何 fx。
         """
         self._aec_live = []
         if not self._aec_cfg:
@@ -370,15 +371,29 @@ class AudioThread(threading.Thread):
         self._aec_vu = {}
 
     def _build_loopback_rows(self) -> None:
-        """按 _loopback_cfg 逐行装配回环输入（回环采集 + FarTap），建流后调用。"""
+        """按 _loopback_cfg 逐行装配回环输入（回环采集 + 外部时钟网格历史）。
+
+        桌面声音与 AEC far 一样：样本带采集时间戳入 GridHistory，按 48k 网格
+        逐 hop 出队进混音，时间对齐由时间戳保证（无隐藏缓冲）。
+        """
         self._loopback_live = []
         if not self._loopback_cfg:
             return
-        from pvengine.dsp.far_sync import FarTap
+        import numpy as _np
+        from pvengine.dsp.hop_queue import GridHistory
+        from pvengine.dsp.resampler import Resampler
+        cap_samples = HOP_LENGTH * 150   # 1.5s 上限
         for dev in self._loopback_cfg:
             cap = self._open_loopback_capture(dev)
-            tap = FarTap(cap.dev_sr, HOP_LENGTH)
-            self._loopback_live.append({"capture": cap, "tap": tap,
+            hist = GridHistory(cap_samples)
+            if cap.dev_sr != SAMPLE_RATE:
+                rs = Resampler()
+                ratio = SAMPLE_RATE / float(cap.dev_sr)
+                rs.process(_np.zeros(HOP_LENGTH, dtype=_np.float32), ratio)
+            else:
+                rs, ratio = None, 1.0
+            self._loopback_live.append({"capture": cap, "hist": hist,
+                                        "rs": rs, "ratio": ratio,
                                         "device": dev})
             _module_log(f"[回环] 行装配: {dev} sr={cap.dev_sr}Hz")
 
@@ -419,14 +434,13 @@ class AudioThread(threading.Thread):
                             far_kind: str = "speaker") -> Optional[float]:
         """离线校准 AEC far 延迟（须在音频处理停止时调用）。
 
-        测量回路与运行时 far 采集同一点：播放 chirp 到目标端点，同时采集
-        far 参考（far=扬声器＝所选端点 loopback；far=麦克风＝far mic 输入）
-        与目标麦克风；两路录音同起点后直接互相关 far↔mic 求相对延迟 =
-        运行时需补偿的 far_delay。不再对「写播放 → mic」做绝对链路计时，
-        前导静音/预卷/播放缓冲的系统偏差在互相关里抵消（见 aec_calib）。
+        同一时点采集 far 参考（far=扬声器＝所选端点 loopback / far=麦克风＝
+        far mic 输入）与麦克风后直接互相关，得到「扬声器端点 → 麦克风回声」
+        的唯一延迟路径值 K，返回即滑杆要用的值：无任何隐含叠加。硬件不变
+        则 K 基本恒定，故安静环境测一次、保存持续使用即可（模型自带多抽头
+        对齐，远/近端残余错位由模型内部消化，不再额外加减）。
 
-        设备解析复用主设备选择（名字相似度模糊匹配）。失败返回 None
-        （UI 保持原 far_delay 不变），成功返回延迟毫秒数。
+        失败返回 None（UI 保留原值）。
         """
         if pyaudio is None or IS_LINUX:
             _module_log("[AEC] 校准当前仅支持 Windows 本地 WASAPI")
@@ -458,7 +472,7 @@ class AudioThread(threading.Thread):
         out_idx = get_device_id(far_dev, False, api) \
             if far_kind == "speaker" else None
 
-        probe = _make_probe(SAMPLE_RATE)
+        probe = _make_probe(SAMPLE_RATE)   # 单发上扫 chirp（无重复假峰）
         probe_sec = len(probe) / float(SAMPLE_RATE)
         rec_samples = int(SAMPLE_RATE * (probe_sec + 1.8))   # 前后各留余量
         mic_np = np.zeros(rec_samples, dtype=np.float32)
@@ -591,9 +605,11 @@ class AudioThread(threading.Thread):
             _module_log("[AEC] 校准失败：未检测到可靠回声峰（音量过低/设备错误？）")
             return None
         delay_ms, diag = res
-        _module_log(f"[AEC] 校准完成: delay={delay_ms:.1f}ms "
-                    f"corr={diag['corr']:.2f} snr={diag['snr']:.1f} "
-                    f"n_peaks={diag['n_peaks']}")
+        delay_ms = max(0.0, min(1000.0, delay_ms))
+        _module_log(f"[AEC] 校准完成: far_delay={delay_ms:.1f}ms "
+                    f"(回声路径唯一值，硬件不变则恒定；互相关前已按探测音"
+                    f"频带做零相位带通去噪) corr={diag['corr']:.2f} "
+                    f"snr={diag['snr']:.1f}")
         return round(delay_ms, 1)
 
     def _validate_and_fix_device(self, device_id: int, want_input: bool) -> int:
@@ -804,17 +820,27 @@ class AudioThread(threading.Thread):
                 sink.write(out)
 
     def _read_mix(self) -> Optional[List[float]]:
-        """统一本地读侧：逐路取 hop → 各 AEC 行（mic 增益 + far 直达 + AEC）
-        → 回环输入行（FarTap 拉齐进混音）→ 等权混音。无数据返回 None。
+        """统一本地读侧：逐路取 hop(带采集时间戳) → 各 AEC 行（far 按外部时钟
+        网格配对直达 + AEC）→ 回环输入行（网格逐 hop 出队进混音）→ 等权混音。
 
-        far/回采搬运（capture.available 全搬 → tap.push_far/push）与 mic
-        同一 hop 节拍，far 经行内 FarTap 按 mic 主时钟拉齐，恒满帧不断档。
-        本路 mic 缺席时该 AEC 行本 hop 跳过（不喂零，避免污染 AEC cache）。
+        AEC far/mic 按**外部时钟**配对：mic 侧带采集时间戳（PortAudio adc→
+        QPC 映射 / QPC），far 侧按时间戳入 48k 网格历史；far 参考 = 该 mic
+        时刻 − far_delay 的历史段，谁先到/晚到只影响有没有样本，不影响对齐。
+        far 历史不足时该行直通 mic（不丢人声、不进模型）。
         """
-        hops = self._bridge.read_each(HOP_LENGTH) \
+        ent = self._bridge.read_each_ts(HOP_LENGTH) \
             if self._bridge is not None else None
-        if hops is None:
-            hops = []
+        hops: list = []
+        mts: list = []
+        if ent:
+            for e in ent:
+                if e is None:
+                    hops.append(None)
+                    mts.append(None)
+                else:
+                    ts0, hop = e
+                    hops.append(hop)
+                    mts.append(ts0)
         for live in self._aec_live:
             idx = live["mic_index"]
             hop = hops[idx] if 0 <= idx < len(hops) else None
@@ -823,11 +849,10 @@ class AudioThread(threading.Thread):
             cap = live["capture"]
             navail = cap.available()
             if navail > 0:
-                got = cap.read(navail)
-                if got:
-                    live["row"].push_far(got)
-            live["far_buf"] = navail
-            out_hop = live["row"].process_mic(hop)
+                got = cap.read_ts(navail)
+                if got is not None:
+                    live["row"].push_far_ts(got[0], got[1])
+            out_hop = live["row"].process_mic(hop, mts[idx] or 0.0)
             hops[idx] = out_hop.tolist()
             # AEC VU：每 hop 计算 mic/far/out 峰值（UI 线程直接读 float，无需加锁）
             mic_pk = max(abs(x) for x in hop) if hop else 0.0
@@ -842,10 +867,16 @@ class AudioThread(threading.Thread):
             cap = lb["capture"]
             navail = cap.available()
             if navail > 0:
-                got = cap.read(navail)
-                if got:
-                    lb["tap"].push(got)
-            hops.append(lb["tap"].pull().tolist())
+                got = cap.read_ts(navail)
+                if got is not None:
+                    if lb["rs"] is not None:
+                        seq = lb["rs"].process(list(got[1]), lb["ratio"])
+                    else:
+                        seq = got[1]
+                    lb["hist"].push_ts(got[0], seq)
+            hop_lb = lb["hist"].pop_hop(HOP_LENGTH)
+            if hop_lb is not None:
+                hops.append(hop_lb)
         chunks = [h for h in hops if h is not None]
         if not chunks:
             return None
@@ -870,6 +901,7 @@ class AudioThread(threading.Thread):
         d = self._diag
         last_viz = 0.0
         t_last_health = time.time()
+        t_aec_diag_end = time.time() + 60.0   # AEC 诊断只在启动后前 60s 打印
         while not self._stop_event.is_set():
             if network:
                 data = self._network_reader()
@@ -884,9 +916,10 @@ class AudioThread(threading.Thread):
 
             if not network and self._aec_live:
                 out = self._process_frame(chunk)
-                # ── AEC 诊断：每 100 帧 (1s) 一行 ──
+                # ── AEC 诊断：每 100 帧 (1s) 一行，仅启动后前 60s ──
                 self._aec_diag_count += 1
-                if self._aec_diag_count >= 100:
+                if self._aec_diag_count >= 100 and \
+                        time.time() <= t_aec_diag_end:
                     self._aec_diag_count = 0
                     for live in self._aec_live:
                         row = live["row"]
@@ -896,13 +929,11 @@ class AudioThread(threading.Thread):
                             if len(far) else 0.0
                         out_rms = (sum(x * x for x in chunk) / len(chunk)) ** 0.5
                         _module_log(
-                            "[AEC诊断] mic=%s far(%s)=%s | buf=%d lvl=%d "
-                            "rate=%.4f conc=%d drop=%d | far=%.4f out=%.4f "
-                            "cache=%.1f"
+                            "[AEC] mic=%s far(%s)=%s | far_hist=%d drop=%d "
+                            "resync=%d | far=%.4f out=%.4f cache=%.1f"
                             % (live["mic"], live["far_kind"],
-                               live["far_device"], live.get("far_buf", 0),
-                               sd["level"], sd["rate"], sd["conceals"],
-                               sd["drops"], far_rms, out_rms,
+                               live["far_device"], sd["len"], sd["drops"],
+                               sd["resync"], far_rms, out_rms,
                                sd["cache_norm"]))
             elif network:
                 out = self.processor.process_pipeline(chunk)

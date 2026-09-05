@@ -31,8 +31,7 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 TEST_FILES = [
     "test_session_plan.py",     # L3 会话计划（纯函数）
     "test_playback_sink.py",    # 播放正确性（合成时钟，无硬件）
-    "test_far_sync.py",         # AEC far 采集对齐（合成时钟，无硬件）
-    "test_aec_rows.py",         # 行级 AEC：FarTap/AecRow（桩会话，无硬件）
+    "test_aec_rows.py",         # 行级 AEC：HopQueue 严格配对/AecRow（桩会话，无硬件）
     "test_aec_calib.py",        # AEC far 延迟校准：探测音+延迟估计（合成，无硬件）
     "test_transport.py",        # 传输层导入与优雅降级
     "test_devices.py",          # 设备面：枚举/虚拟麦克风/配置键

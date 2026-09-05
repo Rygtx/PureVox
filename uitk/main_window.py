@@ -207,39 +207,70 @@ class NodeRow(tk.Frame):
         独占第三行（见 _build_ec_body）。此函数保留空实现。"""
         return
 
+    _LBL_W = 9   # 参数区左侧标签统一列宽，保证下行/滑杆/电平左对齐
+
     def _ec_line(self, label):
-        """下方参数区一行：左侧标签 + 右侧下拉（撑满剩余宽度）。"""
+        """下方参数区一行：固定宽左标签 + 右侧控件（撑满剩余宽度）。"""
         line = tk.Frame(self.body_frame, bg=theme.BASE)
         line.pack(fill=tk.X, padx=self.sizes["pad_sm"], pady=2)
         tk.Label(line, text=label, bg=theme.BASE, fg=theme.TEXT_DIM,
-                 font=self.fonts.get("small")).pack(
-            side=tk.LEFT, padx=(0, self.sizes["pad_sm"]))
+                 font=self.fonts.get("small"), width=self._LBL_W,
+                 anchor="w").pack(side=tk.LEFT, padx=(0, self.sizes["pad_sm"]))
         return line
 
     def _build_ec_body(self):
-        """仅 echo_cancel 行：第二行输入麦克风，第三行远端参考，第四行三路 VU。
-        第一行（行头：标题 + 麦克风 dB 滑杆）走通用 inline 滑杆机制。"""
+        """echo_cancel 行参数区（自上而下）：扬声器(far) → 麦克风(mic) →
+        Far 延迟滑块(0~1000/10) → 三路电平 Mic/Far/Out。
+
+        第一行（行头：标题 + 麦克风 dB 滑杆）走通用 inline 滑杆机制。
+        左侧标签统一列宽对齐（_LBL_W）。
+        """
         if self.spec.name != "echo_cancel":
             return
-        # 第二行：输入麦克风（与 audio_input 同一套 device 机制）
-        var = tk.StringVar(value=str((self.cfg.get("params") or {}).get(
-            "device", "")))
-        self.dev_var = var
-        self.dev_combo = DarkCombo(
-            self._ec_line("输入麦克风"), [var.get()] if var.get() else [],
-            var, on_change=lambda: self._on_dev_changed({}, "device"),
-            sizes=self.sizes, fonts=self.fonts)
-        self.dev_combo.pack(side=tk.LEFT, fill=tk.X, expand=True)
-        # 第三行：远端参考（扬声器/麦克风分组二选一）
+        # ── 扬声器（远端参考，保留 far=麦克风选项）──
         fvar = tk.StringVar(value="")
         self.far_var = fvar
         self._far_items = {}
         self.far_combo = DarkCombo(
-            self._ec_line("远端参考"), [""], fvar,
+            self._ec_line("扬声器"), [""], fvar,
             on_change=self._on_far_changed,
             sizes=self.sizes, fonts=self.fonts)
         self.far_combo.pack(side=tk.LEFT, fill=tk.X, expand=True)
-        # 第四行：三路 VU 电平表（输入 mic / 输入 far / 输出）
+        # ── 麦克风（本行消回声的输入麦，与 audio_input 同一套 device 机制）──
+        var = tk.StringVar(value=str((self.cfg.get("params") or {}).get(
+            "device", "")))
+        self.dev_var = var
+        self.dev_combo = DarkCombo(
+            self._ec_line("麦克风"), [var.get()] if var.get() else [],
+            var, on_change=lambda: self._on_dev_changed({}, "device"),
+            sizes=self.sizes, fonts=self.fonts)
+        self.dev_combo.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        # ── Far 延迟：滑块 + 值(ms) + 校准 ──
+        from .widgets import HSlider, FlatButton
+        delay_line = self._ec_line("Far 延迟")
+        self._aec_delay_var = tk.DoubleVar(value=0.0)
+        auto_btn = FlatButton(delay_line, "校准", sizes=self.sizes,
+                              command=self._on_aec_auto_calibrate)
+        auto_btn.pack(side=tk.RIGHT, padx=(0, 4))
+        self._aec_auto_btn = auto_btn
+        delay_lbl = tk.Label(delay_line, text="0ms", bg=theme.BASE,
+                             fg=theme.TEXT, font=self.fonts.get("small"),
+                             width=7, anchor="e")
+        delay_lbl.pack(side=tk.RIGHT, padx=(4, 0))
+        self._aec_delay_lbl = delay_lbl
+        delay_slider = HSlider(
+            delay_line, 0, 1000, 0.0, 10,
+            command=self._on_aec_delay_changed,
+            sizes=self.sizes)
+        delay_slider.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        self._aec_delay_slider = delay_slider
+        # 回显已持久化的 far_delay_ms（重启后仍显示并沿用）
+        saved_ms = float((self.cfg.get("params") or {}).get(
+            "far_delay_ms", 0.0) or 0.0)
+        if saved_ms:
+            delay_slider.set_value(min(1000.0, max(0.0, saved_ms)))
+            delay_lbl.config(text=f"{saved_ms:.0f}ms")
+        # ── 三路电平 Mic/Far/Out（放在延迟滑块下方）──
         vu_frame = tk.Frame(self.body_frame, bg=theme.BASE)
         vu_frame.pack(fill=tk.X, padx=self.sizes["pad_sm"], pady=2)
         self._aec_vu_widgets = {}
@@ -247,30 +278,12 @@ class NodeRow(tk.Frame):
             row = tk.Frame(vu_frame, bg=theme.BASE)
             row.pack(fill=tk.X, pady=1)
             tk.Label(row, text=label, bg=theme.BASE, fg=theme.TEXT_DIM,
-                     font=self.fonts.get("small"), width=4,
-                     anchor="e").pack(side=tk.LEFT, padx=(0, 4))
+                     font=self.fonts.get("small"), width=self._LBL_W,
+                     anchor="w").pack(side=tk.LEFT,
+                                      padx=(0, self.sizes["pad_sm"]))
             vu = VUCanvas(row, sizes=self.sizes, height=16)
             vu.pack(side=tk.LEFT, fill=tk.X, expand=True)
             self._aec_vu_widgets[key] = vu
-        # 第五行：far 延迟滑杆 + 自动校准按钮
-        delay_line = self._ec_line("Far 延迟")
-        from .widgets import HSlider, FlatButton
-        self._aec_delay_var = tk.DoubleVar(value=0.0)
-        delay_lbl = tk.Label(delay_line, text="0ms", bg=theme.BASE,
-                             fg=theme.TEXT, font=self.fonts.get("small"),
-                             width=5, anchor="w")
-        delay_lbl.pack(side=tk.RIGHT, padx=(4, 0))
-        self._aec_delay_lbl = delay_lbl
-        auto_btn = FlatButton(delay_line, "自动", sizes=self.sizes,
-                              command=self._on_aec_auto_calibrate)
-        auto_btn.pack(side=tk.RIGHT, padx=(0, 4))
-        self._aec_auto_btn = auto_btn
-        delay_slider = HSlider(
-            delay_line, 0, 500, 0.0, 10,
-            command=self._on_aec_delay_changed,
-            sizes=self.sizes)
-        delay_slider.pack(side=tk.LEFT, fill=tk.X, expand=True)
-        self._aec_delay_slider = delay_slider
 
     def _on_far_changed(self):
         kind, name = self._far_items.get(self.far_var.get(), ("", ""))
@@ -633,21 +646,26 @@ class MainWindowTk:
         self.root.after(120, self._poll_tray)
 
     def toggle_window(self):
-        """显隐切换：overrideredirect 窗口的 state() 不可靠，用自维护标志。"""
+        """显隐切换：overrideredirect 窗口的 state() 不可靠，用自维护标志。
+
+        呼出即置顶（保持 topmost 直至收起）；隐藏只发生在点托盘图标或关窗
+        （X）。"""
         shown = getattr(self, "_shown", True)
         if shown:
             self._hide_window()
         else:
             self.root.deiconify()
-            # 无边框窗口 deiconify 后可能不置顶/无焦点，补一次提升
             self.root.lift()
             self.root.focus_force()
             self.root.attributes("-topmost", True)
-            self.root.after(50, lambda: self.root.attributes("-topmost", False))
             self._shown = True
 
     def _hide_window(self):
         self.root.withdraw()
+        try:
+            self.root.attributes("-topmost", False)
+        except Exception:
+            pass
         self._shown = False
 
     def _close_request(self):
@@ -1348,26 +1366,27 @@ class MainWindowTk:
         row.title_lbl.unbind("<Double-Button-1>")
 
     def _on_aec_delay_change(self, ms):
-        """延迟滑杆：运行中实时生效，停止时只存配置。"""
+        """延迟滑杆：运行中实时生效，并持久化（重启后沿用）。"""
         thread = self.engine.thread if self.engine.running else None
-        if not thread:
-            return
-        for r in self.rows:
-            if r.spec.name == "echo_cancel" and hasattr(r, "_aec_delay_slider") \
-                    and r._aec_delay_slider is not None:
-                mic = str((r.cfg.get("params") or {}).get("device", ""))
-                if mic:
-                    thread.set_aec_delay_ms(mic, ms)
+        if thread:
+            for r in self.rows:
+                if r.spec.name == "echo_cancel" and hasattr(r, "_aec_delay_slider") \
+                        and r._aec_delay_slider is not None:
+                    mic = str((r.cfg.get("params") or {}).get("device", ""))
+                    if mic:
+                        thread.set_aec_delay_ms(mic, ms)
+        self._persist()
 
     def _on_aec_auto_calibrate(self, row):
-        """自动校准：须在音频停止时调用，播放脉冲检测延迟。
+        """自动校准（离线）：须先关闭音频处理，安静环境下播放脉冲测一次。
 
-        校准失败（返回 None）时保持原有 far_delay 不变并提示，不把
-        用户手调值清 0。
+        硬件不变时测得值基本恒定，之后一直使用该 far_delay；校准失败
+        （返回 None）时保留原值并提示，不把用户手调值清 0。
         """
         if self.engine.running:
             from tkinter import messagebox
-            messagebox.showinfo("校准", "请先关闭音频处理，再点击自动校准。")
+            messagebox.showinfo("校准", "请先关闭音频处理（并保持环境安静），"
+                                        "再点击自动校准。")
             return
         mic = str((row.cfg.get("params") or {}).get("device", ""))
         far_dev = str((row.cfg.get("params") or {}).get("far_device", ""))
@@ -1387,14 +1406,14 @@ class MainWindowTk:
                     from tkinter import messagebox
                     messagebox.showwarning(
                         "校准", "延迟校准失败，已保留原值。\n"
-                        "请检查日志（回声校准），确认麦克风能听到扬声器 "
-                        "的测试音后再试。")
+                        "请保持环境安静并确认麦克风能听到扬声器测试音后重试。")
                 elif hasattr(row, "_aec_delay_slider") and row._aec_delay_slider:
                     row._aec_delay_slider.set_value(delay_ms)
                     row._aec_delay_lbl.config(text=f"{delay_ms:.0f}ms")
                     row.cfg.setdefault("params", {})["far_delay_ms"] = delay_ms
+                    self._persist()
                 if btn:
-                    btn.config(state=tk.NORMAL, text="自动")
+                    btn.config(state=tk.NORMAL, text="校准")
             self.root.after(0, _update)
         threading.Thread(target=_run, daemon=True).start()
 
@@ -1423,10 +1442,11 @@ class MainWindowTk:
                     w.update_spectrum(None, data)
             except Exception:
                 pass
-        # ── AEC 行 VU 电平表更新 ──
-        thread = self.engine.thread if self.engine.running else None
-        aec_vu = thread.get_aec_vu() if thread else {}
-        if aec_vu:
+        # ── AEC 行 VU 电平表更新（10fps，降 CPU）──
+        aec_thread = self.engine.thread if self.engine.running else None
+        if now >= getattr(self, "_aec_vu_next", 0.0):
+            self._aec_vu_next = now + 0.1
+            aec_vu = aec_thread.get_aec_vu() if aec_thread else {}
             for r in self.rows:
                 if r.spec.name != "echo_cancel" or not r.on_var.get():
                     continue
@@ -1434,17 +1454,18 @@ class MainWindowTk:
                 if not vu_widgets:
                     continue
                 mic_name = str((r.cfg.get("params") or {}).get("device", ""))
+                if not aec_thread:
+                    for key in ("mic", "far", "out"):
+                        w = vu_widgets.get(key)
+                        if w:
+                            w.update_level(0.0, now)
+                    continue
                 vu = aec_vu.get(mic_name)
                 if vu:
                     for key in ("mic", "far", "out"):
                         w = vu_widgets.get(key)
                         if w:
                             w.update_level(vu[key], now)
-                elif not thread:
-                    for key in ("mic", "far", "out"):
-                        w = vu_widgets.get(key)
-                        if w:
-                            w.update_level(0.0, now)
         self.root.after(33, self._viz_tick)
 
     def _attach_vb_card(self, row):

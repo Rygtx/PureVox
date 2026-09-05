@@ -19,7 +19,7 @@
 
 与扬声器 loopback（SpeakerCaptureWin）对偶：PortAudio 输入流直采
 指定麦克风，mono 48kHz，回调写环形缓冲（200ms）。AEC 行自建自停，
-不进主混音，样本直达行内 FarSync。
+不进主混音，样本直达行内 AecRow（far 严格配对）。
 
 接口契约（与 SpeakerCapture 一致）：
     start() -> bool / stop() / read(n) / available() / flush()
@@ -28,22 +28,28 @@
 
 import struct
 import threading
-from typing import Optional
+import time
+from typing import Optional, Tuple
 
-from .common import RingBuffer, HOP_LENGTH, _module_log
+from .common import LinearClock, TimedFifo, HOP_LENGTH, _module_log
 
 _SAMPLE_RATE = 48000
 _RING_CAP = _SAMPLE_RATE // 5    # 200ms（吸收调度抖动）
 
 
 class MicCaptureWin:
-    """指定麦克风的独立输入流（Windows 专用，far=mic 时一行一路）。"""
+    """指定麦克风的独立输入流（Windows 专用，far=mic 时一行一路）。
+
+    采集时间戳：PortAudio input_buffer_adc_time 经 LinearClock 映射到主时钟
+    （QPC/perf 秒），写入 TimedFifo（far 与 mic 同一外部时钟域）。
+    """
 
     def __init__(self, device_id: Optional[int] = None):
         self._device_id = device_id
         self._p = None
         self._stream = None
-        self._buffer = RingBuffer(_RING_CAP)
+        self._buffer = TimedFifo(_SAMPLE_RATE, _RING_CAP)
+        self._clock = LinearClock()
         self._active = False
         self._lock = threading.Lock()
         self._dev_sr = _SAMPLE_RATE
@@ -104,7 +110,15 @@ class MicCaptureWin:
         if not self._active:
             return (None, pyaudio.paComplete)
         try:
-            self._buffer.write(list(struct.unpack(f"{frame_count}f", in_data)))
+            data = list(struct.unpack(f"{frame_count}f", in_data))
+            adc = time_info.get('input_buffer_adc_time')
+            now = time.perf_counter()
+            if adc is not None:
+                self._clock.add(adc, now)
+                ts0 = self._clock.map(adc)
+            else:
+                ts0 = now
+            self._buffer.write_ts(ts0, data)
         except Exception:
             pass
         return (None, pyaudio.paContinue)
@@ -112,8 +126,12 @@ class MicCaptureWin:
     def available(self) -> int:
         return self._buffer.available()
 
+    def read_ts(self, n_samples: int) -> Optional[Tuple[float, list]]:
+        return self._buffer.read_ts(n_samples)
+
     def read(self, n_samples: int) -> Optional[list]:
-        return self._buffer.read(n_samples)
+        got = self._buffer.read_ts(n_samples)
+        return got[1] if got is not None else None
 
     def flush(self) -> None:
-        self._buffer = RingBuffer(_RING_CAP)
+        self._buffer.flush()

@@ -20,21 +20,26 @@
 信号流（该行 mic 专属，不经过 fx 链）：
   mic_hop → AEC（far 直达）→ 混音
 
-far 端经 FarTap 按 mic hop 主时钟拉齐后**直达**本行，不经过任何
-fx 处理。AecEngine 会话多行共享（`get_shared_engine` 按模型路径缓存），
-cache / FarTap 为行私有状态。
+far/mic 按**外部时钟（QPC/perf 秒）**配对：mic 每 hop 带采集时间戳，far
+采集样本带时间戳入 `GridHistory`（48k 采样网格）。配对取的是时间：
+模型 far 输入 = far 历史里 [mic网格 − far_delay, +hop) 的样本——即回声源
+那一份 far；谁先到、谁晚到只影响是否有样本，不影响配对对齐，无隐藏缓冲。
 
-选型说明（先扩展再新建）：旧 AecStage 是单例 fx 语义（共享 cache，
-多行无法独立），且挂在 fx 链上由 FrameContext 喂 far；行级 AEC 需要
-"一行一 cache + far 直达 + mic 增益"，旧结构无法扩展，故单列此文件；
-旧 AecStage 已删除，行级 AEC 的唯一实现点在此。
+far 参考天然在时间上早于回声：far 只要采集到 mic 时刻往前 d 的历史即可，
+不需追上 mic。far 历史不足（缺配/刚启动/生产空洞）时本行直通 mic（不丢人声、
+不进模型、不动 cache）。far_delay 在网格域直接切片，无需额外延迟环。
+
+选型说明（先扩展再新建）：旧实现用计数/水位配对（HopQueue 或 FarSync），
+时间原点依赖生产者同时起步，遇调度抖动/不同起步会错位；外部时钟配对用
+时间戳网格对齐，故替换。AecEngine 会话多行共享（按模型路径缓存），cache
+行私有、逐 hop 续传。
 """
 
 import numpy as np
 
 from pvengine.components.aec import AecEngine
 from pvengine.context import HOP_LENGTH, SAMPLE_RATE
-from pvengine.dsp.far_sync import FarTap
+from pvengine.dsp.hop_queue import GridHistory, grid_from_ts
 
 _engines: dict = {}
 
@@ -67,65 +72,73 @@ def find_model_file(name: str) -> str:
 
 
 class AecRow:
-    """一行 AEC 的全部行级状态：FarTap + AEC cache + far 延迟缓冲。"""
+    """一行 AEC 的行级状态：far 网格历史 + AEC cache + far 延迟(d)。"""
 
-    MAX_DELAY_SAMPLES = 24000  # 500ms @ 48kHz
+    MAX_DELAY_SAMPLES = 48000  # 1000ms @ 48kHz
+    # far 历史上限：需覆盖 far_delay(≤500ms) + 少许余量；超出只丢最旧 far
+    _HIST_CAP = SAMPLE_RATE * 2   # 2s
 
     def __init__(self, model_path: str, far_sample_rate: int = SAMPLE_RATE,
-                 far_gain_db: float = -20.0):
+                 far_gain_db: float = 0.0):
         self.engine = get_shared_engine(model_path)
         self.cache = self.engine.new_state()
         self.far_sample_rate = int(far_sample_rate or SAMPLE_RATE)
-        # far 对齐 + 48k 重采样收敛在 FarTap（与 loopback 输入行共用）
-        self.tap = FarTap(self.far_sample_rate, HOP_LENGTH)
-        # 参考音量：只缩放进模型的 far 帧（调试用，默认 0dB 直达）
+        self.far_hist = GridHistory(self._HIST_CAP)
+        if self.far_sample_rate != SAMPLE_RATE:
+            from pvengine.dsp.resampler import Resampler
+            self._resampler: object = Resampler()
+            self._ratio = SAMPLE_RATE / float(self.far_sample_rate)
+            self._resampler.process(np.zeros(HOP_LENGTH, dtype=np.float32),
+                                    self._ratio)
+        else:
+            self._resampler = None
+            self._ratio = 1.0
         self._far_gain = 10.0 ** (float(far_gain_db) / 20.0)
         self.last_far = np.zeros(HOP_LENGTH, dtype=np.float32)
-        # far 手动延迟缓冲（样本级，0–500ms）
         self._delay_samples = 0
-        self._delay_buf = np.zeros(self.MAX_DELAY_SAMPLES, dtype=np.float32)
-        self._delay_write_pos = 0
+        self._n_fallback = 0
 
     def set_far_gain_db(self, db: float) -> None:
         self._far_gain = 10.0 ** (float(db) / 20.0)
 
     def set_delay_ms(self, ms: float) -> None:
-        """设置 far 信号延迟（毫秒），立即生效。"""
+        """far_delay（毫秒）——网格域切片偏移，立即生效。"""
         self._delay_samples = max(0, min(self.MAX_DELAY_SAMPLES,
                                          int(round(ms * SAMPLE_RATE / 1000.0))))
 
     def get_delay_ms(self) -> float:
         return self._delay_samples * 1000.0 / SAMPLE_RATE
 
-    def push_far(self, samples) -> None:
-        """far 设备域新到样本推入对齐器（引擎线程每 hop 先搬后取）。"""
-        self.tap.push(samples)
+    def push_far_ts(self, ts0: float, samples) -> None:
+        """far 设备域新到样本入历史（ts0=首样本主时钟秒）。重采样到 48k。"""
+        if not samples:
+            return
+        if self._resampler is not None:
+            got = self._resampler.process(list(samples), self._ratio)
+            self.far_hist.push_ts(ts0, got)
+        else:
+            self.far_hist.push_ts(ts0, samples)
 
-    def _delay_apply(self, far_ref: np.ndarray) -> np.ndarray:
-        """对 far_ref 施加样本级延迟（环形缓冲，零填充启动阶段）。"""
-        n = len(far_ref)
-        d = self._delay_samples
-        if d == 0:
-            return far_ref
-        out = np.empty(n, dtype=np.float32)
-        buf = self._delay_buf
-        wp = self._delay_write_pos
-        for i in range(n):
-            buf[wp] = far_ref[i]
-            rp = (wp - d) % self.MAX_DELAY_SAMPLES
-            out[i] = buf[rp]
-            wp = (wp + 1) % self.MAX_DELAY_SAMPLES
-        self._delay_write_pos = wp
-        return out
+    def process_mic(self, mic_hop, ts0: float = 0.0) -> np.ndarray:
+        """本路 mic 一 hop（ts0=采集主时钟秒）→ AEC → 输出一 hop。
 
-    def process_mic(self, mic_hop) -> np.ndarray:
-        """本路 mic 一 hop → AEC → 输出一 hop（恒满帧）。
-
-        far 经 FarTap 拉齐 + 手动延迟后直达模型，不经过任何 fx。
+        模型 far 输入 = far 历史 [mic网格 − far_delay, +hop)，即回声源；
+        far 历史不足时直通 mic（不丢人声、不进模型、不动 cache）。
         """
         mic = np.asarray(mic_hop, dtype=np.float32).reshape(-1)
-        far_ref = self.tap.pull()
-        far_ref = self._delay_apply(far_ref)
+        g0 = grid_from_ts(ts0) if ts0 else 0
+        start = g0 - self._delay_samples
+        far_win = self.far_hist.window(start, HOP_LENGTH)
+        if far_win is None:
+            # 理想窗口未就绪（启动/far_delay 未设/空洞）。若已有任何 far 历史，
+            # 先喂“最近一段”让 AEC 运行（模型多抽头自找对齐），否则直通 mic。
+            end_g = self.far_hist.end_grid()
+            if end_g is not None and end_g >= HOP_LENGTH:
+                far_win = self.far_hist.window(end_g - HOP_LENGTH, HOP_LENGTH)
+            if far_win is None:
+                return mic
+            self._n_fallback += 1
+        far_ref = np.asarray(far_win, dtype=np.float32).reshape(-1)
         if self._far_gain != 1.0:
             far_ref = far_ref * np.float32(self._far_gain)
         self.last_far = far_ref
@@ -133,6 +146,7 @@ class AecRow:
         return np.asarray(out, dtype=np.float32).reshape(-1)
 
     def diag(self) -> dict:
-        d = self.tap.diag()
+        d = self.far_hist.diag()
+        d["fallback"] = self._n_fallback
         d["cache_norm"] = float((self.cache * self.cache).sum() ** 0.5)
         return d

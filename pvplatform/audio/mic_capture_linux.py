@@ -18,8 +18,8 @@
 """Linux 麦克风专用采集（AEC far 选麦克风时的数据源）。
 
 在已有 PwBridge 上开一路 far 专用真源流（monitor=False，直录麦克风
-节点，不经过 monitor），AEC 行自建自停，不进主混音，样本直达行内
-FarSync。采样率恒 F32 单声道 48000Hz。
+节点，不经过 monitor），AEC 行自建自停，不进主混音，样本直达行内 AecRow
+（far 严格配对，满 hop 出队）。采样率恒 F32 单声道 48000Hz。
 
 接口契约（与 SpeakerCapture 一致）：
     start() -> bool / stop() / read(n) / available() / flush()
@@ -97,3 +97,13 @@ class MicCaptureLinux:
 
     def flush(self) -> None:
         pass
+
+    def read_ts(self, n_samples: int):
+        """读取 n 样本 → (首样本主时钟秒, samples)；不足返回 None。
+
+        时间戳取读取瞬间的 perf（Linux 暂以采集/读取边界近似，后续接 libpulse
+        流时间精化；与 Windows 同一外部钟量纲）。"""
+        data = self.read(n_samples)
+        if not data:
+            return None
+        return (__import__('time').perf_counter(), data)

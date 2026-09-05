@@ -1,16 +1,40 @@
 # 更新日志
 
-## 2026-09-05 — AEC far 延迟自动校准重做 + far=扬声器按所选端点回环
+## 2026-09-05 — AEC far/mic 改外部时钟时间戳配对（GridHistory）+ 移除 FarSync/FarTap
 
-- **自动校准结果大幅虚高且漂移的原因与修复**：旧算法测的是「开始录音 →
-  回声进麦」的绝对时长，其中混入录音启动预卷、探测音前导静音与输出设备
-  缓冲等软件链路延迟（与真实回声无关，动辄数百 ms，且随每次打开设备而
-  跳动）。校准改为在**同一时点**采集 far 参考（运行时同一点的回环采集）
-  与麦克风后直接互相关二者——共同链路延迟相消，测得即运行时真正需要补偿
-  的 far 延迟；实测同一环境从「150~450ms 乱跳」收敛到约 130ms 且逐次
-  稳定（±5ms 内）。探测音从重复 chirp 改为**单发上扫 chirp**（重复 chirp
-  会让互相关在「真延迟 ± 重复间隔」出现等强假峰，把结果锁错到数百 ms 并
-  造成逐次浮动）。校准失败时保留原 far 延迟并提示，不再清 0；
+- **far 与 mic 按外部时钟（QPC/perf 秒）配对**：mic 每 hop 带采集时间戳
+  （PortAudio `input_buffer_adc_time` 经 `LinearClock` 映射到 QPC），far 样本
+  带时间戳（WASAPI loopback 的 QPC）入 48k 网格历史 `GridHistory`；模型 far
+  输入直接取「mic 时刻 − far_delay」的历史段（回声源），谁先到/晚到只影响
+  有没有样本、不影响对齐——时间原点严格一致，无任何“为吸时钟差保持水位/
+  内容滞后”的隐藏缓冲（旧 FarSync/FarTap 的 ~80ms 隐藏滞后是运行时不如
+  epoch-end 的主因）。Linux 后端先以采集/读取边界的同一主时钟近似，后续接
+  libpulse 流时间精化；
+- **far_delay 在网格域直接切片**：far 参考 = far 历史 [mic网格 − d, +hop)，
+  无需延迟环，方向/取值唯一；参考音量只缩放 far；cache 逐 hop 续传、行私有；
+- **回环输入行（桌面输入）同一套时间戳网格**：回环样本带 ts 入 `GridHistory`，
+  逐 hop 出队进混音；
+- **far 历史不足（刚启动/缺配/生产空洞）→ 该行直通 mic**：不丢人声、不进
+  模型、不动 cache；
+- **删除** `pvengine/dsp/far_sync.py`（FarSync/FarTap）及其中间替代 HopQueue/
+  HopFeeder 计数配队、`tests/test_far_sync.py`、临时脚本
+  `test_aec_offline.py`/`test_aec_integration.py`；`pvengine` 导出改
+  `GridHistory`/`grid_from_ts`；`tests/test_aec_rows.py` 重写为时间戳配对语义
+  （far 历史切片、不足直通、手动延迟方向），新增 `GridHistory` 合成测试。
+  捕获层新增公共件 `LinearClock`（PortAudio→QPC 映射）与 `TimedFifo`（带 ts
+  FIFO），Windows far=loopback QPC / mic adc 映射均经此统一到外部钟。
+
+## 2026-09-05 — AEC far 延迟校准重做（离线测一次）+ far=扬声器按所选端点回环
+
+- **自动校准改回离线、可控、一次保存（唯一值）**：须先关闭音频处理、环境
+  安静，播放探测音后测一次并一直使用。返回 = 「扬声器端点 → 麦克风回声」
+  的**唯一延迟路径值**，即滑杆要用的数，**无任何隐含/叠加延迟**（不做
+  「扣 FarTap 内置量」之类的二次处理；远/近端残余错位由模型自带多抽头
+  对齐消化）。硬件不变则测得值基本恒定（实测本机稳定 ~130ms 量级，逐次
+  ±5ms）。旧算法测「开始录音 → 回声进麦」绝对时长混入预卷/前导静音/输出
+  缓冲等软件延迟（数百 ms 且跳动）；现改为同一时点采集 far 参考与麦克风
+  后直接互相关，共同链路相消。探测音用单发上扫 chirp（无重复假峰）。校准
+  失败保留原 far 延迟并提示，不再清 0；
 - **far=扬声器回环改为按所选设备开采集（Windows）**：此前 WASAPI loopback
   恒抓「系统默认渲染设备」，行里选的非默认扬声器根本不进回环——回声参考
   与真实回声源不一致，延迟也对不上。现在端点选择与主设备选择一致：按名字
