@@ -262,6 +262,8 @@ jobs:
         run: |
           . tools/automation/versions.env
           echo "OPUS_CACHE_KEY=purevox-android-opus-src-${OPUS_VER}" >> "$GITHUB_ENV"
+          echo "GRADLE_CACHE_KEY=purevox-android-gradle-${{ hashFiles('android/**/*.gradle', 'android/**/*.gradle.kts', 'android/**/libs.versions.toml', 'android/gradle/wrapper/gradle-wrapper.properties') }}" >> "$GITHUB_ENV"
+          echo "GRADLE_WRAPPER_KEY=purevox-android-gradle-wrapper-${{ hashFiles('android/gradle/wrapper/gradle-wrapper.properties') }}" >> "$GITHUB_ENV"
 
       - name: Set build timestamp (tools/automation/version.sh is canonical)
         id: ts
@@ -274,7 +276,7 @@ jobs:
         with:
           distribution: temurin
           java-version: "17"
-          cache: gradle
+          cache: none
 
       - name: Set up Android SDK
         uses: android-actions/setup-android@v4.0.1
@@ -283,6 +285,23 @@ jobs:
       # job outright (sdkmanager never repairs a corrupt partial tree).
       - name: Install SDK platform 34 + NDK r27
         run: bash tools/automation/install_android_sdk.sh
+
+      # Gradle caches: restore-only in build jobs; writes happen solely in
+      # warm-cache.yml on main. Tag-scoped saves are garbage nobody reads back.
+      - name: Restore Gradle cache
+        uses: actions/cache/restore@v6
+        with:
+          path: ~/.gradle/caches
+          key: ${{ env.GRADLE_CACHE_KEY }}
+          restore-keys: |
+            purevox-android-gradle-
+      - name: Restore Gradle wrapper cache
+        uses: actions/cache/restore@v6
+        with:
+          path: ~/.gradle/wrapper/dists
+          key: ${{ env.GRADLE_WRAPPER_KEY }}
+          restore-keys: |
+            purevox-android-gradle-wrapper-
 
       # Opus source cache: restore-only here, writes happen solely in cache.yml.
       - name: Restore opus source cache

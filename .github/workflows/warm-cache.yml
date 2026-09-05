@@ -18,6 +18,10 @@ on:
       - 'bootstrap_python312.sh'
       - 'tools/automation/versions.env'
       - 'android/opus-src/**'
+      - 'android/**/*.gradle'
+      - 'android/**/*.gradle.kts'
+      - 'android/**/libs.versions.toml'
+      - 'android/gradle/wrapper/gradle-wrapper.properties'
   schedule:
     - cron: '0 3 * * 1'
   workflow_dispatch:
@@ -80,3 +84,64 @@ jobs:
         with:
           path: android/opus-src
           key: ${{ env.OPUS_CACHE_KEY }}
+
+  android-gradle:
+    name: Gradle cache (Android)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Load gradle cache keys
+        run: |
+          echo "GRADLE_CACHE_KEY=purevox-android-gradle-${{ hashFiles('android/**/*.gradle', 'android/**/*.gradle.kts', 'android/**/libs.versions.toml', 'android/gradle/wrapper/gradle-wrapper.properties') }}" >> "$GITHUB_ENV"
+          echo "GRADLE_WRAPPER_KEY=purevox-android-gradle-wrapper-${{ hashFiles('android/gradle/wrapper/gradle-wrapper.properties') }}" >> "$GITHUB_ENV"
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: "17"
+          cache: none
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v4.0.1
+
+      - name: Install SDK platform 34 + NDK r27
+        run: bash tools/automation/install_android_sdk.sh
+
+      - name: Download Opus source
+        run: bash tools/automation/ensure_opus_src.sh
+
+      - name: Restore Gradle cache (speed up warm build)
+        uses: actions/cache/restore@v6
+        with:
+          path: ~/.gradle/caches
+          key: ${{ env.GRADLE_CACHE_KEY }}
+          restore-keys: |
+            purevox-android-gradle-
+      - name: Restore Gradle wrapper cache
+        uses: actions/cache/restore@v6
+        with:
+          path: ~/.gradle/wrapper/dists
+          key: ${{ env.GRADLE_WRAPPER_KEY }}
+          restore-keys: |
+            purevox-android-gradle-wrapper-
+
+      - name: Warm Gradle (assemble fills ~/.gradle)
+        working-directory: android
+        run: chmod +x gradlew && ./gradlew assembleDebug --no-daemon
+
+      # Sole writers for these keys. continue-on-error: a same-key entry may
+      # already exist from an earlier run (deps unchanged) — that is success.
+      - name: Save Gradle cache
+        continue-on-error: true
+        uses: actions/cache/save@v6
+        with:
+          path: ~/.gradle/caches
+          key: ${{ env.GRADLE_CACHE_KEY }}
+      - name: Save Gradle wrapper cache
+        continue-on-error: true
+        uses: actions/cache/save@v6
+        with:
+          path: ~/.gradle/wrapper/dists
+          key: ${{ env.GRADLE_WRAPPER_KEY }}
